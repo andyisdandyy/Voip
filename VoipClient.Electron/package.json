@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
-    "start": "electron ."
+    "start": "electron .",
+    "rebuild-native": "electron-rebuild -f -w opusscript",
+    "dist:win": "npm run build && electron-builder --win --x64",
+    "dist:mac": "npm run build && electron-builder --mac --x64",
+    "dist": "npm run build && electron-builder --win --x64 --mac --x64"
   },
   "dependencies": {
     "react": "^19.0.0",
@@ -23,7 +27,53 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "electron": "^35.0.0",
+    "electron-builder": "^25.0.0",
+    "@electron/rebuild": "^3.7.0",
     "concurrently": "^9.0.0",
     "wait-on": "^8.0.0"
+  },
+  "build": {
+    "appId": "com.meichat.app",
+    "productName": "MeiChat",
+    "copyright": "Copyright © 2025",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/opusscript/**"
+    ],
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build-resources",
+      "output": "release"
+    },
+    "afterPack": "./scripts/rebuild-native.js",
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "build-resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["x64"] }
+      ],
+      "icon": "build-resources/icon.icns",
+      "category": "public.app-category.utilities"
+    },
+    "dmg": {
+      "title": "MeiChat",
+      "window": { "width": 540, "height": 380 }
+    }
   }
 }
+
