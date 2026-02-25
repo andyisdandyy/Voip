@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="VoipClient.Mac.SettingsWindow"
+        Title="Settings" Height="380" Width="360"
+        WindowStartupLocation="CenterOwner" CanResize="False">
+    <StackPanel Margin="16">
+        <CheckBox Name="DarkModeCheck" Content="🌙 Dark Mode" Margin="0,0,0,12"/>
+
+        <TextBlock Margin="0,0,0,4" Text="🎤 Input Device:"/>
+        <ComboBox Name="InputDeviceCombo" Margin="0,0,0,12" HorizontalAlignment="Stretch"/>
+
+        <TextBlock Margin="0,0,0,4" Text="🔊 Output Device:"/>
+        <ComboBox Name="OutputDeviceCombo" Margin="0,0,0,12" HorizontalAlignment="Stretch"/>
+
+        <TextBlock Name="VoiceGateLabel" Margin="0,0,0,4" Text="🎙 Voice Gate: Off"/>
+        <Slider Name="VoiceGateSlider" Minimum="0" Maximum="100"
+                TickFrequency="1" IsSnapToTickEnabled="True"
+                Margin="0,0,0,16"/>
+
+        <Button Content="Save" Width="80" HorizontalAlignment="Right" Click="Save_Click"/>
+    </StackPanel>
+</Window>

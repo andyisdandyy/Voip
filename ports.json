@@ -1,0 +1,5 @@
+{
+  "UdpPort": 25565,
+  "TcpPort": 25565,
+  "VideoPort": 25566
+}

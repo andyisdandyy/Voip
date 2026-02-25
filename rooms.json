@@ -1,0 +1,12 @@
+{
+  "VoiceRooms": [
+    { "Name": "Voice 1", "Bitrate": 32000 },
+    { "Name": "Voice 2", "Bitrate": 64000 },
+    { "Name": "Voice HQ", "Bitrate": 96000 }
+  ],
+  "TextRooms": [
+    { "Name": "General" },
+    { "Name": "Gaming" },
+    { "Name": "Private", "Password": "1234" }
+  ]
+}
