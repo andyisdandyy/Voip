@@ -1,7 +1,7 @@
 export {};
 
 interface ElectronAPI {
-  connectChat: (host: string, port: number, username: string) => Promise<{ success: boolean }>;
+  connectChat: (host: string, port: number, username: string, password: string, isRegister: boolean) => Promise<{ success: boolean }>;
   sendChat: (message: string) => void;
   disconnectChat: () => void;
   onChatMessage: (callback: (line: string) => void) => () => void;
@@ -14,6 +14,13 @@ interface ElectronAPI {
   setBitrate: (bitrate: number) => void;
   onAudioReceived: (callback: (pcm: Uint8Array) => void) => () => void;
   onVoiceConnected: (callback: () => void) => () => void;
+
+  sendVideo: (jpegBuffer: ArrayBuffer) => void;
+  onVideoReceived: (callback: (senderName: string, jpegData: Uint8Array) => void) => () => void;
+
+  minimizeWindow: () => void;
+  maximizeWindow: () => void;
+  closeWindow: () => void;
 }
 
 declare global {

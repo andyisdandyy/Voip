@@ -45,7 +45,7 @@ public class RoomManager
     public int GetVoiceRoomBitrate(string roomName)
     {
         var room = _config.VoiceRooms.FirstOrDefault(r => r.Name == roomName);
-        return room?.Bitrate ?? 32000;
+        return room?.Bitrate ?? 64000;
     }
 
     public bool JoinTextRoom(string username, string roomName, string? password)

@@ -7,6 +7,7 @@ using System.Text.Json;
 
 public class ChatMessage
 {
+    public string Id { get; set; } = "";
     public string User { get; set; } = "";
     public string Text { get; set; } = "";
     public DateTime Time { get; set; }
@@ -25,16 +26,31 @@ public class ChatHistoryStore
         Load();
     }
 
-    public void AddMessage(string room, string user, string text)
+    public string AddMessage(string room, string user, string text)
     {
+        var id = Guid.NewGuid().ToString("N")[..12];
         var msgs = _history.GetOrAdd(room, _ => new List<ChatMessage>());
         lock (msgs)
         {
-            msgs.Add(new ChatMessage { User = user, Text = text, Time = DateTime.UtcNow });
+            msgs.Add(new ChatMessage { Id = id, User = user, Text = text, Time = DateTime.UtcNow });
             if (msgs.Count > MaxPerRoom)
                 msgs.RemoveRange(0, msgs.Count - MaxPerRoom);
         }
         Save();
+        return id;
+    }
+
+    public bool DeleteMessage(string room, string id, string username)
+    {
+        if (!_history.TryGetValue(room, out var msgs)) return false;
+        lock (msgs)
+        {
+            var msg = msgs.FirstOrDefault(m => m.Id == id);
+            if (msg == null || msg.User != username) return false;
+            msgs.Remove(msg);
+        }
+        Save();
+        return true;
     }
 
     public List<ChatMessage> GetHistory(string room)

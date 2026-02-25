@@ -7,7 +7,7 @@ public class RoomDefinition
 {
     public string Name { get; set; } = "";
     public string? Password { get; set; }
-    public int Bitrate { get; set; } = 32000;
+    public int Bitrate { get; set; } = 96000;
 }
 
 public class RoomsConfig
@@ -34,7 +34,7 @@ public class RoomsConfig
 
     private static RoomsConfig CreateDefault() => new()
     {
-        VoiceRooms = new() { new() { Name = "Voice 1", Bitrate = 32000 } },
+        VoiceRooms = new() { new() { Name = "Voice 1", Bitrate = 96000 } },
         TextRooms = new() { new() { Name = "General" } }
     };
 }

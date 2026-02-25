@@ -42,16 +42,19 @@ void Log(string message)
 
 var roomManager = new RoomManager(roomsConfig, Log);
 var chatHistory = new ChatHistoryStore();
+var userStore = new UserStore();
 
 Log("VoIP Server starting...");
 Log($"Loaded {roomsConfig.VoiceRooms.Count} voice rooms, {roomsConfig.TextRooms.Count} text rooms");
 
 var chatCts = new CancellationTokenSource();
-_ = Task.Run(() => new ChatServer(ports.TcpPort, roomManager, chatHistory, Log).StartAsync(chatCts.Token));
+_ = Task.Run(() => new ChatServer(ports.TcpPort, roomManager, chatHistory, userStore, Log).StartAsync(chatCts.Token));
 Log($"Chat server started on TCP {ports.TcpPort}");
 
 var udpPort = ports.UdpPort;
 var udp = new UdpClient(udpPort);
+udp.Client.ReceiveBufferSize = 2 * 1024 * 1024;
+udp.Client.SendBufferSize = 2 * 1024 * 1024;
 
 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 {
@@ -129,13 +132,12 @@ _ = Task.Run(async () =>
             if (DateTime.UtcNow - kvp.Value.lastSeen > timeout)
             {
                 clients.TryRemove(kvp.Key, out var removed);
-                roomManager.RemoveUser(removed.username);
 
                 foreach (var n in nonceMap.ToArray())
                     if (n.Value.Equals(kvp.Key))
                         nonceMap.TryRemove(n.Key, out _);
 
-                Log($"Removed inactive client {kvp.Key} ({removed.username})");
+                Log($"Removed inactive UDP client {kvp.Key} ({removed.username})");
             }
         }
     }
@@ -207,6 +209,12 @@ while (true)
                         nonceMap.TryRemove(kv.Key, out _);
 
                 Log($"Client {sender} disconnected");
+                handled = true;
+            }
+            else if (text == "KEEPALIVE")
+            {
+                if (clients.TryGetValue(sender, out var info))
+                    clients[sender] = (DateTime.UtcNow, info.username);
                 handled = true;
             }
         }
