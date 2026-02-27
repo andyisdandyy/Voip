@@ -6,15 +6,8 @@ const dgram = require('dgram');
 const SAMPLE_RATE = 48000;
 const FRAME_SIZE = 960;
 
-// Fix blank/black screen on macOS Intel (GPU compositor issue)
+// Common macOS fixes
 if (process.platform === 'darwin') {
-  if (process.arch === 'x64') {
-    // Intel Mac: GPU compositor is broken in modern Electron — use software rendering.
-    // CRITICAL: do NOT disable-software-rasterizer, that's the only renderer left.
-    app.disableHardwareAcceleration();
-    app.commandLine.appendSwitch('in-process-gpu');
-  }
-  // Common macOS fixes
   app.commandLine.appendSwitch('force-color-profile', 'srgb');
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
@@ -63,24 +56,11 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
-    // Force a resize toggle to kick the compositor on Intel Macs
-    if (process.platform === 'darwin' && process.arch === 'x64') {
-      const [w, h] = mainWindow.getSize();
-      mainWindow.setSize(w + 1, h + 1);
-      setTimeout(() => { if (mainWindow) mainWindow.setSize(w, h); }, 100);
-    }
   });
 
   // Safety: show window after timeout even if ready-to-show doesn't fire
   const showTimeout = setTimeout(() => {
-    if (mainWindow && !mainWindow.isVisible()) {
-      mainWindow.show();
-      if (process.platform === 'darwin' && process.arch === 'x64') {
-        const [w, h] = mainWindow.getSize();
-        mainWindow.setSize(w + 1, h + 1);
-        setTimeout(() => { if (mainWindow) mainWindow.setSize(w, h); }, 100);
-      }
-    }
+    if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
   }, 5000);
   mainWindow.once('ready-to-show', () => clearTimeout(showTimeout));
 
