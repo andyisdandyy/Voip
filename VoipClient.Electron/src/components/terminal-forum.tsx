@@ -529,8 +529,9 @@ export function TerminalForum() {
         try { await (ctx as any).setSinkId(selectedOutputRef.current); } catch {}
       }
 
-      await ctx.audioWorklet.addModule('/audio-capture-processor.js');
-      await ctx.audioWorklet.addModule('/audio-playback-processor.js');
+      const base = import.meta.env.DEV ? '' : '.';
+      await ctx.audioWorklet.addModule(`${base}/audio-capture-processor.js`);
+      await ctx.audioWorklet.addModule(`${base}/audio-playback-processor.js`);
 
       // Capture mic → encode → send
       const source = ctx.createMediaStreamSource(stream);
