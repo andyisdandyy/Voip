@@ -6,8 +6,8 @@ using System.Linq;
 public class RoomManager
 {
     private readonly RoomsConfig _config;
-    private readonly ConcurrentDictionary<string, string> _userVoiceRoom = new();
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _textRoomMembers = new();
+    private readonly ConcurrentDictionary<string, string> _userVoiceRoom = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _textRoomMembers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Action<string>? _log;
 
     public RoomManager(RoomsConfig config, Action<string>? log = null)
@@ -15,7 +15,7 @@ public class RoomManager
         _config = config;
         _log = log;
         foreach (var room in config.TextRooms)
-            _textRoomMembers[room.Name] = new();
+            _textRoomMembers[room.Name] = new(StringComparer.OrdinalIgnoreCase);
     }
 
     public RoomsConfig Config => _config;
@@ -54,7 +54,7 @@ public class RoomManager
         if (room == null) return false;
         if (!string.IsNullOrEmpty(room.Password) && room.Password != password) return false;
         if (!_textRoomMembers.ContainsKey(roomName))
-            _textRoomMembers[roomName] = new();
+            _textRoomMembers[roomName] = new(StringComparer.OrdinalIgnoreCase);
         _textRoomMembers[roomName][username] = 0;
         _log?.Invoke($"[Room] {username} joined text '{roomName}'");
         return true;

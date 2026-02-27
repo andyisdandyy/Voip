@@ -61,6 +61,7 @@ public class ChatServer
         string name = "User";
         try
         {
+            client.NoDelay = true;
             using var stream = client.GetStream();
             using var reader = new StreamReader(stream, Encoding.UTF8);
             var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
@@ -141,7 +142,9 @@ public class ChatServer
             string? line;
             while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
             {
-                if (line.StartsWith("CMD:"))
+                if (line.StartsWith("VIDEO:"))
+                    await RelayVideoAsync(name, line).ConfigureAwait(false);
+                else if (line.StartsWith("CMD:"))
                     await HandleCommandAsync(writer, name, line.Substring(4)).ConfigureAwait(false);
                 else if (line.StartsWith("MSG:"))
                     await HandleMessageAsync(writer, name, line.Substring(4)).ConfigureAwait(false);
@@ -357,5 +360,25 @@ public class ChatServer
             }
         }
         _log?.Invoke(message);
+    }
+
+    private async Task RelayVideoAsync(string senderName, string rawLine)
+    {
+        var senderRoom = _rooms.GetVoiceRoom(senderName);
+        if (senderRoom == null) return;
+
+        // rawLine = "VIDEO:<flags>:<base64data>"
+        // Relay as "VIDEO:<sender>:<flags>:<base64data>" to voice room peers
+        var outLine = string.Concat("VIDEO:", senderName, ":", rawLine.AsSpan(6));
+
+        foreach (var kv in _clients)
+        {
+            var (writer, clientName) = kv.Value;
+            if (clientName != senderName && _rooms.GetVoiceRoom(clientName) == senderRoom)
+            {
+                try { await writer.WriteLineAsync(outLine).ConfigureAwait(false); }
+                catch { }
+            }
+        }
     }
 }

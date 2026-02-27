@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Terminal, Hash, User, Circle, Mic, MicOff, Headphones,
   Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, Monitor,
-  Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square,
+  Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
+  Plus, LogOut,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
@@ -14,13 +15,16 @@ interface ChatMsg   { id: string; text: string; msgId: string; sender: string }
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean }
+interface PinnedServer { id: string; name: string; host: string; udpPort: string; tcpPort: string; username?: string; password?: string }
+interface ServerContextMenu { serverId: string; x: number; y: number }
 
 const VIDEO_PRESETS = {
-  low:    { label: 'Lav (480p)',         width: 854,  height: 480,  frameRate: 15, jpegQuality: 0.72, interval: 67  },
-  medium: { label: 'Medium (720p)',      width: 1280, height: 720,  frameRate: 24, jpegQuality: 0.82, interval: 42  },
-  high:   { label: 'Høj (1080p)',        width: 1920, height: 1080, frameRate: 30, jpegQuality: 0.88, interval: 33  },
+  low:    { label: 'Lav (480p)',    width: 854,  height: 480,  frameRate: 24, bitrate: 1_500_000 },
+  medium: { label: 'Medium (720p)', width: 1280, height: 720,  frameRate: 30, bitrate: 3_000_000 },
+  high:   { label: 'Høj (1080p)',   width: 1920, height: 1080, frameRate: 30, bitrate: 6_000_000 },
 } as const;
 type VideoQuality = keyof typeof VIDEO_PRESETS;
+type ThemeColor = 'green' | 'blue' | 'red' | 'purple';
 
 // ── Component ───────────────────────────────────────────────
 
@@ -52,6 +56,7 @@ export function TerminalForum() {
   const [isDeafened, setIsDeafened] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [viewMode, setViewMode] = useState<'voice' | 'text'>('text');
+  const [isCallFullscreen, setIsCallFullscreen] = useState(false);
 
   // Input
   const [input, setInput] = useState('');
@@ -71,6 +76,21 @@ export function TerminalForum() {
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedVideoInput, setSelectedVideoInput] = useState('');
   const [videoQuality, setVideoQuality] = useState<VideoQuality>('high');
+  const [theme, setTheme] = useState<ThemeColor>(() => {
+    try { return (localStorage.getItem('meichat-theme') as ThemeColor) || 'green'; }
+    catch { return 'green'; }
+  });
+  const [pinnedServers, setPinnedServers] = useState<PinnedServer[]>(() => {
+    try { return JSON.parse(localStorage.getItem('meichat-pinned-servers') || '[]'); } catch { return []; }
+  });
+  const [loginDialog, setLoginDialog] = useState<string | null>(null);
+  const [serverContextMenu, setServerContextMenu] = useState<ServerContextMenu | null>(null);
+  const [addServerDialog, setAddServerDialog] = useState(false);
+  const [newServerName, setNewServerName] = useState('');
+  const [newServerHost, setNewServerHost] = useState('');
+  const [newServerUdp, setNewServerUdp] = useState('5000');
+  const [newServerTcp, setNewServerTcp] = useState('5001');
+  const [platform, setPlatform] = useState<string>('win32');
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -88,7 +108,6 @@ export function TerminalForum() {
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const captureVideoElRef = useRef<HTMLVideoElement | null>(null);
   const videoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const videoUrlsRef = useRef<Record<string, string>>({});
   const activeVideosRef = useRef<Set<string>>(new Set());
   const videoTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const selectedVideoInputRef = useRef('');
@@ -96,6 +115,11 @@ export function TerminalForum() {
   const viewModeRef = useRef<'voice' | 'text'>('text');
   const setViewModeTracked = (mode: 'voice' | 'text') => { viewModeRef.current = mode; setViewMode(mode); };
   const captureTypeRef = useRef<'none' | 'camera' | 'screen'>('none');
+  const videoEncoderRef = useRef<VideoEncoder | null>(null);
+  const videoCodecRef = useRef<string>('h264');
+  const videoDecodersRef = useRef<Record<string, VideoDecoder>>({});
+  const decoderTsRef = useRef<Record<string, number>>({});
+  const gotKeyframeRef = useRef<Record<string, boolean>>({});
 
   // Settings
   const [showSettings, setShowSettings] = useState(false);
@@ -109,14 +133,17 @@ export function TerminalForum() {
 
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
   useEffect(() => { isDeafenedRef.current = isDeafened; }, [isDeafened]);
+  useEffect(() => { try { localStorage.setItem('meichat-theme', theme); } catch {} }, [theme]);
+  useEffect(() => { window.electronAPI.getPlatform().then(p => setPlatform(p)); }, []);
+  useEffect(() => { try { localStorage.setItem('meichat-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
 
   useEffect(() => {
-    const handleClick = () => { setUserContextMenu(null); setMsgContextMenu(null); };
-    if (userContextMenu || msgContextMenu) {
+    const handleClick = () => { setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); };
+    if (userContextMenu || msgContextMenu || serverContextMenu) {
       document.addEventListener('click', handleClick);
       return () => document.removeEventListener('click', handleClick);
     }
-  }, [userContextMenu, msgContextMenu]);
+  }, [userContextMenu, msgContextMenu, serverContextMenu]);
 
   const getUserSetting = (name: string): UserSetting =>
     perUserSettings[name] || { name, volume: 100, isMuted: false };
@@ -219,8 +246,9 @@ export function TerminalForum() {
       setCameraUsers(prev => { const s = new Set(prev); s.delete(user); return s; });
       activeVideosRef.current.delete(user);
       setActiveVideos(new Set(activeVideosRef.current));
-      const oldUrl = videoUrlsRef.current[user];
-      if (oldUrl) { URL.revokeObjectURL(oldUrl); delete videoUrlsRef.current[user]; }
+      if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
+      delete decoderTsRef.current[user];
+      delete gotKeyframeRef.current[user];
     } else if (line.startsWith('SCREEN_ON:')) {
       const user = line.substring(10);
       setScreenUsers(prev => new Set(prev).add(user));
@@ -230,8 +258,9 @@ export function TerminalForum() {
       setScreenUsers(prev => { const s = new Set(prev); s.delete(user); return s; });
       activeVideosRef.current.delete(user);
       setActiveVideos(new Set(activeVideosRef.current));
-      const oldUrl = videoUrlsRef.current[user];
-      if (oldUrl) { URL.revokeObjectURL(oldUrl); delete videoUrlsRef.current[user]; }
+      if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
+      delete decoderTsRef.current[user];
+      delete gotKeyframeRef.current[user];
     }
   }, []);
 
@@ -253,15 +282,48 @@ export function TerminalForum() {
           playbackRef.current.port.postMessage(copy, [copy]);
         }
       }),
-      window.electronAPI.onVideoReceived((senderName: string, jpegData: Uint8Array) => {
-        const blob = new Blob([jpegData], { type: 'image/jpeg' });
-        const url = URL.createObjectURL(blob);
-        const old = videoUrlsRef.current[senderName];
-        if (old) URL.revokeObjectURL(old);
-        videoUrlsRef.current[senderName] = url;
+      window.electronAPI.onVideoReceived((senderName: string, encodedData: Uint8Array, isKeyFrame: boolean, codec: string) => {
+        // Wait for a keyframe before feeding delta frames to the decoder
+        if (!isKeyFrame && !gotKeyframeRef.current[senderName]) return;
+        if (isKeyFrame) gotKeyframeRef.current[senderName] = true;
 
-        const img = document.getElementById(`vf-${senderName}`) as HTMLImageElement | null;
-        if (img) img.src = url;
+        let decoder = videoDecodersRef.current[senderName];
+        if (!decoder || decoder.state === 'closed') {
+          const decoderCodec = codec === 'vp8' ? 'vp8' : 'avc1.640028';
+          decoder = new VideoDecoder({
+            output: (frame) => {
+              const canvasEl = document.getElementById(`vc-${senderName}`) as HTMLCanvasElement | null;
+              if (canvasEl) {
+                canvasEl.width = frame.displayWidth;
+                canvasEl.height = frame.displayHeight;
+                const ctx = canvasEl.getContext('2d');
+                if (ctx) ctx.drawImage(frame, 0, 0);
+              }
+              frame.close();
+            },
+            error: (e) => {
+              console.error(`[VideoDecoder:${senderName}]`, e);
+              gotKeyframeRef.current[senderName] = false;
+            },
+          });
+          decoder.configure({ codec: decoderCodec });
+          videoDecodersRef.current[senderName] = decoder;
+        }
+
+        if (decoder.state !== 'configured' || decoder.decodeQueueSize > 5) return;
+
+        const ts = (decoderTsRef.current[senderName] || 0) + 33333;
+        decoderTsRef.current[senderName] = ts;
+
+        try {
+          decoder.decode(new EncodedVideoChunk({
+            type: isKeyFrame ? 'key' : 'delta',
+            timestamp: ts,
+            data: encodedData,
+          }));
+        } catch {
+          gotKeyframeRef.current[senderName] = false;
+        }
 
         if (!activeVideosRef.current.has(senderName)) {
           activeVideosRef.current.add(senderName);
@@ -368,6 +430,33 @@ export function TerminalForum() {
     playbackRef.current = null;
   }
 
+  async function createVideoEncoder(width: number, height: number, bitrate: number, framerate: number) {
+    let codec = 'avc1.640028'; // H.264 High Profile Level 4.0
+    let codecId = 'h264';
+    try {
+      const h264Check = await VideoEncoder.isConfigSupported({
+        codec, width, height, bitrate, framerate,
+      });
+      if (!h264Check.supported) { codec = 'vp8'; codecId = 'vp8'; }
+    } catch { codec = 'vp8'; codecId = 'vp8'; }
+
+    const encoder = new VideoEncoder({
+      output: (chunk) => {
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        window.electronAPI.sendVideo(data.buffer, chunk.type === 'key', codecId);
+      },
+      error: (e) => console.error('[VideoEncoder] Error:', e),
+    });
+    encoder.configure({
+      codec, width, height, bitrate, framerate,
+      latencyMode: 'realtime',
+      ...(codecId === 'h264' ? { avc: { format: 'annexb' } } : {}),
+    });
+    console.log(`[Video] Encoder: ${codecId} ${width}x${height} @ ${bitrate / 1000}kbps`);
+    return { encoder, codec: codecId };
+  }
+
   async function startCamera() {
     if (captureTypeRef.current !== 'none') stopVideoCapture();
     try {
@@ -380,6 +469,11 @@ export function TerminalForum() {
         }
       });
       cameraStreamRef.current = stream;
+
+      const { encoder: enc, codec: codecId } = await createVideoEncoder(preset.width, preset.height, preset.bitrate, preset.frameRate);
+      videoEncoderRef.current = enc;
+      videoCodecRef.current = codecId;
+
       const videoEl = document.createElement('video');
       videoEl.srcObject = stream;
       videoEl.muted = true;
@@ -390,14 +484,17 @@ export function TerminalForum() {
       canvas.width = preset.width;
       canvas.height = preset.height;
       const ctx = canvas.getContext('2d')!;
+      let frameCount = 0;
+      const keyInterval = preset.frameRate * 2;
       videoIntervalRef.current = setInterval(() => {
-        if (videoEl.readyState >= 2) {
+        if (videoEl.readyState >= 2 && enc.state === 'configured') {
           ctx.drawImage(videoEl, 0, 0, preset.width, preset.height);
-          canvas.toBlob(blob => {
-            if (blob) blob.arrayBuffer().then(buf => window.electronAPI.sendVideo(buf));
-          }, 'image/jpeg', preset.jpegQuality);
+          const frame = new VideoFrame(canvas, { timestamp: performance.now() * 1000 });
+          enc.encode(frame, { keyFrame: frameCount % keyInterval === 0 });
+          frame.close();
+          frameCount++;
         }
-      }, preset.interval);
+      }, Math.round(1000 / preset.frameRate));
       captureTypeRef.current = 'camera';
       setIsCameraOn(true);
       window.electronAPI.sendChat('CMD:CAMERA_ON');
@@ -421,20 +518,36 @@ export function TerminalForum() {
       await videoEl.play();
       captureVideoElRef.current = videoEl;
       const settings = stream.getVideoTracks()[0]?.getSettings();
-      const w = settings?.width || 1920;
-      const h = settings?.height || 1080;
+      const srcW = settings?.width || 1920;
+      const srcH = settings?.height || 1080;
+      // Scale to max 1920x1080 — H.264/VP8 handles this efficiently
+      const maxW = 1920, maxH = 1080;
+      const scale = Math.min(1, maxW / srcW, maxH / srcH);
+      const w = Math.round(srcW * scale);
+      const h = Math.round(srcH * scale);
+      // Ensure even dimensions (required by H.264)
+      const ew = w % 2 === 0 ? w : w - 1;
+      const eh = h % 2 === 0 ? h : h - 1;
+
+      const { encoder: enc, codec: codecId } = await createVideoEncoder(ew, eh, 4_000_000, 15);
+      videoEncoderRef.current = enc;
+      videoCodecRef.current = codecId;
+
       const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas.width = ew;
+      canvas.height = eh;
       const ctx2 = canvas.getContext('2d')!;
+      let frameCount = 0;
+      const keyInterval = 30; // keyframe every ~2s at 15fps
       videoIntervalRef.current = setInterval(() => {
-        if (videoEl.readyState >= 2) {
-          ctx2.drawImage(videoEl, 0, 0, w, h);
-          canvas.toBlob(blob => {
-            if (blob) blob.arrayBuffer().then(buf => window.electronAPI.sendVideo(buf));
-          }, 'image/jpeg', 0.75);
+        if (videoEl.readyState >= 2 && enc.state === 'configured') {
+          ctx2.drawImage(videoEl, 0, 0, ew, eh);
+          const frame = new VideoFrame(canvas, { timestamp: performance.now() * 1000 });
+          enc.encode(frame, { keyFrame: frameCount % keyInterval === 0 });
+          frame.close();
+          frameCount++;
         }
-      }, 67);
+      }, Math.round(1000 / 15));
       stream.getVideoTracks()[0]?.addEventListener('ended', () => stopVideoCapture());
       captureTypeRef.current = 'screen';
       setIsScreenSharing(true);
@@ -448,6 +561,10 @@ export function TerminalForum() {
     if (videoIntervalRef.current) {
       clearInterval(videoIntervalRef.current);
       videoIntervalRef.current = null;
+    }
+    if (videoEncoderRef.current) {
+      try { videoEncoderRef.current.close(); } catch {}
+      videoEncoderRef.current = null;
     }
     if (captureVideoElRef.current) {
       captureVideoElRef.current.pause();
@@ -464,8 +581,10 @@ export function TerminalForum() {
   }
 
   function cleanupVideo() {
-    Object.values(videoUrlsRef.current).forEach(url => URL.revokeObjectURL(url));
-    videoUrlsRef.current = {};
+    Object.values(videoDecodersRef.current).forEach(d => { try { d.close(); } catch {} });
+    videoDecodersRef.current = {};
+    decoderTsRef.current = {};
+    gotKeyframeRef.current = {};
     Object.values(videoTimeoutsRef.current).forEach(clearTimeout);
     videoTimeoutsRef.current = {};
     activeVideosRef.current.clear();
@@ -499,7 +618,7 @@ export function TerminalForum() {
   // ── Call duration timer
 
   useEffect(() => {
-    if (!currentVoiceRoom) { setCallDuration(0); setViewModeTracked('text'); setIsScreenSharing(false); setSelectedVideoFeed(null); return; }
+    if (!currentVoiceRoom) { setCallDuration(0); setViewModeTracked('text'); setIsScreenSharing(false); setSelectedVideoFeed(null); setIsCallFullscreen(false); return; }
     const iv = setInterval(() => setCallDuration(d => d + 1), 1000);
     return () => clearInterval(iv);
   }, [currentVoiceRoom]);
@@ -511,6 +630,14 @@ export function TerminalForum() {
   }, [roomMessages, currentTextRoom]);
 
   // ── Helpers ───────────────────────────────────────────────
+
+  const SERVER_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
+  const getServerColor = (name: string) => {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    return SERVER_COLORS[Math.abs(hash) % SERVER_COLORS.length];
+  };
+  const isMac = platform === 'darwin';
 
   const fmt = (s: number) => {
     const m = Math.floor(s / 60), sec = s % 60;
@@ -526,22 +653,84 @@ export function TerminalForum() {
   const onlineUsersList = onlineUsers.filter(u => u.online);
   const offlineUsersList = onlineUsers.filter(u => !u.online);
 
-  // ── Login ─────────────────────────────────────────────────
+  // ── Pinned Server Functions ───────────────────────────────
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const connectToPinnedServer = async (server: PinnedServer) => {
+    if (server.username && server.password) {
+      setConnecting(true);
+      setStatus('Connecting...');
+      try {
+        await window.electronAPI.connectChat(server.host, parseInt(server.tcpPort), server.username, server.password, false);
+        await window.electronAPI.startVoice(server.host, parseInt(server.udpPort), server.username);
+        setNickname(server.username);
+        setServerIp(server.host);
+        setUdpPort(server.udpPort);
+        setTcpPort(server.tcpPort);
+        setIsConnected(true);
+        setStatus('Connected');
+      } catch (err: any) {
+        setStatus(`Failed: ${err.message}`);
+      }
+      setConnecting(false);
+    } else {
+      setLoginDialog(server.id);
+      setNickname('');
+      setPassword('');
+      setIsRegister(false);
+    }
+  };
+
+  const handleLoginDialogSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!nickname.trim() || !serverIp.trim() || !password.trim()) return;
+    if (!loginDialog || !nickname.trim() || !password.trim()) return;
+    const server = pinnedServers.find(s => s.id === loginDialog);
+    if (!server) return;
     setConnecting(true);
     setStatus(isRegister ? 'Registering...' : 'Logging in...');
     try {
-      await window.electronAPI.connectChat(serverIp, parseInt(tcpPort), nickname, password, isRegister);
-      await window.electronAPI.startVoice(serverIp, parseInt(udpPort), nickname);
+      await window.electronAPI.connectChat(server.host, parseInt(server.tcpPort), nickname, password, isRegister);
+      await window.electronAPI.startVoice(server.host, parseInt(server.udpPort), nickname);
+      setPinnedServers(prev => prev.map(s =>
+        s.id === loginDialog ? { ...s, username: nickname, password } : s
+      ));
+      setServerIp(server.host);
+      setUdpPort(server.udpPort);
+      setTcpPort(server.tcpPort);
       setIsConnected(true);
       setStatus('Connected');
+      setLoginDialog(null);
     } catch (err: any) {
       setStatus(`Failed: ${err.message}`);
     }
     setConnecting(false);
+  };
+
+  const addPinnedServer = () => {
+    if (!newServerName.trim() || !newServerHost.trim()) return;
+    setPinnedServers(prev => [...prev, {
+      id: crypto.randomUUID(),
+      name: newServerName.trim(),
+      host: newServerHost.trim(),
+      udpPort: newServerUdp || '5000',
+      tcpPort: newServerTcp || '5001',
+    }]);
+    setAddServerDialog(false);
+    setNewServerName('');
+    setNewServerHost('');
+    setNewServerUdp('5000');
+    setNewServerTcp('5001');
+  };
+
+  const unpinServer = (serverId: string) => {
+    setPinnedServers(prev => prev.filter(s => s.id !== serverId));
+    setServerContextMenu(null);
+  };
+
+  const logoutServer = (serverId: string) => {
+    setPinnedServers(prev => prev.map(s =>
+      s.id === serverId ? { ...s, username: undefined, password: undefined } : s
+    ));
+    setServerContextMenu(null);
   };
 
   // ── Chat submit ───────────────────────────────────────────
@@ -601,115 +790,238 @@ export function TerminalForum() {
   };
 
   // ═════════════════════════════════════════════════════════
-  //  LOGIN SCREEN
+  //  CONNECT SCREEN
   // ═════════════════════════════════════════════════════════
 
   if (!isConnected) {
     return (
-      <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono">
+      <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
         {/* ── Draggable titlebar ── */}
         <div className="flex items-center bg-[#0d120d] border-b border-green-900/30 select-none"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
-          <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
-            <Terminal className="w-4 h-4 shrink-0" />
-            <span className="text-xs font-bold">MEICHAT</span>
-          </div>
-          <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-            <button onClick={() => window.electronAPI.minimizeWindow()}
-              className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Minimer">
-              <Minus className="w-4 h-4" />
-            </button>
-            <button onClick={() => window.electronAPI.maximizeWindow()}
-              className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Maksimer">
-              <Square className="w-3.5 h-3.5" />
-            </button>
-            <button onClick={() => window.electronAPI.closeWindow()}
-              className="px-3 py-2 text-green-600 hover:bg-red-600 hover:text-white transition-colors" title="Luk">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          {isMac ? (
+            <>
+              <div className="flex items-center gap-2 px-4 py-3" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                <button onClick={() => window.electronAPI.closeWindow()}
+                  className="w-3 h-3 rounded-full bg-[#ff5f57] hover:brightness-110 transition-all" title="Luk" />
+                <button onClick={() => window.electronAPI.minimizeWindow()}
+                  className="w-3 h-3 rounded-full bg-[#febc2e] hover:brightness-110 transition-all" title="Minimer" />
+                <button onClick={() => window.electronAPI.fullscreenWindow()}
+                  className="w-3 h-3 rounded-full bg-[#28c840] hover:brightness-110 transition-all" title="Fuldskærm" />
+              </div>
+              <div className="flex-1 flex items-center justify-center">
+                <Terminal className="w-4 h-4 shrink-0 mr-2" />
+                <span className="text-xs font-bold">MEICHAT</span>
+              </div>
+              <div className="w-[68px]" />
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
+                <Terminal className="w-4 h-4 shrink-0" />
+                <span className="text-xs font-bold">MEICHAT</span>
+              </div>
+              <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                <button onClick={() => window.electronAPI.minimizeWindow()}
+                  className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Minimer">
+                  <Minus className="w-4 h-4" />
+                </button>
+                <button onClick={() => window.electronAPI.maximizeWindow()}
+                  className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Maksimer">
+                  <Square className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={() => window.electronAPI.closeWindow()}
+                  className="px-3 py-2 text-green-600 hover:bg-red-600 hover:text-white transition-colors" title="Luk">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </>
+          )}
         </div>
-        <div className="flex-1 flex items-center justify-center">
-        <div className="w-full max-w-md">
-          <div className="bg-[#0d120d]/80 backdrop-blur-sm rounded-lg shadow-2xl shadow-green-900/30 overflow-hidden">
+
+        {/* ── Connect Screen Content ── */}
+        <div className="flex-1 flex items-center justify-center overflow-y-auto">
+          <div className="w-full max-w-2xl px-8 py-12">
             {/* Header */}
-            <div className="bg-green-900/40 p-6 border-b border-green-900/50">
-              <div className="flex items-center gap-3 mb-2">
-                <Terminal className="w-8 h-8" />
-                <div>
-                  <h1 className="text-xl font-bold">MEICHAT</h1>
-                  <p className="text-xs text-green-700">v1.0.0</p>
-                </div>
-              </div>
-            </div>
-            <div className="flex border-b border-green-900/50">
-              <button type="button" onClick={() => setIsRegister(false)}
-                className={`flex-1 py-3 text-sm font-bold transition-all ${!isRegister ? 'text-green-400 border-b-2 border-green-500 bg-green-900/20' : 'text-green-700 hover:text-green-500'}`}>
-                LOG IND
-              </button>
-              <button type="button" onClick={() => setIsRegister(true)}
-                className={`flex-1 py-3 text-sm font-bold transition-all ${isRegister ? 'text-green-400 border-b-2 border-green-500 bg-green-900/20' : 'text-green-700 hover:text-green-500'}`}>
-                REGISTRER
-              </button>
+            <div className="text-center mb-12">
+              <Terminal className="w-12 h-12 mx-auto mb-4 text-green-500" />
+              <h1 className="text-3xl font-bold text-green-400 mb-1">MEICHAT</h1>
+              <p className="text-xs text-green-700">v1.0.0 — Secure VoIP</p>
             </div>
 
-            {/* Form */}
-            <form onSubmit={handleLogin} className="p-8 space-y-5">
-              <div className="space-y-2">
-                <label className="text-xs text-green-700 block">{'>'} BRUGERNAVN</label>
-                <input type="text" value={nickname} onChange={e => setNickname(e.target.value)}
-                  placeholder="Indtast dit brugernavn..."
-                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
-                  autoFocus />
+            {/* Pinned Servers */}
+            <div className="mb-10">
+              <div className="text-xs text-green-700 mb-6 text-center tracking-widest">DINE SERVERE</div>
+              <div className="flex flex-wrap justify-center gap-6">
+                {pinnedServers.map(server => (
+                  <button key={server.id}
+                    onClick={() => connectToPinnedServer(server)}
+                    onContextMenu={(e) => { e.preventDefault(); setServerContextMenu({ serverId: server.id, x: e.clientX, y: e.clientY }); }}
+                    disabled={connecting}
+                    className="group flex flex-col items-center gap-2 transition-all disabled:opacity-50">
+                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-white text-xl font-bold shadow-lg transition-all group-hover:rounded-xl group-hover:shadow-xl group-hover:scale-105"
+                      style={{ backgroundColor: getServerColor(server.name) }}>
+                      {server.name.charAt(0).toUpperCase()}
+                    </div>
+                    <span className="text-xs text-green-600 group-hover:text-green-400 transition-colors max-w-[80px] truncate">{server.name}</span>
+                    {server.username ? (
+                      <span className="text-[10px] text-green-700 flex items-center gap-1">
+                        <Circle className="w-1.5 h-1.5 fill-green-500 text-green-500" />
+                        {server.username}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-green-800">Ikke logget ind</span>
+                    )}
+                  </button>
+                ))}
+                {/* Add Server Button */}
+                <button onClick={() => setAddServerDialog(true)}
+                  className="group flex flex-col items-center gap-2 transition-all">
+                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center border-2 border-dashed border-green-900/50 text-green-700 transition-all group-hover:rounded-xl group-hover:border-green-600 group-hover:text-green-500 group-hover:scale-105">
+                    <Plus className="w-7 h-7" />
+                  </div>
+                  <span className="text-xs text-green-700 group-hover:text-green-500 transition-colors">Tilføj</span>
+                </button>
               </div>
+            </div>
 
-              <div className="space-y-2">
-                <label className="text-xs text-green-700 block">{'>'} PASSWORD</label>
-                <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                  placeholder="Indtast dit password..."
-                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs text-green-700 block">{'>'} SERVER IP</label>
-                <input type="text" value={serverIp} onChange={e => setServerIp(e.target.value)}
-                  placeholder="86.52.25.44"
-                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
-              </div>
-
-              <div className="flex gap-4">
-                <div className="flex-1 space-y-2">
-                  <label className="text-xs text-green-700 block">{'>'} UDP PORT</label>
-                  <input type="text" value={udpPort} onChange={e => setUdpPort(e.target.value)}
-                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
-                </div>
-                <div className="flex-1 space-y-2">
-                  <label className="text-xs text-green-700 block">{'>'} TCP PORT</label>
-                  <input type="text" value={tcpPort} onChange={e => setTcpPort(e.target.value)}
-                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
-                </div>
-              </div>
-
-              <button type="submit" disabled={!nickname.trim() || !serverIp.trim() || !password.trim() || connecting}
-                className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
-                {isRegister ? <UserPlus className="w-5 h-5" /> : <LogIn className="w-5 h-5" />}
-                {connecting ? (isRegister ? 'REGISTERER...' : 'LOGGER IND...') : (isRegister ? 'REGISTRER' : 'LOG IND')}
-              </button>
-
-              <div className="pt-4 border-t border-green-900/30">
-                <div className="text-xs text-green-700 space-y-1">
-                  <div>{'>'} Status: <span className="text-green-500">{status}</span></div>
-                  <div>{'>'} Protocol: <span className="text-green-500">UDP + TCP</span></div>
-                </div>
-              </div>
-            </form>
-          </div>
-
-          <div className="mt-6 text-center text-xs text-green-700">
-            <p>Indtast dine credentials for at {isRegister ? 'oprette en konto' : 'logge ind'}</p>
+            {/* Status */}
+            <div className="text-center text-xs text-green-700 space-y-1">
+              <div>{'>'} Status: <span className="text-green-500">{status}</span></div>
+              <div>{'>'} Protocol: <span className="text-green-500">UDP + TCP</span></div>
+            </div>
           </div>
         </div>
-        </div>{/* end login center wrapper */}
+
+        {/* ── Login Dialog ── */}
+        {loginDialog && (() => {
+          const server = pinnedServers.find(s => s.id === loginDialog);
+          if (!server) return null;
+          return (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
+                <div className="bg-green-900/40 p-6 border-b border-green-900/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold"
+                      style={{ backgroundColor: getServerColor(server.name) }}>
+                      {server.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-bold text-green-400">{server.name}</h2>
+                      <p className="text-xs text-green-700">{server.host}</p>
+                    </div>
+                    <button onClick={() => setLoginDialog(null)} className="ml-auto p-2 text-green-600 hover:text-green-400">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex border-b border-green-900/50">
+                  <button type="button" onClick={() => setIsRegister(false)}
+                    className={`flex-1 py-3 text-sm font-bold transition-all ${!isRegister ? 'text-green-400 border-b-2 border-green-500 bg-green-900/20' : 'text-green-700 hover:text-green-500'}`}>
+                    LOG IND
+                  </button>
+                  <button type="button" onClick={() => setIsRegister(true)}
+                    className={`flex-1 py-3 text-sm font-bold transition-all ${isRegister ? 'text-green-400 border-b-2 border-green-500 bg-green-900/20' : 'text-green-700 hover:text-green-500'}`}>
+                    REGISTRER
+                  </button>
+                </div>
+                <form onSubmit={handleLoginDialogSubmit} className="p-6 space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-xs text-green-700 block">{'>'} BRUGERNAVN</label>
+                    <input type="text" value={nickname} onChange={e => setNickname(e.target.value)}
+                      placeholder="Indtast dit brugernavn..."
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
+                      autoFocus />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs text-green-700 block">{'>'} PASSWORD</label>
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                      placeholder="Indtast dit password..."
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                  </div>
+                  <button type="submit" disabled={!nickname.trim() || !password.trim() || connecting}
+                    className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
+                    {isRegister ? <UserPlus className="w-5 h-5" /> : <LogIn className="w-5 h-5" />}
+                    {connecting ? (isRegister ? 'REGISTERER...' : 'LOGGER IND...') : (isRegister ? 'REGISTRER' : 'LOG IND')}
+                  </button>
+                  <div className="pt-2 text-center">
+                    <span className="text-xs text-green-700">{status}</span>
+                  </div>
+                </form>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── Add Server Dialog ── */}
+        {addServerDialog && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
+              <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between">
+                <h2 className="text-lg font-bold text-green-400">TILFØJ SERVER</h2>
+                <button onClick={() => setAddServerDialog(false)} className="p-2 text-green-600 hover:text-green-400">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs text-green-700 block">{'>'} SERVER NAVN</label>
+                  <input type="text" value={newServerName} onChange={e => setNewServerName(e.target.value)}
+                    placeholder="Min Server..."
+                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
+                    autoFocus />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs text-green-700 block">{'>'} HOST / IP</label>
+                  <input type="text" value={newServerHost} onChange={e => setNewServerHost(e.target.value)}
+                    placeholder="86.52.25.44"
+                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                </div>
+                <div className="flex gap-4">
+                  <div className="flex-1 space-y-2">
+                    <label className="text-xs text-green-700 block">{'>'} UDP PORT</label>
+                    <input type="text" value={newServerUdp} onChange={e => setNewServerUdp(e.target.value)}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <label className="text-xs text-green-700 block">{'>'} TCP PORT</label>
+                    <input type="text" value={newServerTcp} onChange={e => setNewServerTcp(e.target.value)}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                  </div>
+                </div>
+                <button onClick={addPinnedServer} disabled={!newServerName.trim() || !newServerHost.trim()}
+                  className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
+                  <Plus className="w-5 h-5" />
+                  TILFØJ SERVER
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Server Context Menu ── */}
+        {serverContextMenu && (() => {
+          const server = pinnedServers.find(s => s.id === serverContextMenu.serverId);
+          if (!server) return null;
+          return (
+            <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[180px] z-50"
+              style={{ left: Math.min(serverContextMenu.x, window.innerWidth - 200), top: Math.min(serverContextMenu.y, window.innerHeight - 120) }}
+              onClick={e => e.stopPropagation()}>
+              {server.username && (
+                <button onClick={() => logoutServer(server.id)}
+                  className="w-full px-4 py-2.5 rounded-lg text-yellow-400 hover:bg-yellow-900/30 transition-all flex items-center gap-2 text-sm">
+                  <LogOut className="w-4 h-4" />
+                  <span>Log ud</span>
+                </button>
+              )}
+              <button onClick={() => unpinServer(server.id)}
+                className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
+                <Trash2 className="w-4 h-4" />
+                <span>Fjern server</span>
+              </button>
+            </div>
+          );
+        })()}
       </div>
     );
   }
@@ -719,35 +1031,60 @@ export function TerminalForum() {
   // ═════════════════════════════════════════════════════════
 
   return (
-   <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono">
+   <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
 
      {/* ── Draggable titlebar ─────────────────────────────── */}
      <div className="flex items-center bg-[#0d120d] border-b border-green-900/30 select-none"
        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
-       <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
-         <Terminal className="w-4 h-4 shrink-0" />
-         <span className="text-xs font-bold truncate">MEICHAT</span>
-         <span className="text-xs text-green-700 truncate">— {nickname}</span>
-       </div>
-       <button onClick={disconnect}
-         className="px-3 py-2 text-xs text-red-500 hover:text-red-400 hover:bg-red-900/20 transition-colors"
-         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-         DISCONNECT
-       </button>
-       <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-         <button onClick={() => window.electronAPI.minimizeWindow()}
-           className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Minimer">
-           <Minus className="w-4 h-4" />
-         </button>
-         <button onClick={() => window.electronAPI.maximizeWindow()}
-           className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Maksimer">
-           <Square className="w-3.5 h-3.5" />
-         </button>
-         <button onClick={() => window.electronAPI.closeWindow()}
-           className="px-3 py-2 text-green-600 hover:bg-red-600 hover:text-white transition-colors" title="Luk">
-           <X className="w-4 h-4" />
-         </button>
-       </div>
+       {isMac ? (
+         <>
+           <div className="flex items-center gap-2 px-4 py-3" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+             <button onClick={() => window.electronAPI.closeWindow()}
+               className="w-3 h-3 rounded-full bg-[#ff5f57] hover:brightness-110 transition-all" title="Luk" />
+             <button onClick={() => window.electronAPI.minimizeWindow()}
+               className="w-3 h-3 rounded-full bg-[#febc2e] hover:brightness-110 transition-all" title="Minimer" />
+             <button onClick={() => window.electronAPI.fullscreenWindow()}
+               className="w-3 h-3 rounded-full bg-[#28c840] hover:brightness-110 transition-all" title="Fuldskærm" />
+           </div>
+           <div className="flex-1 flex items-center justify-center min-w-0">
+             <Terminal className="w-4 h-4 shrink-0 mr-2" />
+             <span className="text-xs font-bold truncate">MEICHAT</span>
+             <span className="text-xs text-green-700 truncate ml-1">— {nickname}</span>
+           </div>
+           <button onClick={disconnect}
+             className="px-3 py-2 text-xs text-red-500 hover:text-red-400 hover:bg-red-900/20 transition-colors"
+             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+             DISCONNECT
+           </button>
+         </>
+       ) : (
+         <>
+           <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
+             <Terminal className="w-4 h-4 shrink-0" />
+             <span className="text-xs font-bold truncate">MEICHAT</span>
+             <span className="text-xs text-green-700 truncate">— {nickname}</span>
+           </div>
+           <button onClick={disconnect}
+             className="px-3 py-2 text-xs text-red-500 hover:text-red-400 hover:bg-red-900/20 transition-colors"
+             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+             DISCONNECT
+           </button>
+           <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+             <button onClick={() => window.electronAPI.minimizeWindow()}
+               className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Minimer">
+               <Minus className="w-4 h-4" />
+             </button>
+             <button onClick={() => window.electronAPI.maximizeWindow()}
+               className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Maksimer">
+               <Square className="w-3.5 h-3.5" />
+             </button>
+             <button onClick={() => window.electronAPI.closeWindow()}
+               className="px-3 py-2 text-green-600 hover:bg-red-600 hover:text-white transition-colors" title="Luk">
+               <X className="w-4 h-4" />
+             </button>
+           </div>
+         </>
+       )}
      </div>
 
      {/* ── Main content wrapper with padding ──────────────── */}
@@ -757,7 +1094,7 @@ export function TerminalForum() {
       <div className="flex-1 flex gap-4 overflow-hidden">
 
         {/* ── Left sidebar: rooms ─────────────────────────── */}
-        <div className="w-64 bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10 flex flex-col">
+        <div className={`w-64 bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10 flex flex-col ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}>
           <div className="flex-1 overflow-y-auto">
             {/* Text channels */}
             <div className="p-4 border-b border-green-900/30">
@@ -890,7 +1227,8 @@ export function TerminalForum() {
                                 <div className="w-24 h-24 rounded-full bg-green-900/40 flex items-center justify-center ring-4 ring-green-900/50">
                                   <User className="w-12 h-12 text-green-500" />
                                 </div>
-                                <img id={`vf-${u.name}`} className="absolute inset-0 w-full h-full object-contain"
+                                <canvas id={`vc-${u.name}`}
+                                  className="absolute inset-0 w-full h-full object-contain"
                                   style={{ display: (cameraUsers.has(u.name) || screenUsers.has(u.name)) ? 'block' : 'none' }} />
                               </>
                             )}
@@ -913,7 +1251,7 @@ export function TerminalForum() {
                     </button>
                     <button onClick={() => isCameraOn ? stopVideoCapture() : startCamera()}
                       className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isCameraOn ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50'}`}
+                        isCameraOn ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
                       title={isCameraOn ? 'Sluk kamera' : 'Tænd kamera'}>
                       {isCameraOn ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
                     </button>
@@ -933,6 +1271,11 @@ export function TerminalForum() {
                         isDeafened ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30'}`}
                       title={isDeafened ? 'Undeafen' : 'Deafen'}>
                       {isDeafened ? <VolumeX className="w-6 h-6" /> : <Headphones className="w-6 h-6" />}
+                    </button>
+                    <button onClick={() => setIsCallFullscreen(f => !f)}
+                      className="w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30"
+                      title={isCallFullscreen ? 'Forlad fuldskærm' : 'Fuldskærm'}>
+                      {isCallFullscreen ? <Minimize2 className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
                     </button>
                   </div>
                   <div className="text-center py-2 border-t border-green-900/30">
@@ -1000,6 +1343,11 @@ export function TerminalForum() {
                         isDeafened ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30'}`}
                       title={isDeafened ? 'Undeafen' : 'Deafen'}>
                       {isDeafened ? <VolumeX className="w-7 h-7" /> : <Headphones className="w-7 h-7" />}
+                    </button>
+                    <button onClick={() => setIsCallFullscreen(f => !f)}
+                      className="w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30"
+                      title={isCallFullscreen ? 'Forlad fuldskærm' : 'Fuldskærm'}>
+                      {isCallFullscreen ? <Minimize2 className="w-7 h-7" /> : <Maximize className="w-7 h-7" />}
                     </button>
                   </div>
                   <div className="flex justify-center gap-6 text-sm pb-6 border-t border-green-900/30 pt-4">
@@ -1083,7 +1431,7 @@ export function TerminalForum() {
         </div>
 
         {/* ── Right sidebar: users ─────────────────────── */}
-        <div className="w-64 bg-[#0d120d]/60 backdrop-blur-sm rounded-lg overflow-y-auto shadow-lg shadow-green-900/10">
+        <div className={`w-64 bg-[#0d120d]/60 backdrop-blur-sm rounded-lg overflow-y-auto shadow-lg shadow-green-900/10 ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}>
           <div className="p-4 border-b border-green-900/30">
             <div className="text-xs text-green-700">ONLINE — {onlineUsersList.length}</div>
           </div>
@@ -1091,7 +1439,7 @@ export function TerminalForum() {
             {onlineUsersList.map(u => (
               <div key={u.name}
                 className="px-4 py-2.5 flex items-center gap-3 hover:bg-green-900/20 rounded-lg transition-all mb-2"
-                onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}>
+                onContextMenu={(e) => { e.preventDefault(); if (u.name !== nickname) setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}>
                 <Circle className="w-2 h-2 fill-current text-green-500" />
                 <User className="w-4 h-4 text-green-700" />
                 <div className="flex-1 min-w-0">
@@ -1123,6 +1471,7 @@ export function TerminalForum() {
       </div>
 
       {/* ── Footer status bar ──────────────────────────────── */}
+      {!(isCallFullscreen && viewMode === 'voice' && currentVoiceRoom) && (
       <div className="bg-[#0d120d]/80 backdrop-blur-sm px-4 py-2 rounded-lg flex items-center gap-4 text-xs text-green-700 shadow-lg shadow-green-900/20">
         <span>STATUS: {isConnected ? 'CONNECTED' : 'DISCONNECTED'}</span>
         {currentTextRoom && <span>ROOM: #{currentTextRoom}</span>}
@@ -1130,6 +1479,7 @@ export function TerminalForum() {
         <span>USERS: {onlineUsersList.length}/{onlineUsers.length}</span>
         <span className="ml-auto">{status}</span>
       </div>
+      )}
       </div>{/* end content wrapper */}
 
       {/* ── Settings Modal ─────────────────────────────────── */}
@@ -1229,7 +1579,9 @@ export function TerminalForum() {
                   <div className="text-xs text-green-800 space-y-1">
                     <div>Opløsning: {VIDEO_PRESETS[videoQuality].width}×{VIDEO_PRESETS[videoQuality].height}</div>
                     <div>Billedhastighed: {VIDEO_PRESETS[videoQuality].frameRate} fps</div>
-                    <div>JPEG kvalitet: {Math.round(VIDEO_PRESETS[videoQuality].jpegQuality * 100)}%</div>
+                    <div>Codec: H.264 (VP8 fallback)</div>
+                    <div>Bitrate: {VIDEO_PRESETS[videoQuality].bitrate / 1_000_000} Mbps</div>
+                    <div>Transport: TCP (pålidelig)</div>
                   </div>
                 </div>
               </div>
@@ -1268,11 +1620,13 @@ export function TerminalForum() {
                 <div className="space-y-3 pl-6">
                   <div>
                     <label className="text-xs text-green-600 block mb-2">Tema Farve</label>
-                    <select className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option>Grøn (Standard)</option>
-                      <option>Blå</option>
-                      <option>Rød</option>
-                      <option>Lilla</option>
+                    <select value={theme}
+                      onChange={e => setTheme(e.target.value as ThemeColor)}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      <option value="green">Grøn (Standard)</option>
+                      <option value="blue">Blå</option>
+                      <option value="red">Rød</option>
+                      <option value="purple">Lilla</option>
                     </select>
                   </div>
                   <label className="flex items-center gap-3 cursor-pointer">
@@ -1324,7 +1678,7 @@ export function TerminalForum() {
               <input type="range" min="0" max="100" value={setting.volume}
                 onChange={(e) => updateUserSetting(userContextMenu.userId, { volume: parseInt(e.target.value) })}
                 className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer"
-                style={{ background: `linear-gradient(to right, #22c55e 0%, #22c55e ${setting.volume}%, #1a3d1a ${setting.volume}%, #1a3d1a 100%)` }} />
+                style={{ background: `linear-gradient(to right, var(--color-green-500) 0%, var(--color-green-500) ${setting.volume}%, var(--color-green-900) ${setting.volume}%, var(--color-green-900) 100%)` }} />
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); updateUserSetting(userContextMenu.userId, { isMuted: !setting.isMuted }); }}

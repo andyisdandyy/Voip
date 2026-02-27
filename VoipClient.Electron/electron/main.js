@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, systemPreferences } = require('electron');
 const path = require('path');
 const net = require('net');
 const dgram = require('dgram');
@@ -45,7 +45,13 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Request media permissions on macOS
+  if (process.platform === 'darwin') {
+    try { await systemPreferences.askForMediaAccess('microphone'); } catch {}
+    try { await systemPreferences.askForMediaAccess('camera'); } catch {}
+  }
+
   createWindow();
   setupIPC();
 
@@ -65,6 +71,10 @@ app.whenReady().then(() => {
     else mainWindow?.maximize();
   });
   ipcMain.on('window:close', () => mainWindow?.close());
+  ipcMain.handle('get-platform', () => process.platform);
+  ipcMain.on('window:fullscreen', () => {
+    if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen());
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -102,8 +112,14 @@ function setupIPC() {
     sendAudio(pcmArrayBuffer);
   });
 
-  ipcMain.on('udp:send-video', (_event, jpegArrayBuffer) => {
-    sendVideoFrame(jpegArrayBuffer);
+  // Video over TCP (reliable delivery)
+  ipcMain.on('tcp:send-video', (_event, encodedBuffer, isKeyFrame, codec) => {
+    if (!tcpSocket || tcpSocket.destroyed) return;
+    const flags = (isKeyFrame ? 0x01 : 0x00) | (codec === 'vp8' ? 0x02 : 0x00);
+    const flagsHex = flags.toString(16).padStart(2, '0');
+    const base64 = Buffer.from(encodedBuffer).toString('base64');
+    tcpSocket.write(`VIDEO:${flagsHex}:${base64}\n`);
+    if (++_videoSendCount % 50 === 1) console.log(`[Video/TCP] Sent frame #${_videoSendCount} (${Buffer.from(encodedBuffer).length}B, ${isKeyFrame ? 'KEY' : 'delta'})`);
   });
 
   ipcMain.on('udp:stop', () => stopVoice());
@@ -132,6 +148,7 @@ function connectChat(host, port, username, password, isRegister) {
     }, 10000);
 
     tcpSocket.connect(port, host, () => {
+      tcpSocket.setNoDelay(true);
       const cmd = isRegister
         ? `REGISTER:${username}:${password}`
         : `AUTH:${username}:${password}`;
@@ -159,6 +176,22 @@ function connectChat(host, port, username, password, isRegister) {
             tcpSocket = null;
             reject(new Error(line.substring(line.indexOf(':') + 1)));
             return;
+          }
+          continue;
+        }
+        // Intercept video frames from server — decode base64 and send binary to renderer
+        if (line.startsWith('VIDEO:')) {
+          // VIDEO:<sender>:<flagsHex>:<base64data>
+          const i1 = line.indexOf(':', 6);
+          const i2 = i1 >= 0 ? line.indexOf(':', i1 + 1) : -1;
+          if (i1 >= 0 && i2 >= 0) {
+            const senderName = line.substring(6, i1);
+            const flags = parseInt(line.substring(i1 + 1, i2), 16);
+            const isKeyFrame = (flags & 0x01) !== 0;
+            const codec = (flags & 0x02) ? 'vp8' : 'h264';
+            const encodedData = Buffer.from(line.substring(i2 + 1), 'base64');
+            mainWindow?.webContents.send('udp:video', senderName, encodedData, isKeyFrame, codec);
+            if (++_videoRecvCount % 50 === 1) console.log(`[Video/TCP] Recv #${_videoRecvCount} from '${senderName}' (${encodedData.length}B, ${isKeyFrame ? 'KEY' : 'delta'})`);
           }
           continue;
         }
@@ -259,42 +292,6 @@ function startVoice(host, port, username) {
           } catch (err) {
             console.error('[UDP] Decode error:', err.message);
           }
-        } else if (typeByte === 0x02) {
-          // Video — chunked: [frameId:2][chunkIdx:1][totalChunks:1][data...]
-          if (payload.length < 4) return;
-          const frameId = payload.readUInt16BE(0);
-          const chunkIdx = payload[2];
-          const totalChunks = payload[3];
-          const chunkData = payload.slice(4);
-          if (totalChunks === 0 || chunkIdx >= totalChunks) return;
-
-          const frameKey = `${senderName}:${frameId}`;
-          if (!_videoFrameBuffer[frameKey]) {
-            _videoFrameBuffer[frameKey] = {
-              chunks: new Array(totalChunks),
-              received: new Set(),
-              total: totalChunks,
-              ts: Date.now(),
-            };
-          }
-          const frame = _videoFrameBuffer[frameKey];
-          frame.chunks[chunkIdx] = chunkData;
-          frame.received.add(chunkIdx);
-
-          if (frame.received.size === frame.total) {
-            const fullJpeg = Buffer.concat(frame.chunks);
-            mainWindow?.webContents.send('udp:video', senderName, fullJpeg);
-            delete _videoFrameBuffer[frameKey];
-            if (++_videoRecvCount % 50 === 1) console.log(`[Video] Recv #${_videoRecvCount} from '${senderName}' (${fullJpeg.length}B, ${frame.total} chunks)`);
-
-            // Cleanup stale incomplete frames for this sender
-            const now = Date.now();
-            for (const key of Object.keys(_videoFrameBuffer)) {
-              if (key.startsWith(senderName + ':') && now - _videoFrameBuffer[key].ts > 2000) {
-                delete _videoFrameBuffer[key];
-              }
-            }
-          }
         }
       });
 
@@ -328,11 +325,6 @@ let _audioSendCount = 0;
 let _audioRecvCount = 0;
 let _videoSendCount = 0;
 let _videoRecvCount = 0;
-let _videoFrameId = 0;
-
-// Video chunk reassembly: key = 'sender:frameId' -> { chunks[], received Set, total, ts }
-const _videoFrameBuffer = {};
-const VIDEO_CHUNK_SIZE = 60000; // keep each UDP packet under ~60KB to avoid fragmentation
 
 function sendAudio(pcmArrayBuffer) {
   if (!udpSocket || !encoder) return;
@@ -351,32 +343,6 @@ function sendAudio(pcmArrayBuffer) {
     }
   } catch (err) {
     console.error('[Audio] Encode/send error:', err.message);
-  }
-}
-
-function sendVideoFrame(jpegArrayBuffer) {
-  if (!udpSocket) return;
-  try {
-    const jpeg = Buffer.from(jpegArrayBuffer);
-    const totalChunks = Math.ceil(jpeg.length / VIDEO_CHUNK_SIZE);
-    if (totalChunks > 255) { console.warn('[Video] Frame too large, skipping'); return; }
-    const frameId = (_videoFrameId++) & 0xFFFF;
-
-    for (let i = 0; i < totalChunks; i++) {
-      const offset = i * VIDEO_CHUNK_SIZE;
-      const chunk = jpeg.slice(offset, offset + VIDEO_CHUNK_SIZE);
-      // Packet: [type:0x02][frameId:2 BE][chunkIdx:1][totalChunks:1][data...]
-      const header = Buffer.alloc(5);
-      header[0] = 0x02;
-      header.writeUInt16BE(frameId, 1);
-      header[3] = i;
-      header[4] = totalChunks;
-      const packet = Buffer.concat([header, chunk]);
-      udpSocket.send(packet, 0, packet.length, udpSocket._voipPort, udpSocket._voipHost);
-    }
-    if (++_videoSendCount % 50 === 1) console.log(`[Video] Sent frame #${_videoSendCount} (${jpeg.length}B, ${totalChunks} chunk${totalChunks > 1 ? 's' : ''})`);
-  } catch (err) {
-    console.error('[Video] Send error:', err.message);
   }
 }
 

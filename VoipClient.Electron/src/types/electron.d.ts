@@ -15,12 +15,14 @@ interface ElectronAPI {
   onAudioReceived: (callback: (pcm: Uint8Array) => void) => () => void;
   onVoiceConnected: (callback: () => void) => () => void;
 
-  sendVideo: (jpegBuffer: ArrayBuffer) => void;
-  onVideoReceived: (callback: (senderName: string, jpegData: Uint8Array) => void) => () => void;
+  sendVideo: (buffer: ArrayBuffer, isKeyFrame: boolean, codec: string) => void;
+  onVideoReceived: (callback: (senderName: string, encodedData: Uint8Array, isKeyFrame: boolean, codec: string) => void) => () => void;
 
   minimizeWindow: () => void;
   maximizeWindow: () => void;
   closeWindow: () => void;
+  getPlatform: () => Promise<string>;
+  fullscreenWindow: () => void;
 }
 
 declare global {

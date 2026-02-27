@@ -1,5 +1,49 @@
 @import 'tailwindcss';
 
+/* Theme color overrides — remaps green-* utilities to the chosen accent */
+
+[data-theme="blue"] {
+  --color-green-50: #eff6ff;
+  --color-green-100: #dbeafe;
+  --color-green-200: #bfdbfe;
+  --color-green-300: #93c5fd;
+  --color-green-400: #60a5fa;
+  --color-green-500: #3b82f6;
+  --color-green-600: #2563eb;
+  --color-green-700: #1d4ed8;
+  --color-green-800: #1e40af;
+  --color-green-900: #1e3a8a;
+  --color-green-950: #172554;
+}
+
+[data-theme="red"] {
+  --color-green-50: #fff1f2;
+  --color-green-100: #ffe4e6;
+  --color-green-200: #fecdd3;
+  --color-green-300: #fda4af;
+  --color-green-400: #fb7185;
+  --color-green-500: #f43f5e;
+  --color-green-600: #e11d48;
+  --color-green-700: #be123c;
+  --color-green-800: #9f1239;
+  --color-green-900: #881337;
+  --color-green-950: #4c0519;
+}
+
+[data-theme="purple"] {
+  --color-green-50: #faf5ff;
+  --color-green-100: #f3e8ff;
+  --color-green-200: #e9d5ff;
+  --color-green-300: #d8b4fe;
+  --color-green-400: #c084fc;
+  --color-green-500: #a855f7;
+  --color-green-600: #9333ea;
+  --color-green-700: #7e22ce;
+  --color-green-800: #6b21a8;
+  --color-green-900: #581c87;
+  --color-green-950: #3b0764;
+}
+
 body {
   margin: 0;
   padding: 0;

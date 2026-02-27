@@ -54,11 +54,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('udp:connected', handler);
   },
 
-  sendVideo: (jpegBuffer) =>
-    ipcRenderer.send('udp:send-video', jpegBuffer),
+  sendVideo: (buffer, isKeyFrame, codec) =>
+    ipcRenderer.send('tcp:send-video', buffer, isKeyFrame, codec),
 
   onVideoReceived: (callback) => {
-    const handler = (_event, senderName, jpegData) => callback(senderName, jpegData);
+    const handler = (_event, senderName, encodedData, isKeyFrame, codec) => callback(senderName, encodedData, isKeyFrame, codec);
     ipcRenderer.on('udp:video', handler);
     return () => ipcRenderer.removeListener('udp:video', handler);
   },
@@ -67,4 +67,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),
   closeWindow: () => ipcRenderer.send('window:close'),
+  getPlatform: () => ipcRenderer.invoke('get-platform'),
+  fullscreenWindow: () => ipcRenderer.send('window:fullscreen'),
 });

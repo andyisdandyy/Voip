@@ -39,6 +39,13 @@ export function TerminalForum() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [nickname, setNickname] = useState('');
   const [serverIp, setServerIp] = useState('');
+  const [recentServers] = useState([
+    { id: '1', name: 'Terminal HQ', address: '192.168.1.100:8080', image: 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=200&h=200&fit=crop' },
+    { id: '2', name: 'Dev Server', address: '10.0.0.50:3000', image: 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=200&h=200&fit=crop' },
+    { id: '3', name: 'Gaming Lounge', address: '172.16.0.1:9999', image: 'https://images.unsplash.com/photo-1511512578047-dfb367046420?w=200&h=200&fit=crop' },
+    { id: '4', name: 'Tech Talk', address: '192.168.0.25:7777', image: 'https://images.unsplash.com/photo-1518770660439-4636190af475?w=200&h=200&fit=crop' },
+    { id: '5', name: 'Chill Zone', address: '10.10.10.10:5555', image: 'https://images.unsplash.com/photo-1614332287897-cdc485fa562d?w=200&h=200&fit=crop' },
+  ]);
   const [currentRoom, setCurrentRoom] = useState('general');
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -104,9 +111,11 @@ export function TerminalForum() {
   }, [userContextMenu]);
 
   // Handle login
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (nickname.trim() && serverIp.trim()) {
+  const handleLogin = (e?: React.FormEvent, address?: string) => {
+    if (e) e.preventDefault();
+    const serverAddress = address || serverIp;
+    if (serverAddress.trim()) {
+      setServerIp(serverAddress);
       setIsLoggedIn(true);
     }
   };
@@ -308,7 +317,7 @@ export function TerminalForum() {
   if (!isLoggedIn) {
     return (
       <div className="h-screen flex items-center justify-center bg-[#0a0e0a] text-green-500 font-mono p-4">
-        <div className="w-full max-w-md">
+        <div className="w-full max-w-2xl">
           {/* Login box */}
           <div className="bg-[#0d120d]/80 backdrop-blur-sm rounded-lg shadow-2xl shadow-green-900/30 overflow-hidden">
             {/* Header */}
@@ -317,46 +326,62 @@ export function TerminalForum() {
                 <Terminal className="w-8 h-8" />
                 <div>
                   <h1 className="text-xl font-bold">TERMINAL FORUM</h1>
-                  <p className="text-xs text-green-700">v1.0.0 - Login</p>
+                  <p className="text-xs text-green-700">v1.0.0 - Connection</p>
                 </div>
               </div>
             </div>
 
             {/* Login form */}
-            <form onSubmit={handleLogin} className="p-8 space-y-6">
-              <div className="space-y-2">
-                <label className="text-xs text-green-700 block">{'>'} NICKNAME</label>
-                <input
-                  type="text"
-                  value={nickname}
-                  onChange={(e) => setNickname(e.target.value)}
-                  placeholder="Indtast dit nickname..."
-                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
-                  autoFocus
-                />
+            <form onSubmit={handleLogin} className="p-8">
+              <div className="space-y-2 mb-6">
+                <label className="text-xs text-green-700 block">{'>'} SERVER ADRESSE</label>
+                <div className="flex gap-3">
+                  <input
+                    type="text"
+                    value={serverIp}
+                    onChange={(e) => setServerIp(e.target.value)}
+                    placeholder="192.168.1.1:8080"
+                    className="flex-1 bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
+                    autoFocus
+                  />
+                  <button
+                    type="submit"
+                    disabled={!serverIp.trim()}
+                    className="bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 px-8 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold"
+                  >
+                    <LogIn className="w-5 h-5" />
+                    CONNECT
+                  </button>
+                </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="text-xs text-green-700 block">{'>'} SERVER IP</label>
-                <input
-                  type="text"
-                  value={serverIp}
-                  onChange={(e) => setServerIp(e.target.value)}
-                  placeholder="192.168.1.1:8080"
-                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
-                />
+              {/* Recent Servers */}
+              <div className="pt-6 border-t border-green-900/30">
+                <div className="text-xs text-green-700 mb-4">{'>'} SENESTE SERVERE</div>
+                <div className="flex justify-center gap-6">
+                  {recentServers.map((server) => (
+                    <div
+                      key={server.id}
+                      className="group relative cursor-pointer"
+                      onClick={() => handleLogin(undefined, server.address)}
+                    >
+                      <div className="w-20 h-20 rounded-full overflow-hidden border-4 border-green-900/50 hover:border-green-600 transition-all shadow-lg hover:shadow-green-900/50 hover:scale-110 transform duration-200">
+                        <img
+                          src={server.image}
+                          alt={server.name}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      {/* Tooltip */}
+                      <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap bg-[#0d120d]/95 border border-green-900/50 rounded-lg px-3 py-1 text-xs text-green-400 pointer-events-none z-10">
+                        {server.name}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={!nickname.trim() || !serverIp.trim()}
-                className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold"
-              >
-                <LogIn className="w-5 h-5" />
-                CONNECT
-              </button>
-
-              <div className="pt-4 border-t border-green-900/30">
+              <div className="pt-8 mt-8 border-t border-green-900/30">
                 <div className="text-xs text-green-700 space-y-1">
                   <div>{'>'} Status: <span className="text-green-500">Awaiting connection</span></div>
                   <div>{'>'} Protocol: <span className="text-green-500">TCP/IP</span></div>
@@ -368,7 +393,7 @@ export function TerminalForum() {
 
           {/* Info text */}
           <div className="mt-6 text-center text-xs text-green-700">
-            <p>Indtast dine credentials for at tilslutte serveren</p>
+            <p>Indtast server adresse eller vælg fra seneste servere</p>
           </div>
         </div>
       </div>
