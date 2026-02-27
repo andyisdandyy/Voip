@@ -15,16 +15,25 @@ public class RoomsConfig
     public List<RoomDefinition> VoiceRooms { get; set; } = new();
     public List<RoomDefinition> TextRooms { get; set; } = new();
 
+    private static readonly JsonSerializerOptions _jsonOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true,
+    };
+
     public static RoomsConfig Load(string? path = null)
     {
         path ??= Path.Combine(AppContext.BaseDirectory, "rooms.json");
         try
         {
             if (!File.Exists(path))
-                return CreateDefault();
+            {
+                var def = CreateDefault();
+                try { File.WriteAllText(path, JsonSerializer.Serialize(def, _jsonOpts)); } catch { }
+                return def;
+            }
             var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<RoomsConfig>(json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? CreateDefault();
+            return JsonSerializer.Deserialize<RoomsConfig>(json, _jsonOpts) ?? CreateDefault();
         }
         catch
         {

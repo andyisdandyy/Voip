@@ -10,28 +10,34 @@ import {
 
 interface VoiceRoom { name: string; hasPassword: boolean; bitrate: number }
 interface TextRoom  { name: string; hasPassword: boolean }
-interface UserInfo  { name: string; voiceRoom: string | null; online: boolean }
+interface UserInfo  { name: string; voiceRoom: string | null; online: boolean; roles: string[]; roleColor: string | null }
 interface ChatMsg   { id: string; text: string; msgId: string; sender: string }
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean }
-interface PinnedServer { id: string; name: string; host: string; udpPort: string; tcpPort: string; username?: string; password?: string }
+interface PinnedServer { id: string; name: string; host: string; port: string; username?: string; password?: string; serverPassword?: string }
+interface ServerInfo { serverName: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number }
 interface ServerContextMenu { serverId: string; x: number; y: number }
+interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 
-const VIDEO_PRESETS = {
-  low:    { label: 'Lav (480p)',    width: 854,  height: 480,  frameRate: 24, bitrate: 1_500_000 },
-  medium: { label: 'Medium (720p)', width: 1280, height: 720,  frameRate: 30, bitrate: 3_000_000 },
-  high:   { label: 'Høj (1080p)',   width: 1920, height: 1080, frameRate: 30, bitrate: 6_000_000 },
+const VIDEO_RESOLUTIONS = {
+  '720p':  { label: '720p',  width: 1280, height: 720 },
+  '1080p': { label: '1080p', width: 1920, height: 1080 },
+  '1440p': { label: '1440p (Ultrawide)', width: 2560, height: 1440 },
+  '4k':    { label: '4K',    width: 3840, height: 2160 },
 } as const;
-type VideoQuality = keyof typeof VIDEO_PRESETS;
+type VideoResolution = keyof typeof VIDEO_RESOLUTIONS;
+
+const VIDEO_FPS_OPTIONS = [15, 30, 60] as const;
+type VideoFps = typeof VIDEO_FPS_OPTIONS[number];
+
+function getVideoBitrate(width: number, height: number, fps: number): number {
+  const pixels = width * height;
+  const base = pixels <= 921600 ? 3_000_000 : pixels <= 2073600 ? 6_000_000 : pixels <= 3686400 ? 10_000_000 : 20_000_000;
+  return Math.round(base * (fps / 30));
+}
+
 type ThemeColor = 'green' | 'blue' | 'red' | 'purple';
-
-const SCREEN_PRESETS = {
-  low:    { label: 'Lav (720p 15fps)',    maxWidth: 1280, maxHeight: 720,  frameRate: 15, bitrate: 1_500_000 },
-  medium: { label: 'Medium (1080p 15fps)', maxWidth: 1920, maxHeight: 1080, frameRate: 15, bitrate: 3_000_000 },
-  high:   { label: 'Høj (1080p 30fps)',    maxWidth: 1920, maxHeight: 1080, frameRate: 30, bitrate: 6_000_000 },
-} as const;
-type ScreenShareQuality = keyof typeof SCREEN_PRESETS;
 
 // ── Component ───────────────────────────────────────────────
 
@@ -40,10 +46,10 @@ export function TerminalForum() {
   const [isConnected, setIsConnected] = useState(false);
   const [nickname, setNickname]       = useState('');
   const [serverIp, setServerIp]       = useState('86.52.25.44');
-  const [udpPort, setUdpPort]         = useState('5000');
   const [tcpPort, setTcpPort]         = useState('5001');
   const [status, setStatus]           = useState('Awaiting connection');
   const [connecting, setConnecting]   = useState(false);
+  const [serverInfo, setServerInfo]   = useState<ServerInfo | null>(null);
 
   // Rooms (from server)
   const [voiceRooms, setVoiceRooms]       = useState<VoiceRoom[]>([]);
@@ -57,6 +63,7 @@ export function TerminalForum() {
 
   // Users
   const [onlineUsers, setOnlineUsers] = useState<UserInfo[]>([]);
+  const [serverRoles, setServerRoles] = useState<RoleInfo[]>([]);
 
   // Voice controls
   const [isMuted, setIsMuted]       = useState(false);
@@ -82,24 +89,33 @@ export function TerminalForum() {
   const [screenUsers, setScreenUsers] = useState<Set<string>>(new Set());
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedVideoInput, setSelectedVideoInput] = useState('');
-  const [videoQuality, setVideoQuality] = useState<VideoQuality>('high');
+  const [videoResolution, setVideoResolution] = useState<VideoResolution>('1080p');
+  const [videoFps, setVideoFps] = useState<VideoFps>(30);
   const [screenShareDialog, setScreenShareDialog] = useState(false);
   const [screenShareAudio, setScreenShareAudio] = useState(false);
-  const [screenShareQuality, setScreenShareQuality] = useState<ScreenShareQuality>('medium');
+  const [screenShareResolution, setScreenShareResolution] = useState<VideoResolution>('1080p');
+  const [screenShareFps, setScreenShareFps] = useState<VideoFps>(30);
+  const [serverPasswordDialog, setServerPasswordDialog] = useState<{ host: string; port: string; username: string; password: string; isRegister: boolean; serverId?: string } | null>(null);
+  const [serverPasswordInput, setServerPasswordInput] = useState('');
+  const [screenSources, setScreenSources] = useState<Array<{id: string; name: string; thumbnail: string; appIcon: string | null; isScreen: boolean}>>([]);
+  const [selectedSource, setSelectedSource] = useState<string | null>(null);
+  const [sourceTab, setSourceTab] = useState<'screen' | 'window'>('screen');
   const [theme, setTheme] = useState<ThemeColor>(() => {
     try { return (localStorage.getItem('meichat-theme') as ThemeColor) || 'green'; }
     catch { return 'green'; }
   });
   const [pinnedServers, setPinnedServers] = useState<PinnedServer[]>(() => {
-    try { return JSON.parse(localStorage.getItem('meichat-pinned-servers') || '[]'); } catch { return []; }
+    try {
+      const raw = JSON.parse(localStorage.getItem('meichat-pinned-servers') || '[]');
+      return raw.map((s: any) => ({ ...s, port: s.port || s.tcpPort || '5001' }));
+    } catch { return []; }
   });
   const [loginDialog, setLoginDialog] = useState<string | null>(null);
   const [serverContextMenu, setServerContextMenu] = useState<ServerContextMenu | null>(null);
   const [addServerDialog, setAddServerDialog] = useState(false);
   const [newServerName, setNewServerName] = useState('');
   const [newServerHost, setNewServerHost] = useState('');
-  const [newServerUdp, setNewServerUdp] = useState('5000');
-  const [newServerTcp, setNewServerTcp] = useState('5001');
+  const [newServerPort, setNewServerPort] = useState('5001');
   const [platform, setPlatform] = useState<string>('win32');
 
   // Refs
@@ -111,6 +127,7 @@ export function TerminalForum() {
   const streamRef      = useRef<MediaStream | null>(null);
   const isMutedRef     = useRef(false);
   const isDeafenedRef  = useRef(false);
+  const nicknameRef    = useRef('');
   const selectedInputRef  = useRef('');
   const selectedOutputRef = useRef('');
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -121,7 +138,8 @@ export function TerminalForum() {
   const activeVideosRef = useRef<Set<string>>(new Set());
   const videoTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const selectedVideoInputRef = useRef('');
-  const videoQualityRef = useRef<VideoQuality>('high');
+  const videoResolutionRef = useRef<VideoResolution>('1080p');
+  const videoFpsRef = useRef<VideoFps>(30);
   const viewModeRef = useRef<'voice' | 'text'>('text');
   const setViewModeTracked = (mode: 'voice' | 'text') => { viewModeRef.current = mode; setViewMode(mode); };
   const captureTypeRef = useRef<'none' | 'camera' | 'screen'>('none');
@@ -130,6 +148,7 @@ export function TerminalForum() {
   const videoDecodersRef = useRef<Record<string, VideoDecoder>>({});
   const decoderTsRef = useRef<Record<string, number>>({});
   const gotKeyframeRef = useRef<Record<string, boolean>>({});
+  const systemAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   // Settings
   const [showSettings, setShowSettings] = useState(false);
@@ -143,6 +162,7 @@ export function TerminalForum() {
 
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
   useEffect(() => { isDeafenedRef.current = isDeafened; }, [isDeafened]);
+  useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
   useEffect(() => { try { localStorage.setItem('meichat-theme', theme); } catch {} }, [theme]);
   useEffect(() => { window.electronAPI.getPlatform().then(p => setPlatform(p)); }, []);
   useEffect(() => { try { localStorage.setItem('meichat-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
@@ -168,7 +188,28 @@ export function TerminalForum() {
   // ── Server message handler ────────────────────────────────
 
   const handleServerMessage = useCallback((line: string) => {
-    if (line.startsWith('ROOMS:')) {
+    if (line.startsWith('SERVER_INFO:')) {
+      try {
+        const d = JSON.parse(line.substring(12));
+        setServerInfo({
+          serverName: d.ServerName || '',
+          voiceHost: d.VoiceHost || '',
+          udpPort: d.UdpPort || 5000,
+          maxCameraWidth: d.MaxCameraWidth || 1920,
+          maxCameraHeight: d.MaxCameraHeight || 1080,
+          maxScreenWidth: d.MaxScreenWidth || 1920,
+          maxScreenHeight: d.MaxScreenHeight || 1080,
+          maxFps: d.MaxFps || 30,
+        });
+        const voiceHost = d.VoiceHost || '';
+        const udpPort = d.UdpPort || 5000;
+        if (voiceHost && udpPort) {
+          window.electronAPI.startVoice(voiceHost, udpPort, nicknameRef.current).catch(err => {
+            console.error('[Voice] Auto-start failed:', err);
+          });
+        }
+      } catch {}
+    } else if (line.startsWith('ROOMS:')) {
       try {
         const d = JSON.parse(line.substring(6));
         setVoiceRooms((d.VoiceRooms || []).map((r: any) => ({
@@ -181,8 +222,16 @@ export function TerminalForum() {
     } else if (line.startsWith('USERS:')) {
       try {
         const d = JSON.parse(line.substring(6));
-        setOnlineUsers(d.map((u: any) => ({ name: u.Name, voiceRoom: u.VoiceRoom || null, online: u.Online !== false })));
+        setOnlineUsers(d.map((u: any) => ({ name: u.Name, voiceRoom: u.VoiceRoom || null, online: u.Online !== false, roles: u.Roles || [], roleColor: u.RoleColor || null })));
       } catch {}
+    } else if (line.startsWith('ROLES:')) {
+      try {
+        const d = JSON.parse(line.substring(6));
+        setServerRoles(d.map((r: any) => ({ name: r.Name, color: r.Color, priority: r.Priority, permissions: r.Permissions || [] })));
+      } catch {}
+    } else if (line === 'KICKED') {
+      setStatus('Du blev kicket fra serveren');
+      setIsConnected(false);
     } else if (line.startsWith('JOINED_TEXT:')) {
       const room = line.substring(12);
       setJoinedText(prev => new Set(prev).add(room));
@@ -470,17 +519,22 @@ export function TerminalForum() {
   async function startCamera() {
     if (captureTypeRef.current !== 'none') stopVideoCapture();
     try {
-      const preset = VIDEO_PRESETS[videoQualityRef.current];
+      const res = VIDEO_RESOLUTIONS[videoResolutionRef.current];
+      const fps = videoFpsRef.current;
+      const capW = serverInfo ? Math.min(res.width, serverInfo.maxCameraWidth) : res.width;
+      const capH = serverInfo ? Math.min(res.height, serverInfo.maxCameraHeight) : res.height;
+      const capFps = serverInfo ? Math.min(fps, serverInfo.maxFps) : fps;
+      const bitrate = getVideoBitrate(capW, capH, capFps);
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           deviceId: selectedVideoInputRef.current ? { exact: selectedVideoInputRef.current } : undefined,
-          width: preset.width, height: preset.height,
-          frameRate: { ideal: preset.frameRate, max: preset.frameRate },
+          width: capW, height: capH,
+          frameRate: { ideal: capFps, max: capFps },
         }
       });
       cameraStreamRef.current = stream;
 
-      const { encoder: enc, codec: codecId } = await createVideoEncoder(preset.width, preset.height, preset.bitrate, preset.frameRate);
+      const { encoder: enc, codec: codecId } = await createVideoEncoder(capW, capH, bitrate, capFps);
       videoEncoderRef.current = enc;
       videoCodecRef.current = codecId;
 
@@ -491,20 +545,20 @@ export function TerminalForum() {
       await videoEl.play();
       captureVideoElRef.current = videoEl;
       const canvas = document.createElement('canvas');
-      canvas.width = preset.width;
-      canvas.height = preset.height;
+      canvas.width = capW;
+      canvas.height = capH;
       const ctx = canvas.getContext('2d')!;
       let frameCount = 0;
-      const keyInterval = preset.frameRate * 2;
+      const keyInterval = capFps * 2;
       videoIntervalRef.current = setInterval(() => {
         if (videoEl.readyState >= 2 && enc.state === 'configured') {
-          ctx.drawImage(videoEl, 0, 0, preset.width, preset.height);
+          ctx.drawImage(videoEl, 0, 0, capW, capH);
           const frame = new VideoFrame(canvas, { timestamp: performance.now() * 1000 });
           enc.encode(frame, { keyFrame: frameCount % keyInterval === 0 });
           frame.close();
           frameCount++;
         }
-      }, Math.round(1000 / preset.frameRate));
+      }, Math.round(1000 / capFps));
       captureTypeRef.current = 'camera';
       setIsCameraOn(true);
       window.electronAPI.sendChat('CMD:CAMERA_ON');
@@ -515,14 +569,31 @@ export function TerminalForum() {
 
   async function startScreenShare() {
     if (captureTypeRef.current !== 'none') stopVideoCapture();
+    const sourceId = selectedSource;
     setScreenShareDialog(false);
-    const preset = SCREEN_PRESETS[screenShareQuality];
+    setSelectedSource(null);
+    const res = VIDEO_RESOLUTIONS[screenShareResolution];
+    const fps = screenShareFps;
+    const maxW = serverInfo ? Math.min(res.width, serverInfo.maxScreenWidth) : res.width;
+    const maxH = serverInfo ? Math.min(res.height, serverInfo.maxScreenHeight) : res.height;
+    const capFps = serverInfo ? Math.min(fps, serverInfo.maxFps) : fps;
     try {
+      if (sourceId) {
+        await window.electronAPI.setShareSource(sourceId, screenShareAudio);
+      }
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: preset.frameRate, max: preset.frameRate } },
+        video: { frameRate: { ideal: capFps, max: capFps } },
         audio: screenShareAudio,
       });
       cameraStreamRef.current = stream;
+      // Mix system audio into voice pipeline if available
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack && audioCtxRef.current && captureRef.current) {
+        const audioStream = new MediaStream([audioTrack]);
+        const systemSource = audioCtxRef.current.createMediaStreamSource(audioStream);
+        systemSource.connect(captureRef.current);
+        systemAudioSourceRef.current = systemSource;
+      }
       const videoEl = document.createElement('video');
       videoEl.srcObject = stream;
       videoEl.muted = true;
@@ -532,14 +603,14 @@ export function TerminalForum() {
       const settings = stream.getVideoTracks()[0]?.getSettings();
       const srcW = settings?.width || 1920;
       const srcH = settings?.height || 1080;
-      const scale = Math.min(1, preset.maxWidth / srcW, preset.maxHeight / srcH);
+      const scale = Math.min(1, maxW / srcW, maxH / srcH);
       const w = Math.round(srcW * scale);
       const h = Math.round(srcH * scale);
       // Ensure even dimensions (required by H.264)
       const ew = w % 2 === 0 ? w : w - 1;
       const eh = h % 2 === 0 ? h : h - 1;
 
-      const { encoder: enc, codec: codecId } = await createVideoEncoder(ew, eh, preset.bitrate, preset.frameRate);
+      const { encoder: enc, codec: codecId } = await createVideoEncoder(ew, eh, getVideoBitrate(ew, eh, capFps), capFps);
       videoEncoderRef.current = enc;
       videoCodecRef.current = codecId;
 
@@ -548,7 +619,7 @@ export function TerminalForum() {
       canvas.height = eh;
       const ctx2 = canvas.getContext('2d')!;
       let frameCount = 0;
-      const keyInterval = preset.frameRate * 2;
+      const keyInterval = capFps * 2;
       videoIntervalRef.current = setInterval(() => {
         if (videoEl.readyState >= 2 && enc.state === 'configured') {
           ctx2.drawImage(videoEl, 0, 0, ew, eh);
@@ -557,7 +628,7 @@ export function TerminalForum() {
           frame.close();
           frameCount++;
         }
-      }, Math.round(1000 / preset.frameRate));
+      }, Math.round(1000 / capFps));
       stream.getVideoTracks()[0]?.addEventListener('ended', () => stopVideoCapture());
       captureTypeRef.current = 'screen';
       setIsScreenSharing(true);
@@ -583,6 +654,10 @@ export function TerminalForum() {
     }
     cameraStreamRef.current?.getTracks().forEach(t => t.stop());
     cameraStreamRef.current = null;
+    if (systemAudioSourceRef.current) {
+      try { systemAudioSourceRef.current.disconnect(); } catch {}
+      systemAudioSourceRef.current = null;
+    }
     if (captureTypeRef.current === 'camera') window.electronAPI.sendChat('CMD:CAMERA_OFF');
     if (captureTypeRef.current === 'screen') window.electronAPI.sendChat('CMD:SCREEN_OFF');
     captureTypeRef.current = 'none';
@@ -602,6 +677,21 @@ export function TerminalForum() {
     setCameraUsers(new Set());
     setScreenUsers(new Set());
   }
+
+  const openScreenShareDialog = async () => {
+    setScreenShareDialog(true);
+    setSourceTab('screen');
+    setSelectedSource(null);
+    setScreenSources([]);
+    try {
+      const sources = await window.electronAPI.getScreenSources();
+      setScreenSources(sources);
+      const firstScreen = sources.find((s: any) => s.isScreen);
+      if (firstScreen) setSelectedSource(firstScreen.id);
+    } catch (err) {
+      console.error('[ScreenShare] Failed to get sources:', err);
+    }
+  };
 
   async function refreshDevices() {
     try {
@@ -663,23 +753,42 @@ export function TerminalForum() {
   const onlineUsersList = onlineUsers.filter(u => u.online);
   const offlineUsersList = onlineUsers.filter(u => !u.online);
 
+  const myUser = onlineUsers.find(u => u.name === nickname);
+  const ALL_PERMISSIONS = ['admin', 'manage_roles', 'manage_rooms', 'kick_users', 'delete_messages'];
+  const myPermissions = new Set<string>();
+  if (myUser) {
+    for (const roleName of myUser.roles) {
+      const role = serverRoles.find(r => r.name === roleName);
+      if (role) {
+        if (role.permissions.includes('admin')) { ALL_PERMISSIONS.forEach(p => myPermissions.add(p)); }
+        else role.permissions.forEach(p => myPermissions.add(p));
+      }
+    }
+  }
+  const hasPermission = (perm: string) => myPermissions.has('admin') || myPermissions.has(perm);
+
   // ── Pinned Server Functions ───────────────────────────────
 
   const connectToPinnedServer = async (server: PinnedServer) => {
     if (server.username && server.password) {
       setConnecting(true);
       setStatus('Connecting...');
+      setNickname(server.username);
+      nicknameRef.current = server.username;
       try {
-        await window.electronAPI.connectChat(server.host, parseInt(server.tcpPort), server.username, server.password, false);
-        await window.electronAPI.startVoice(server.host, parseInt(server.udpPort), server.username);
-        setNickname(server.username);
+        await window.electronAPI.connectChat(server.host, parseInt(server.port), server.username, server.password, false, server.serverPassword);
         setServerIp(server.host);
-        setUdpPort(server.udpPort);
-        setTcpPort(server.tcpPort);
+        setTcpPort(server.port);
         setIsConnected(true);
         setStatus('Connected');
       } catch (err: any) {
-        setStatus(`Failed: ${err.message}`);
+        if (err.message === 'SERVER_PASSWORD_REQUIRED') {
+          setServerPasswordDialog({ host: server.host, port: server.port, username: server.username, password: server.password, isRegister: false, serverId: server.id });
+          setServerPasswordInput('');
+          setStatus('Server kræver password');
+        } else {
+          setStatus(`Failed: ${err.message}`);
+        }
       }
       setConnecting(false);
     } else {
@@ -698,19 +807,25 @@ export function TerminalForum() {
     setConnecting(true);
     setStatus(isRegister ? 'Registering...' : 'Logging in...');
     try {
-      await window.electronAPI.connectChat(server.host, parseInt(server.tcpPort), nickname, password, isRegister);
-      await window.electronAPI.startVoice(server.host, parseInt(server.udpPort), nickname);
+      nicknameRef.current = nickname;
+      await window.electronAPI.connectChat(server.host, parseInt(server.port), nickname, password, isRegister, server.serverPassword);
       setPinnedServers(prev => prev.map(s =>
         s.id === loginDialog ? { ...s, username: nickname, password } : s
       ));
       setServerIp(server.host);
-      setUdpPort(server.udpPort);
-      setTcpPort(server.tcpPort);
+      setTcpPort(server.port);
       setIsConnected(true);
       setStatus('Connected');
       setLoginDialog(null);
     } catch (err: any) {
-      setStatus(`Failed: ${err.message}`);
+      if (err.message === 'SERVER_PASSWORD_REQUIRED') {
+        setLoginDialog(null);
+        setServerPasswordDialog({ host: server.host, port: server.port, username: nickname, password, isRegister, serverId: server.id });
+        setServerPasswordInput('');
+        setStatus('Server kræver password');
+      } else {
+        setStatus(`Failed: ${err.message}`);
+      }
     }
     setConnecting(false);
   };
@@ -721,14 +836,12 @@ export function TerminalForum() {
       id: crypto.randomUUID(),
       name: newServerName.trim(),
       host: newServerHost.trim(),
-      udpPort: newServerUdp || '5000',
-      tcpPort: newServerTcp || '5001',
+      port: newServerPort || '5001',
     }]);
     setAddServerDialog(false);
     setNewServerName('');
     setNewServerHost('');
-    setNewServerUdp('5000');
-    setNewServerTcp('5001');
+    setNewServerPort('5001');
   };
 
   const unpinServer = (serverId: string) => {
@@ -796,6 +909,8 @@ export function TerminalForum() {
     setSelectedVideoFeed(null);
     setCameraUsers(new Set());
     setScreenUsers(new Set());
+    setServerInfo(null);
+    setServerRoles([]);
     stopAudio();
   };
 
@@ -911,7 +1026,7 @@ export function TerminalForum() {
                     </div>
                     <div>
                       <h2 className="text-lg font-bold text-green-400">{server.name}</h2>
-                      <p className="text-xs text-green-700">{server.host}</p>
+                      <p className="text-xs text-green-700">{server.host}:{server.port}</p>
                     </div>
                     <button onClick={() => setLoginDialog(null)} className="ml-auto p-2 text-green-600 hover:text-green-400">
                       <X className="w-5 h-5" />
@@ -980,17 +1095,11 @@ export function TerminalForum() {
                     placeholder="86.52.25.44"
                     className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
                 </div>
-                <div className="flex gap-4">
-                  <div className="flex-1 space-y-2">
-                    <label className="text-xs text-green-700 block">{'>'} UDP PORT</label>
-                    <input type="text" value={newServerUdp} onChange={e => setNewServerUdp(e.target.value)}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
-                  </div>
-                  <div className="flex-1 space-y-2">
-                    <label className="text-xs text-green-700 block">{'>'} TCP PORT</label>
-                    <input type="text" value={newServerTcp} onChange={e => setNewServerTcp(e.target.value)}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
-                  </div>
+                <div className="space-y-2">
+                  <label className="text-xs text-green-700 block">{'>'} PORT</label>
+                  <input type="text" value={newServerPort} onChange={e => setNewServerPort(e.target.value)}
+                    placeholder="5001"
+                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
                 </div>
                 <button onClick={addPinnedServer} disabled={!newServerName.trim() || !newServerHost.trim()}
                   className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
@@ -1025,6 +1134,72 @@ export function TerminalForum() {
             </div>
           );
         })()}
+
+        {/* ── Server Password Dialog ── */}
+        {serverPasswordDialog && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
+              <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Lock className="w-6 h-6 text-green-500" />
+                  <div>
+                    <h2 className="text-lg font-bold text-green-400">SERVER PASSWORD</h2>
+                    <p className="text-xs text-green-700">{serverPasswordDialog.host}:{serverPasswordDialog.port}</p>
+                  </div>
+                </div>
+                <button onClick={() => { setServerPasswordDialog(null); setStatus('Awaiting connection'); }} className="p-2 text-green-600 hover:text-green-400">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                if (!serverPasswordInput.trim()) return;
+                setConnecting(true);
+                setStatus('Connecting med server password...');
+                try {
+                  nicknameRef.current = serverPasswordDialog.username;
+                  await window.electronAPI.connectChat(
+                    serverPasswordDialog.host, parseInt(serverPasswordDialog.port),
+                    serverPasswordDialog.username, serverPasswordDialog.password,
+                    serverPasswordDialog.isRegister, serverPasswordInput
+                  );
+                  if (serverPasswordDialog.serverId) {
+                    setPinnedServers(prev => prev.map(s =>
+                      s.id === serverPasswordDialog!.serverId
+                        ? { ...s, username: serverPasswordDialog!.username, password: serverPasswordDialog!.password, serverPassword: serverPasswordInput }
+                        : s
+                    ));
+                  }
+                  setServerIp(serverPasswordDialog.host);
+                  setTcpPort(serverPasswordDialog.port);
+                  setNickname(serverPasswordDialog.username);
+                  setIsConnected(true);
+                  setStatus('Connected');
+                  setServerPasswordDialog(null);
+                } catch (err: any) {
+                  setStatus(`Failed: ${err.message}`);
+                }
+                setConnecting(false);
+              }} className="p-6 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs text-green-700 block">{'>'} SERVER PASSWORD</label>
+                  <input type="password" value={serverPasswordInput} onChange={e => setServerPasswordInput(e.target.value)}
+                    placeholder="Indtast server password..."
+                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
+                    autoFocus />
+                </div>
+                <button type="submit" disabled={!serverPasswordInput.trim() || connecting}
+                  className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
+                  <LogIn className="w-5 h-5" />
+                  {connecting ? 'FORBINDER...' : 'FORBIND'}
+                </button>
+                <div className="pt-2 text-center">
+                  <span className="text-xs text-green-700">{status}</span>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1251,7 +1426,7 @@ export function TerminalForum() {
                       title={isCameraOn ? 'Sluk kamera' : 'Tænd kamera'}>
                       {isCameraOn ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
                     </button>
-                    <button onClick={() => isScreenSharing ? stopVideoCapture() : setScreenShareDialog(true)}
+                    <button onClick={() => isScreenSharing ? stopVideoCapture() : openScreenShareDialog()}
                       className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         isScreenSharing ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
                       title={isScreenSharing ? 'Stop deling' : 'Del skærm'}>
@@ -1323,7 +1498,7 @@ export function TerminalForum() {
                       title={isCameraOn ? 'Sluk kamera' : 'Tænd kamera'}>
                       {isCameraOn ? <Video className="w-7 h-7" /> : <VideoOff className="w-7 h-7" />}
                     </button>
-                    <button onClick={() => isScreenSharing ? stopVideoCapture() : setScreenShareDialog(true)}
+                    <button onClick={() => isScreenSharing ? stopVideoCapture() : openScreenShareDialog()}
                       className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         isScreenSharing ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
                       title={isScreenSharing ? 'Stop deling' : 'Del skærm'}>
@@ -1394,7 +1569,7 @@ export function TerminalForum() {
                 {currentMessages.map(msg => (
                   <div key={msg.id} className="group"
                     onContextMenu={(e) => {
-                      if (msg.msgId && msg.sender === nickname) {
+                      if (msg.msgId && (msg.sender === nickname || hasPermission('delete_messages'))) {
                         e.preventDefault();
                         setMsgContextMenu({ msgId: msg.msgId, sender: msg.sender, room: currentTextRoom!, x: e.clientX, y: e.clientY });
                       }
@@ -1435,11 +1610,14 @@ export function TerminalForum() {
             {onlineUsersList.map(u => (
               <div key={u.name}
                 className="px-4 py-2.5 flex items-center gap-3 hover:bg-green-900/20 rounded-lg transition-all mb-2"
-                onContextMenu={(e) => { e.preventDefault(); if (u.name !== nickname) setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}>
+                onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}>
                 <Circle className="w-2 h-2 fill-current text-green-500" />
                 <User className="w-4 h-4 text-green-700" />
                 <div className="flex-1 min-w-0">
-                  <span className="text-sm text-green-600 truncate block">{u.name}</span>
+                  <span className="text-sm truncate block" style={{ color: u.roleColor || '#22c55e' }}>{u.name}</span>
+                  {u.roles.length > 0 && (
+                    <span className="text-[10px] text-green-800 truncate block">{u.roles.join(', ')}</span>
+                  )}
                   {u.voiceRoom && (
                     <span className="text-xs text-green-800">🔊 {u.voiceRoom}</span>
                   )}
@@ -1563,20 +1741,30 @@ export function TerminalForum() {
                     </select>
                   </div>
                   <div>
-                    <label className="text-xs text-green-600 block mb-2">Kvalitet</label>
-                    <select value={videoQuality}
-                      onChange={e => { const q = e.target.value as VideoQuality; setVideoQuality(q); videoQualityRef.current = q; }}
+                    <label className="text-xs text-green-600 block mb-2">Opløsning</label>
+                    <select value={videoResolution}
+                      onChange={e => { const r = e.target.value as VideoResolution; setVideoResolution(r); videoResolutionRef.current = r; }}
                       className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      {Object.entries(VIDEO_PRESETS).map(([key, p]) => (
-                        <option key={key} value={key}>{p.label} — {p.frameRate} fps</option>
+                      {Object.entries(VIDEO_RESOLUTIONS).map(([key, r]) => (
+                        <option key={key} value={key}>{r.label} ({r.width}×{r.height})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">FPS</label>
+                    <select value={videoFps}
+                      onChange={e => { const f = parseInt(e.target.value) as VideoFps; setVideoFps(f); videoFpsRef.current = f; }}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      {VIDEO_FPS_OPTIONS.map(f => (
+                        <option key={f} value={f}>{f} fps</option>
                       ))}
                     </select>
                   </div>
                   <div className="text-xs text-green-800 space-y-1">
-                    <div>Opløsning: {VIDEO_PRESETS[videoQuality].width}×{VIDEO_PRESETS[videoQuality].height}</div>
-                    <div>Billedhastighed: {VIDEO_PRESETS[videoQuality].frameRate} fps</div>
+                    <div>Opløsning: {VIDEO_RESOLUTIONS[videoResolution].width}×{VIDEO_RESOLUTIONS[videoResolution].height}</div>
+                    <div>Billedhastighed: {videoFps} fps</div>
                     <div>Codec: H.264 (VP8 fallback)</div>
-                    <div>Bitrate: {VIDEO_PRESETS[videoQuality].bitrate / 1_000_000} Mbps</div>
+                    <div>Bitrate: {(getVideoBitrate(VIDEO_RESOLUTIONS[videoResolution].width, VIDEO_RESOLUTIONS[videoResolution].height, videoFps) / 1_000_000).toFixed(1)} Mbps</div>
                     <div>Transport: TCP (pålidelig)</div>
                   </div>
                 </div>
@@ -1651,11 +1839,14 @@ export function TerminalForum() {
 
       {/* ── User Context Menu ────────────────────────────────── */}
       {userContextMenu && (() => {
-        const menuWidth = 240;
-        const menuHeight = 250;
+        const menuWidth = 280;
+        const menuHeight = 400;
         const x = Math.min(userContextMenu.x, window.innerWidth - menuWidth - 10);
         const y = Math.min(userContextMenu.y, window.innerHeight - menuHeight - 10);
         const setting = getUserSetting(userContextMenu.userId);
+        const targetUser = onlineUsers.find(u => u.name === userContextMenu.userId);
+        const targetRoles = targetUser?.roles || [];
+        const isSelf = userContextMenu.userId === nickname;
         return (
           <div
             className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-3 min-w-[240px] z-50"
@@ -1663,26 +1854,66 @@ export function TerminalForum() {
             onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-3 pb-3 border-b border-green-900/30">
               <User className="w-4 h-4 text-green-500" />
-              <span className="text-sm text-green-400 font-bold">{userContextMenu.userId}</span>
+              <span className="text-sm font-bold" style={{ color: targetUser?.roleColor || '#22c55e' }}>{userContextMenu.userId}</span>
+              {targetRoles.length > 0 && (
+                <span className="text-[10px] text-green-700 ml-auto">{targetRoles.join(', ')}</span>
+              )}
             </div>
-            <div className="mb-3">
-              <div className="flex items-center gap-2 mb-2">
-                <Volume2 className="w-4 h-4 text-green-500" />
-                <span className="text-xs text-green-600">Lydniveau</span>
-                <span className="ml-auto text-xs text-green-500">{setting.volume}%</span>
+            {!isSelf && (
+              <>
+                <div className="mb-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Volume2 className="w-4 h-4 text-green-500" />
+                    <span className="text-xs text-green-600">Lydniveau</span>
+                    <span className="ml-auto text-xs text-green-500">{setting.volume}%</span>
+                  </div>
+                  <input type="range" min="0" max="100" value={setting.volume}
+                    onChange={(e) => updateUserSetting(userContextMenu.userId, { volume: parseInt(e.target.value) })}
+                    className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer"
+                    style={{ background: `linear-gradient(to right, var(--color-green-500) 0%, var(--color-green-500) ${setting.volume}%, var(--color-green-900) ${setting.volume}%, var(--color-green-900) 100%)` }} />
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); updateUserSetting(userContextMenu.userId, { isMuted: !setting.isMuted }); }}
+                  className={`w-full px-4 py-2.5 rounded-lg transition-all flex items-center gap-2 mb-2 ${
+                    setting.isMuted ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-green-900/20 text-green-500 hover:bg-green-900/40'
+                  }`}>
+                  {setting.isMuted ? <><MicOff className="w-4 h-4" /><span className="text-sm">Unmute Bruger</span></> : <><Mic className="w-4 h-4" /><span className="text-sm">Mute Bruger</span></>}
+                </button>
+              </>
+            )}
+            {/* Role management for admins */}
+            {hasPermission('manage_roles') && !isSelf && (
+              <div className="mb-2 pt-2 border-t border-green-900/30">
+                <div className="text-xs text-green-700 mb-2">ROLLER</div>
+                {serverRoles.map(role => {
+                  const has = targetRoles.includes(role.name);
+                  return (
+                    <button key={role.name}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const cmd = has ? 'REMOVE_ROLE' : 'ASSIGN_ROLE';
+                        window.electronAPI.sendChat(`CMD:${cmd}:${userContextMenu.userId}:${role.name}`);
+                      }}
+                      className={`w-full px-3 py-1.5 rounded text-xs flex items-center gap-2 mb-1 transition-all ${
+                        has ? 'bg-green-900/30 text-green-400' : 'text-green-700 hover:bg-green-900/20'
+                      }`}>
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: role.color }} />
+                      <span>{role.name}</span>
+                      {has && <span className="ml-auto text-green-600">✓</span>}
+                    </button>
+                  );
+                })}
               </div>
-              <input type="range" min="0" max="100" value={setting.volume}
-                onChange={(e) => updateUserSetting(userContextMenu.userId, { volume: parseInt(e.target.value) })}
-                className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer"
-                style={{ background: `linear-gradient(to right, var(--color-green-500) 0%, var(--color-green-500) ${setting.volume}%, var(--color-green-900) ${setting.volume}%, var(--color-green-900) 100%)` }} />
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); updateUserSetting(userContextMenu.userId, { isMuted: !setting.isMuted }); }}
-              className={`w-full px-4 py-2.5 rounded-lg transition-all flex items-center gap-2 mb-2 ${
-                setting.isMuted ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-green-900/20 text-green-500 hover:bg-green-900/40'
-              }`}>
-              {setting.isMuted ? <><MicOff className="w-4 h-4" /><span className="text-sm">Unmute Bruger</span></> : <><Mic className="w-4 h-4" /><span className="text-sm">Mute Bruger</span></>}
-            </button>
+            )}
+            {/* Kick for admins */}
+            {hasPermission('kick_users') && !isSelf && (
+              <button
+                onClick={(e) => { e.stopPropagation(); window.electronAPI.sendChat(`CMD:KICK_USER:${userContextMenu.userId}`); setUserContextMenu(null); }}
+                className="w-full px-4 py-2 rounded-lg bg-red-900/20 text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 mb-2">
+                <PhoneOff className="w-4 h-4" />
+                <span className="text-sm">Kick Bruger</span>
+              </button>
+            )}
             <button
               onClick={(e) => { e.stopPropagation(); setUserContextMenu(null); }}
               className="w-full px-4 py-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all flex items-center gap-2 justify-center">
@@ -1713,44 +1944,101 @@ export function TerminalForum() {
       {/* ── Screen Share dialog overlay ────────────────────── */}
       {screenShareDialog && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-[#0d120d] border border-green-900/50 rounded-lg p-6 w-96 shadow-2xl shadow-green-900/30">
-            <h3 className="text-green-400 font-bold mb-5 flex items-center gap-2">
-              <Share2 className="w-5 h-5" />
-              Del Skærm
-            </h3>
-            <div className="space-y-4">
+          <div className="bg-[#0d120d] border border-green-900/50 rounded-lg w-[640px] max-h-[80vh] shadow-2xl shadow-green-900/30 flex flex-col">
+            <div className="p-5 border-b border-green-900/30 flex items-center justify-between">
+              <h3 className="text-green-400 font-bold flex items-center gap-2">
+                <Share2 className="w-5 h-5" />
+                Del Skærm
+              </h3>
+              <button onClick={() => setScreenShareDialog(false)} className="text-green-700 hover:text-green-400 transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex border-b border-green-900/30">
+              <button onClick={() => setSourceTab('screen')}
+                className={`flex-1 py-3 text-sm font-bold transition-all ${sourceTab === 'screen' ? 'text-green-400 border-b-2 border-green-500 bg-green-900/20' : 'text-green-700 hover:text-green-500'}`}>
+                <Monitor className="w-4 h-4 inline mr-2" />
+                Skærme
+              </button>
+              <button onClick={() => setSourceTab('window')}
+                className={`flex-1 py-3 text-sm font-bold transition-all ${sourceTab === 'window' ? 'text-green-400 border-b-2 border-green-500 bg-green-900/20' : 'text-green-700 hover:text-green-500'}`}>
+                <Square className="w-4 h-4 inline mr-2" />
+                Vinduer
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 min-h-[200px]">
+              <div className="grid grid-cols-3 gap-3">
+                {screenSources
+                  .filter(s => sourceTab === 'screen' ? s.isScreen : !s.isScreen)
+                  .map(source => (
+                    <button key={source.id}
+                      onClick={() => setSelectedSource(source.id)}
+                      className={`rounded-lg overflow-hidden border-2 transition-all text-left ${
+                        selectedSource === source.id
+                          ? 'border-green-500 shadow-lg shadow-green-900/50'
+                          : 'border-green-900/30 hover:border-green-700/50'}`}>
+                      <img src={source.thumbnail} alt={source.name}
+                        className="w-full aspect-video object-cover bg-black" />
+                      <div className="px-2 py-1.5 bg-[#0a0e0a] flex items-center gap-1.5">
+                        {source.appIcon && <img src={source.appIcon} className="w-4 h-4" alt="" />}
+                        <span className="text-xs text-green-500 truncate">{source.name}</span>
+                      </div>
+                    </button>
+                  ))}
+              </div>
+              {screenSources.filter(s => sourceTab === 'screen' ? s.isScreen : !s.isScreen).length === 0 && (
+                <div className="text-center text-green-700 py-8 text-sm">
+                  {screenSources.length === 0 ? 'Indlæser kilder...' : sourceTab === 'screen' ? 'Ingen skærme fundet' : 'Ingen vinduer fundet'}
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-green-900/30 space-y-3">
               <div>
-                <label className="text-xs text-green-600 block mb-2">Kvalitet</label>
-                <select value={screenShareQuality}
-                  onChange={e => setScreenShareQuality(e.target.value as ScreenShareQuality)}
-                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2.5 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                  {Object.entries(SCREEN_PRESETS).map(([key, p]) => (
-                    <option key={key} value={key}>{p.label}</option>
+                <label className="text-xs text-green-600 block mb-2">Opløsning</label>
+                <select value={screenShareResolution}
+                  onChange={e => setScreenShareResolution(e.target.value as VideoResolution)}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 transition-all">
+                  {Object.entries(VIDEO_RESOLUTIONS).map(([key, r]) => (
+                    <option key={key} value={key}>{r.label} ({r.width}×{r.height})</option>
                   ))}
                 </select>
-                <div className="text-xs text-green-800 mt-2 space-y-0.5">
-                  <div>Opløsning: maks {SCREEN_PRESETS[screenShareQuality].maxWidth}×{SCREEN_PRESETS[screenShareQuality].maxHeight}</div>
-                  <div>Billedhastighed: {SCREEN_PRESETS[screenShareQuality].frameRate} fps</div>
-                  <div>Bitrate: {SCREEN_PRESETS[screenShareQuality].bitrate / 1_000_000} Mbps</div>
-                </div>
               </div>
-              <label className="flex items-center gap-3 cursor-pointer py-2 px-3 rounded-lg hover:bg-green-900/20 transition-all">
+              <div>
+                <label className="text-xs text-green-600 block mb-2">FPS</label>
+                <select value={screenShareFps}
+                  onChange={e => setScreenShareFps(parseInt(e.target.value) as VideoFps)}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 transition-all">
+                  {VIDEO_FPS_OPTIONS.map(f => (
+                    <option key={f} value={f}>{f} fps</option>
+                  ))}
+                </select>
+                {serverInfo && (
+                  <div className="text-xs text-green-800 mt-1">
+                    Server maks: {serverInfo.maxScreenWidth}×{serverInfo.maxScreenHeight} @ {serverInfo.maxFps}fps
+                  </div>
+                )}
+              </div>
+              <label className="flex items-center gap-3 cursor-pointer py-1 px-3 rounded-lg hover:bg-green-900/20 transition-all">
                 <input type="checkbox" checked={screenShareAudio}
                   onChange={e => setScreenShareAudio(e.target.checked)}
-                  className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50 accent-green-600" />
+                  disabled={platform === 'darwin'}
+                  className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 accent-green-600" />
                 <div>
                   <span className="text-sm text-green-500">Del systemlyd</span>
-                  <span className="block text-xs text-green-800">Inkluder lyd fra din computer</span>
+                  <span className="block text-xs text-green-800">
+                    {platform === 'darwin' ? 'Ikke understøttet på macOS' : 'Inkluder lyd fra din computer'}
+                  </span>
                 </div>
               </label>
             </div>
-            <div className="flex justify-end gap-3 mt-6">
+            <div className="flex justify-end gap-3 p-4 border-t border-green-900/30">
               <button onClick={() => setScreenShareDialog(false)}
                 className="px-5 py-2 text-green-700 hover:text-green-500 transition-colors rounded-lg hover:bg-green-900/20">
                 Annuller
               </button>
               <button onClick={() => startScreenShare()}
-                className="px-5 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg transition-all font-bold flex items-center gap-2">
+                disabled={!selectedSource}
+                className="px-5 py-2 bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:text-green-800 text-green-400 rounded-lg transition-all font-bold flex items-center gap-2">
                 <Share2 className="w-4 h-4" />
                 Start Deling
               </button>

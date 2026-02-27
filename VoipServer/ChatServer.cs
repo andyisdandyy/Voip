@@ -17,16 +17,20 @@ public class ChatServer
     private readonly RoomManager _rooms;
     private readonly ChatHistoryStore _history;
     private readonly UserStore _userStore;
+    private readonly RoleStore _roleStore;
     private readonly Action<string>? _log;
+    private readonly ServerConfig _serverConfig;
     private readonly ConcurrentDictionary<string, byte> _cameraActive = new();
     private readonly ConcurrentDictionary<string, byte> _screenActive = new();
 
-    public ChatServer(int port, RoomManager rooms, ChatHistoryStore history, UserStore userStore, Action<string>? log = null)
+    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, Action<string>? log = null)
     {
-        _listener = new TcpListener(IPAddress.Any, port);
+        _serverConfig = serverConfig;
+        _listener = new TcpListener(IPAddress.Any, serverConfig.TcpPort);
         _rooms = rooms;
         _history = history;
         _userStore = userStore;
+        _roleStore = roleStore;
         _log = log;
     }
 
@@ -73,11 +77,21 @@ public class ChatServer
 
             if (authLine.StartsWith("REGISTER:"))
             {
-                var parts = authLine.Substring(9).Split(':', 2);
+                var parts = authLine.Substring(9).Split(':', 3);
                 if (parts.Length < 2)
                 {
                     await writer.WriteLineAsync("REGISTER_FAIL:Invalid format").ConfigureAwait(false);
                     return;
+                }
+                // Check server password if configured
+                if (!string.IsNullOrEmpty(_serverConfig.ServerPassword))
+                {
+                    var serverPw = parts.Length > 2 ? parts[2] : null;
+                    if (serverPw != _serverConfig.ServerPassword)
+                    {
+                        await writer.WriteLineAsync("REGISTER_FAIL:SERVER_PASSWORD_REQUIRED").ConfigureAwait(false);
+                        return;
+                    }
                 }
                 var (ok, err) = _userStore.Register(parts[0], parts[1]);
                 if (!ok)
@@ -86,15 +100,27 @@ public class ChatServer
                     return;
                 }
                 name = parts[0];
+                var isFirst = _userStore.GetAllUsernames().Count <= 1;
+                _roleStore.EnsureDefaultRole(name, isFirst);
                 await writer.WriteLineAsync("REGISTER_OK").ConfigureAwait(false);
             }
             else if (authLine.StartsWith("AUTH:"))
             {
-                var parts = authLine.Substring(5).Split(':', 2);
+                var parts = authLine.Substring(5).Split(':', 3);
                 if (parts.Length < 2)
                 {
                     await writer.WriteLineAsync("AUTH_FAIL:Invalid format").ConfigureAwait(false);
                     return;
+                }
+                // Check server password if configured
+                if (!string.IsNullOrEmpty(_serverConfig.ServerPassword))
+                {
+                    var serverPw = parts.Length > 2 ? parts[2] : null;
+                    if (serverPw != _serverConfig.ServerPassword)
+                    {
+                        await writer.WriteLineAsync("AUTH_FAIL:SERVER_PASSWORD_REQUIRED").ConfigureAwait(false);
+                        return;
+                    }
                 }
                 var (ok, err) = _userStore.Authenticate(parts[0], parts[1]);
                 if (!ok)
@@ -103,6 +129,7 @@ public class ChatServer
                     return;
                 }
                 name = _userStore.GetDisplayName(parts[0]);
+                _roleStore.EnsureDefaultRole(name, false);
                 await writer.WriteLineAsync("AUTH_OK").ConfigureAwait(false);
             }
             else
@@ -124,8 +151,14 @@ public class ChatServer
             _clients[client] = (writer, name);
             _log?.Invoke($"[Chat] '{name}' authenticated and connected");
 
+            // Send server info so the client can auto-connect voice
+            await SendServerInfoAsync(writer, client).ConfigureAwait(false);
+
             // Send room list
             await SendRoomListAsync(writer).ConfigureAwait(false);
+
+            // Send role definitions
+            await SendRoleListAsync(writer).ConfigureAwait(false);
 
             // Auto-join first non-password text room
             var firstRoom = _rooms.Config.TextRooms.FirstOrDefault(r => string.IsNullOrEmpty(r.Password));
@@ -259,9 +292,101 @@ public class ChatServer
             {
                 var roomName = args[0];
                 var msgId = args[1];
-                if (_history.DeleteMessage(roomName, msgId, name))
+                // Allow delete if owner or has delete_messages permission
+                if (_history.DeleteMessage(roomName, msgId, name) ||
+                    (_roleStore.HasPermission(name, "delete_messages") && _history.DeleteMessageAdmin(roomName, msgId)))
                     await BroadcastToTextRoomAsync(roomName, $"MSG_DELETED:{roomName}:{msgId}").ConfigureAwait(false);
             }
+        }
+        else if (cmd.StartsWith("ASSIGN_ROLE:"))
+        {
+            // ASSIGN_ROLE:<username>:<roleName>
+            var args = cmd.Substring("ASSIGN_ROLE:".Length).Split(':', 2);
+            if (args.Length >= 2 && _roleStore.HasPermission(name, "manage_roles"))
+            {
+                if (_roleStore.AssignRole(args[0], args[1]))
+                {
+                    _log?.Invoke($"[Roles] {name} assigned '{args[1]}' to {args[0]}");
+                    await BroadcastUserListAsync().ConfigureAwait(false);
+                    await BroadcastRoleListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Kunne ikke tildele rolle").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("REMOVE_ROLE:"))
+        {
+            // REMOVE_ROLE:<username>:<roleName>
+            var args = cmd.Substring("REMOVE_ROLE:".Length).Split(':', 2);
+            if (args.Length >= 2 && _roleStore.HasPermission(name, "manage_roles"))
+            {
+                if (_roleStore.RemoveRole(args[0], args[1]))
+                {
+                    _log?.Invoke($"[Roles] {name} removed '{args[1]}' from {args[0]}");
+                    await BroadcastUserListAsync().ConfigureAwait(false);
+                    await BroadcastRoleListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Kunne ikke fjerne rolle").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("CREATE_ROLE:"))
+        {
+            // CREATE_ROLE:<name>:<color>:<priority>:<perm1,perm2,...>
+            var args = cmd.Substring("CREATE_ROLE:".Length).Split(':', 4);
+            if (args.Length >= 4 && _roleStore.HasPermission(name, "manage_roles"))
+            {
+                var perms = args[3].Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (int.TryParse(args[2], out var prio) && _roleStore.CreateRole(args[0], args[1], prio, perms))
+                {
+                    _log?.Invoke($"[Roles] {name} created role '{args[0]}'");
+                    await BroadcastRoleListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Kunne ikke oprette rolle").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("DELETE_ROLE:"))
+        {
+            var roleName = cmd.Substring("DELETE_ROLE:".Length);
+            if (_roleStore.HasPermission(name, "manage_roles"))
+            {
+                if (_roleStore.DeleteRole(roleName))
+                {
+                    _log?.Invoke($"[Roles] {name} deleted role '{roleName}'");
+                    await BroadcastUserListAsync().ConfigureAwait(false);
+                    await BroadcastRoleListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Kan ikke slette denne rolle").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+        }
+        else if (cmd == "KICK_USER" || cmd.StartsWith("KICK_USER:"))
+        {
+            var targetName = cmd.Contains(':') ? cmd.Substring("KICK_USER:".Length) : "";
+            if (!string.IsNullOrEmpty(targetName) && _roleStore.HasPermission(name, "kick_users"))
+            {
+                foreach (var kv in _clients.ToArray())
+                {
+                    if (string.Equals(kv.Value.name, targetName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { await kv.Value.writer.WriteLineAsync("KICKED").ConfigureAwait(false); } catch { }
+                        _clients.TryRemove(kv.Key, out _);
+                        try { kv.Key.Close(); } catch { }
+                        _log?.Invoke($"[Kick] {name} kicked {targetName}");
+                    }
+                }
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
         }
     }
 
@@ -292,13 +417,40 @@ public class ChatServer
         }
     }
 
+    private async Task SendServerInfoAsync(StreamWriter writer, TcpClient client)
+    {
+        // Determine the voice host to advertise to the client
+        var voiceHost = _serverConfig.VoiceHost;
+        // If the server binds to 0.0.0.0, tell the client to use the same IP it connected to
+        if (voiceHost == "0.0.0.0" || string.IsNullOrEmpty(voiceHost))
+        {
+            var localEp = client.Client.LocalEndPoint as IPEndPoint;
+            voiceHost = localEp?.Address.ToString() ?? "127.0.0.1";
+        }
+
+        var info = new
+        {
+            _serverConfig.ServerName,
+            HasPassword = !string.IsNullOrEmpty(_serverConfig.ServerPassword),
+            VoiceHost = voiceHost,
+            _serverConfig.UdpPort,
+            _serverConfig.MaxCameraWidth,
+            _serverConfig.MaxCameraHeight,
+            _serverConfig.MaxScreenWidth,
+            _serverConfig.MaxScreenHeight,
+            _serverConfig.MaxFps,
+        };
+        var json = JsonSerializer.Serialize(info);
+        await writer.WriteLineAsync($"SERVER_INFO:{json}").ConfigureAwait(false);
+    }
+
     private async Task SendRoomListAsync(StreamWriter writer)
     {
         var voiceRooms = _rooms.Config.VoiceRooms.Select(r => new
         {
             r.Name,
             HasPassword = !string.IsNullOrEmpty(r.Password),
-            r.Bitrate
+            r.Bitrate,
         });
         var textRooms = _rooms.Config.TextRooms.Select(r => new
         {
@@ -309,6 +461,37 @@ public class ChatServer
         await writer.WriteLineAsync($"ROOMS:{json}").ConfigureAwait(false);
     }
 
+    private async Task SendRoleListAsync(StreamWriter writer)
+    {
+        var roles = _roleStore.GetRoles().Select(r => new
+        {
+            r.Name,
+            r.Color,
+            r.Priority,
+            r.Permissions,
+        });
+        var json = JsonSerializer.Serialize(roles);
+        await writer.WriteLineAsync($"ROLES:{json}").ConfigureAwait(false);
+    }
+
+    private async Task BroadcastRoleListAsync()
+    {
+        var roles = _roleStore.GetRoles().Select(r => new
+        {
+            r.Name,
+            r.Color,
+            r.Priority,
+            r.Permissions,
+        });
+        var json = JsonSerializer.Serialize(roles);
+        var message = $"ROLES:{json}";
+        foreach (var (writer, _) in _clients.Values)
+        {
+            try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
+            catch { }
+        }
+    }
+
     private async Task BroadcastUserListAsync()
     {
         var onlineNames = new HashSet<string>(_clients.Values.Select(c => c.name), StringComparer.OrdinalIgnoreCase);
@@ -316,11 +499,31 @@ public class ChatServer
 
         var users = new List<object>();
         foreach (var c in _clients.Values)
-            users.Add(new { Name = c.name, VoiceRoom = _rooms.GetVoiceRoom(c.name), Online = true });
+        {
+            var highest = _roleStore.GetHighestRole(c.name);
+            users.Add(new
+            {
+                Name = c.name,
+                VoiceRoom = _rooms.GetVoiceRoom(c.name),
+                Online = true,
+                Roles = _roleStore.GetUserRoleNames(c.name),
+                RoleColor = highest?.Color,
+            });
+        }
         foreach (var name in allNames)
         {
             if (!onlineNames.Contains(name))
-                users.Add(new { Name = name, VoiceRoom = (string?)null, Online = false });
+            {
+                var highest = _roleStore.GetHighestRole(name);
+                users.Add(new
+                {
+                    Name = name,
+                    VoiceRoom = (string?)null,
+                    Online = false,
+                    Roles = _roleStore.GetUserRoleNames(name),
+                    RoleColor = highest?.Color,
+                });
+            }
         }
 
         var json = JsonSerializer.Serialize(users);

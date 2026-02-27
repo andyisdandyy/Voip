@@ -2,8 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // ── TCP Chat ──────────────────────────────────────────────
-  connectChat: (host, port, username, password, isRegister) =>
-    ipcRenderer.invoke('tcp:connect', host, port, username, password, isRegister),
+  connectChat: (host, port, username, password, isRegister, serverPassword) =>
+    ipcRenderer.invoke('tcp:connect', host, port, username, password, isRegister, serverPassword),
 
   sendChat: (message) =>
     ipcRenderer.send('tcp:send', message),
@@ -62,6 +62,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('udp:video', handler);
     return () => ipcRenderer.removeListener('udp:video', handler);
   },
+
+  // ── Screen Source Picker ──────────────────────────────────
+  getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
+  setShareSource: (sourceId, withAudio) => ipcRenderer.invoke('set-share-source', sourceId, withAudio),
 
   // ── Window Controls ───────────────────────────────────────
   minimizeWindow: () => ipcRenderer.send('window:minimize'),

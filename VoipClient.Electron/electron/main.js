@@ -27,6 +27,8 @@ let decoder = null;
 let OpusScript = null;
 let currentBitrate = 96000;
 let keepaliveInterval = null;
+let selectedShareSource = null;
+let shareWithAudio = false;
 
 // ── Window
 
@@ -107,8 +109,20 @@ app.whenReady().then(async () => {
   // Allow getDisplayMedia() in renderer by providing a screen source
   session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
     try {
-      const sources = await desktopCapturer.getSources({ types: ['screen'] });
-      callback({ video: sources[0] });
+      const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+      let source;
+      if (selectedShareSource) {
+        source = sources.find(s => s.id === selectedShareSource) || sources[0];
+      } else {
+        source = sources.find(s => s.id.startsWith('screen:')) || sources[0];
+      }
+      const opts = { video: source };
+      if (shareWithAudio && process.platform === 'win32') {
+        opts.audio = 'loopback';
+      }
+      callback(opts);
+      selectedShareSource = null;
+      shareWithAudio = false;
     } catch {
       callback({});
     }
@@ -140,8 +154,8 @@ app.on('window-all-closed', () => {
 
 function setupIPC() {
   // TCP Chat
-  ipcMain.handle('tcp:connect', async (_event, host, port, username, password, isRegister) => {
-    return connectChat(host, port, username, password, isRegister);
+  ipcMain.handle('tcp:connect', async (_event, host, port, username, password, isRegister, serverPassword) => {
+    return connectChat(host, port, username, password, isRegister, serverPassword);
   });
 
   ipcMain.on('tcp:send', (_event, message) => {
@@ -179,11 +193,38 @@ function setupIPC() {
       try { encoder.setBitrate(br); } catch (e) { console.error('[Opus] setBitrate failed:', e); }
     }
   });
+
+  // Screen source picker
+  ipcMain.handle('get-screen-sources', async () => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 320, height: 180 },
+        fetchWindowIcons: true,
+      });
+      return sources.map(s => ({
+        id: s.id,
+        name: s.name,
+        thumbnail: s.thumbnail.toDataURL(),
+        appIcon: s.appIcon ? s.appIcon.toDataURL() : null,
+        isScreen: s.id.startsWith('screen:'),
+      }));
+    } catch (err) {
+      console.error('[Sources] Failed:', err);
+      return [];
+    }
+  });
+
+  ipcMain.handle('set-share-source', (_event, sourceId, withAudio) => {
+    selectedShareSource = sourceId || null;
+    shareWithAudio = !!withAudio;
+    return true;
+  });
 }
 
 // ── TCP Chat ────────────────────────────────────────────────
 
-function connectChat(host, port, username, password, isRegister) {
+function connectChat(host, port, username, password, isRegister, serverPassword) {
   return new Promise((resolve, reject) => {
     disconnectChat();
 
@@ -198,9 +239,10 @@ function connectChat(host, port, username, password, isRegister) {
 
     tcpSocket.connect(port, host, () => {
       tcpSocket.setNoDelay(true);
-      const cmd = isRegister
-        ? `REGISTER:${username}:${password}`
-        : `AUTH:${username}:${password}`;
+      const prefix = isRegister ? 'REGISTER' : 'AUTH';
+      const cmd = serverPassword
+        ? `${prefix}:${username}:${password}:${serverPassword}`
+        : `${prefix}:${username}:${password}`;
       tcpSocket.write(cmd + '\n');
       console.log(`[TCP] Connected to ${host}:${port}, sent ${isRegister ? 'REGISTER' : 'AUTH'}`);
     });

@@ -13,7 +13,7 @@ using System;
 
 Console.WriteLine("VoIP Server starting...");
 
-var ports = PortsConfig.Load();
+var serverConfig = ServerConfig.Load();
 var roomsConfig = RoomsConfig.Load();
 
 // Simple async file logger
@@ -43,15 +43,18 @@ void Log(string message)
 var roomManager = new RoomManager(roomsConfig, Log);
 var chatHistory = new ChatHistoryStore();
 var userStore = new UserStore();
+var roleStore = new RoleStore();
 
 Log("VoIP Server starting...");
+Log($"Server: '{serverConfig.ServerName}'");
 Log($"Loaded {roomsConfig.VoiceRooms.Count} voice rooms, {roomsConfig.TextRooms.Count} text rooms");
+Log($"Loaded {roleStore.GetRoles().Count} roles");
 
 var chatCts = new CancellationTokenSource();
-_ = Task.Run(() => new ChatServer(ports.TcpPort, roomManager, chatHistory, userStore, Log).StartAsync(chatCts.Token));
-Log($"Chat server started on TCP {ports.TcpPort}");
+_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, Log).StartAsync(chatCts.Token));
+Log($"Chat server started on TCP {serverConfig.TcpPort}");
 
-var udpPort = ports.UdpPort;
+var udpPort = serverConfig.UdpPort;
 var udp = new UdpClient(udpPort);
 udp.Client.ReceiveBufferSize = 2 * 1024 * 1024;
 udp.Client.SendBufferSize = 2 * 1024 * 1024;

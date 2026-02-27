@@ -53,6 +53,19 @@ public class ChatHistoryStore
         return true;
     }
 
+    public bool DeleteMessageAdmin(string room, string id)
+    {
+        if (!_history.TryGetValue(room, out var msgs)) return false;
+        lock (msgs)
+        {
+            var msg = msgs.FirstOrDefault(m => m.Id == id);
+            if (msg == null) return false;
+            msgs.Remove(msg);
+        }
+        Save();
+        return true;
+    }
+
     public List<ChatMessage> GetHistory(string room)
     {
         if (_history.TryGetValue(room, out var msgs))
