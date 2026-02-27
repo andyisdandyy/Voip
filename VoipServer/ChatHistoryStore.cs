@@ -15,6 +15,12 @@ public class ChatMessage
 
 public class ChatHistoryStore
 {
+    private static readonly JsonSerializerOptions _jsonOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true,
+    };
+
     private readonly string _filePath;
     private readonly ConcurrentDictionary<string, List<ChatMessage>> _history = new();
     private readonly object _saveLock = new();
@@ -82,8 +88,7 @@ public class ChatHistoryStore
         {
             if (!File.Exists(_filePath)) return;
             var json = File.ReadAllText(_filePath);
-            var data = JsonSerializer.Deserialize<Dictionary<string, List<ChatMessage>>>(json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            var data = JsonSerializer.Deserialize<Dictionary<string, List<ChatMessage>>>(json, _jsonOpts);
             if (data != null)
                 foreach (var kv in data)
                     _history[kv.Key] = kv.Value;
@@ -103,7 +108,7 @@ public class ChatHistoryStore
                     lock (kv.Value)
                         snapshot[kv.Key] = new List<ChatMessage>(kv.Value);
                 }
-                var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+                var json = JsonSerializer.Serialize(snapshot, _jsonOpts);
                 File.WriteAllText(_filePath, json);
             }
             catch { }

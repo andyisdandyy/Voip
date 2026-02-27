@@ -30,6 +30,11 @@ let keepaliveInterval = null;
 let selectedShareSource = null;
 let shareWithAudio = false;
 const autoConnectSockets = new Map(); // serverId → { socket, reconnectTimer }
+let _audioSendCount = 0;
+let _audioRecvCount = 0;
+let _videoSendCount = 0;
+let _videoRecvCount = 0;
+const AUDIO_TYPE_BYTE = Buffer.from([0x01]);
 
 // ── Window
 
@@ -515,11 +520,6 @@ function startVoice(host, port, username) {
   });
 }
 
-let _audioSendCount = 0;
-let _audioRecvCount = 0;
-let _videoSendCount = 0;
-let _videoRecvCount = 0;
-
 function sendAudio(pcmArrayBuffer) {
   if (!udpSocket || !encoder) return;
 
@@ -531,7 +531,7 @@ function sendAudio(pcmArrayBuffer) {
     }
     const encoded = encoder.encode(pcm, FRAME_SIZE);
     if (encoded && encoded.length > 0) {
-      const packet = Buffer.concat([Buffer.from([0x01]), Buffer.from(encoded)]);
+      const packet = Buffer.concat([AUDIO_TYPE_BYTE, encoded]);
       udpSocket.send(packet, 0, packet.length, udpSocket._voipPort, udpSocket._voipHost);
       if (++_audioSendCount % 250 === 1) console.log(`[Audio] Sent packet #${_audioSendCount} (${encoded.length} bytes opus)`);
     }

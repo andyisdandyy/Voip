@@ -3,7 +3,7 @@ import {
   Terminal, Hash, User, Circle, Mic, MicOff, Headphones,
   Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, Monitor,
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
-  Plus, LogOut, Command, BellRing, Wifi, WifiOff,
+  Plus, LogOut, Command, Wifi, WifiOff,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
@@ -52,6 +52,8 @@ function parseAddress(addr: string): { host: string; port: number } {
   }
   return { host: trimmed, port: 5001 };
 }
+
+const SERVER_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'] as const;
 
 // ── Component ───────────────────────────────────────────────
 
@@ -839,7 +841,6 @@ export function TerminalForum() {
 
   // ── Helpers ───────────────────────────────────────────────
 
-  const SERVER_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
   const getServerColor = (name: string) => {
     let hash = 0;
     for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
@@ -852,8 +853,6 @@ export function TerminalForum() {
     return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   };
 
-  const fmtTime = (d: Date) => d.toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
   const formatKeyBind = (kb: KeyBind) => {
     const parts: string[] = [];
     if (kb.ctrlKey) parts.push('Ctrl');
@@ -865,7 +864,6 @@ export function TerminalForum() {
 
   const currentMessages = currentTextRoom ? (roomMessages[currentTextRoom] || []) : [];
   const usersInRoom = onlineUsers.filter(u => u.online && u.voiceRoom === currentVoiceRoom);
-  const gridCols = usersInRoom.length <= 1 ? 'grid-cols-1' : usersInRoom.length <= 4 ? 'grid-cols-2' : 'grid-cols-3';
   const isVideoMode = isCameraOn || isScreenSharing || cameraUsers.size > 0 || screenUsers.size > 0;
   const onlineUsersList = onlineUsers.filter(u => u.online);
   const offlineUsersList = onlineUsers.filter(u => !u.online);

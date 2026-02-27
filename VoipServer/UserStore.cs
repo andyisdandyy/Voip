@@ -8,6 +8,12 @@ using System.Text.Json;
 
 public class UserStore
 {
+    private static readonly JsonSerializerOptions _jsonOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true,
+    };
+
     private readonly string _filePath;
     private readonly ConcurrentDictionary<string, string> _users = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _saveLock = new();
@@ -69,7 +75,7 @@ public class UserStore
         {
             if (!File.Exists(_filePath)) return;
             var json = File.ReadAllText(_filePath);
-            var data = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+            var data = JsonSerializer.Deserialize<Dictionary<string, string>>(json, _jsonOpts);
             if (data != null)
                 foreach (var kv in data)
                     _users[kv.Key] = kv.Value;
@@ -84,7 +90,7 @@ public class UserStore
             try
             {
                 var snapshot = new Dictionary<string, string>(_users);
-                var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+                var json = JsonSerializer.Serialize(snapshot, _jsonOpts);
                 File.WriteAllText(_filePath, json);
             }
             catch { }
