@@ -801,19 +801,12 @@ export function TerminalForum() {
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
           {isMac ? (
             <>
-              <div className="flex items-center gap-2 px-4 py-3" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-                <button onClick={() => window.electronAPI.closeWindow()}
-                  className="w-3 h-3 rounded-full bg-[#ff5f57] hover:brightness-110 transition-all" title="Luk" />
-                <button onClick={() => window.electronAPI.minimizeWindow()}
-                  className="w-3 h-3 rounded-full bg-[#febc2e] hover:brightness-110 transition-all" title="Minimer" />
-                <button onClick={() => window.electronAPI.fullscreenWindow()}
-                  className="w-3 h-3 rounded-full bg-[#28c840] hover:brightness-110 transition-all" title="Fuldskærm" />
-              </div>
+              <div className="w-[70px]" />
               <div className="flex-1 flex items-center justify-center">
                 <Terminal className="w-4 h-4 shrink-0 mr-2" />
                 <span className="text-xs font-bold">MEICHAT</span>
               </div>
-              <div className="w-[68px]" />
+              <div className="w-[70px]" />
             </>
           ) : (
             <>
@@ -1038,14 +1031,7 @@ export function TerminalForum() {
        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
        {isMac ? (
          <>
-           <div className="flex items-center gap-2 px-4 py-3" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-             <button onClick={() => window.electronAPI.closeWindow()}
-               className="w-3 h-3 rounded-full bg-[#ff5f57] hover:brightness-110 transition-all" title="Luk" />
-             <button onClick={() => window.electronAPI.minimizeWindow()}
-               className="w-3 h-3 rounded-full bg-[#febc2e] hover:brightness-110 transition-all" title="Minimer" />
-             <button onClick={() => window.electronAPI.fullscreenWindow()}
-               className="w-3 h-3 rounded-full bg-[#28c840] hover:brightness-110 transition-all" title="Fuldskærm" />
-           </div>
+           <div className="w-[70px]" />
            <div className="flex-1 flex items-center justify-center min-w-0">
              <Terminal className="w-4 h-4 shrink-0 mr-2" />
              <span className="text-xs font-bold truncate">MEICHAT</span>

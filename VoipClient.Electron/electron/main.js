@@ -18,20 +18,28 @@ let keepaliveInterval = null;
 // ── Window
 
 function createWindow() {
+  const isMac = process.platform === 'darwin';
+
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 750,
     minWidth: 800,
     minHeight: 500,
-    frame: false,
+    ...(isMac
+      ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 12, y: 12 } }
+      : { frame: false, roundedCorners: false }),
     transparent: false,
-    roundedCorners: false,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
     backgroundColor: '#0a0e0a',
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
   });
 
   if (!app.isPackaged) {
