@@ -26,6 +26,13 @@ const VIDEO_PRESETS = {
 type VideoQuality = keyof typeof VIDEO_PRESETS;
 type ThemeColor = 'green' | 'blue' | 'red' | 'purple';
 
+const SCREEN_PRESETS = {
+  low:    { label: 'Lav (720p 15fps)',    maxWidth: 1280, maxHeight: 720,  frameRate: 15, bitrate: 1_500_000 },
+  medium: { label: 'Medium (1080p 15fps)', maxWidth: 1920, maxHeight: 1080, frameRate: 15, bitrate: 3_000_000 },
+  high:   { label: 'Høj (1080p 30fps)',    maxWidth: 1920, maxHeight: 1080, frameRate: 30, bitrate: 6_000_000 },
+} as const;
+type ScreenShareQuality = keyof typeof SCREEN_PRESETS;
+
 // ── Component ───────────────────────────────────────────────
 
 export function TerminalForum() {
@@ -76,6 +83,9 @@ export function TerminalForum() {
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedVideoInput, setSelectedVideoInput] = useState('');
   const [videoQuality, setVideoQuality] = useState<VideoQuality>('high');
+  const [screenShareDialog, setScreenShareDialog] = useState(false);
+  const [screenShareAudio, setScreenShareAudio] = useState(false);
+  const [screenShareQuality, setScreenShareQuality] = useState<ScreenShareQuality>('medium');
   const [theme, setTheme] = useState<ThemeColor>(() => {
     try { return (localStorage.getItem('meichat-theme') as ThemeColor) || 'green'; }
     catch { return 'green'; }
@@ -505,10 +515,12 @@ export function TerminalForum() {
 
   async function startScreenShare() {
     if (captureTypeRef.current !== 'none') stopVideoCapture();
+    setScreenShareDialog(false);
+    const preset = SCREEN_PRESETS[screenShareQuality];
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 15, max: 30 } },
-        audio: false,
+        video: { frameRate: { ideal: preset.frameRate, max: preset.frameRate } },
+        audio: screenShareAudio,
       });
       cameraStreamRef.current = stream;
       const videoEl = document.createElement('video');
@@ -520,16 +532,14 @@ export function TerminalForum() {
       const settings = stream.getVideoTracks()[0]?.getSettings();
       const srcW = settings?.width || 1920;
       const srcH = settings?.height || 1080;
-      // Scale to max 1920x1080 — H.264/VP8 handles this efficiently
-      const maxW = 1920, maxH = 1080;
-      const scale = Math.min(1, maxW / srcW, maxH / srcH);
+      const scale = Math.min(1, preset.maxWidth / srcW, preset.maxHeight / srcH);
       const w = Math.round(srcW * scale);
       const h = Math.round(srcH * scale);
       // Ensure even dimensions (required by H.264)
       const ew = w % 2 === 0 ? w : w - 1;
       const eh = h % 2 === 0 ? h : h - 1;
 
-      const { encoder: enc, codec: codecId } = await createVideoEncoder(ew, eh, 4_000_000, 15);
+      const { encoder: enc, codec: codecId } = await createVideoEncoder(ew, eh, preset.bitrate, preset.frameRate);
       videoEncoderRef.current = enc;
       videoCodecRef.current = codecId;
 
@@ -538,7 +548,7 @@ export function TerminalForum() {
       canvas.height = eh;
       const ctx2 = canvas.getContext('2d')!;
       let frameCount = 0;
-      const keyInterval = 30; // keyframe every ~2s at 15fps
+      const keyInterval = preset.frameRate * 2;
       videoIntervalRef.current = setInterval(() => {
         if (videoEl.readyState >= 2 && enc.state === 'configured') {
           ctx2.drawImage(videoEl, 0, 0, ew, eh);
@@ -547,7 +557,7 @@ export function TerminalForum() {
           frame.close();
           frameCount++;
         }
-      }, Math.round(1000 / 15));
+      }, Math.round(1000 / preset.frameRate));
       stream.getVideoTracks()[0]?.addEventListener('ended', () => stopVideoCapture());
       captureTypeRef.current = 'screen';
       setIsScreenSharing(true);
@@ -1241,7 +1251,7 @@ export function TerminalForum() {
                       title={isCameraOn ? 'Sluk kamera' : 'Tænd kamera'}>
                       {isCameraOn ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
                     </button>
-                    <button onClick={() => isScreenSharing ? stopVideoCapture() : startScreenShare()}
+                    <button onClick={() => isScreenSharing ? stopVideoCapture() : setScreenShareDialog(true)}
                       className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         isScreenSharing ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
                       title={isScreenSharing ? 'Stop deling' : 'Del skærm'}>
@@ -1313,7 +1323,7 @@ export function TerminalForum() {
                       title={isCameraOn ? 'Sluk kamera' : 'Tænd kamera'}>
                       {isCameraOn ? <Video className="w-7 h-7" /> : <VideoOff className="w-7 h-7" />}
                     </button>
-                    <button onClick={() => isScreenSharing ? stopVideoCapture() : startScreenShare()}
+                    <button onClick={() => isScreenSharing ? stopVideoCapture() : setScreenShareDialog(true)}
                       className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         isScreenSharing ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
                       title={isScreenSharing ? 'Stop deling' : 'Del skærm'}>
@@ -1697,6 +1707,55 @@ export function TerminalForum() {
             <Trash2 className="w-4 h-4" />
             <span>Slet besked</span>
           </button>
+        </div>
+      )}
+
+      {/* ── Screen Share dialog overlay ────────────────────── */}
+      {screenShareDialog && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-[#0d120d] border border-green-900/50 rounded-lg p-6 w-96 shadow-2xl shadow-green-900/30">
+            <h3 className="text-green-400 font-bold mb-5 flex items-center gap-2">
+              <Share2 className="w-5 h-5" />
+              Del Skærm
+            </h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Kvalitet</label>
+                <select value={screenShareQuality}
+                  onChange={e => setScreenShareQuality(e.target.value as ScreenShareQuality)}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2.5 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                  {Object.entries(SCREEN_PRESETS).map(([key, p]) => (
+                    <option key={key} value={key}>{p.label}</option>
+                  ))}
+                </select>
+                <div className="text-xs text-green-800 mt-2 space-y-0.5">
+                  <div>Opløsning: maks {SCREEN_PRESETS[screenShareQuality].maxWidth}×{SCREEN_PRESETS[screenShareQuality].maxHeight}</div>
+                  <div>Billedhastighed: {SCREEN_PRESETS[screenShareQuality].frameRate} fps</div>
+                  <div>Bitrate: {SCREEN_PRESETS[screenShareQuality].bitrate / 1_000_000} Mbps</div>
+                </div>
+              </div>
+              <label className="flex items-center gap-3 cursor-pointer py-2 px-3 rounded-lg hover:bg-green-900/20 transition-all">
+                <input type="checkbox" checked={screenShareAudio}
+                  onChange={e => setScreenShareAudio(e.target.checked)}
+                  className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50 accent-green-600" />
+                <div>
+                  <span className="text-sm text-green-500">Del systemlyd</span>
+                  <span className="block text-xs text-green-800">Inkluder lyd fra din computer</span>
+                </div>
+              </label>
+            </div>
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => setScreenShareDialog(false)}
+                className="px-5 py-2 text-green-700 hover:text-green-500 transition-colors rounded-lg hover:bg-green-900/20">
+                Annuller
+              </button>
+              <button onClick={() => startScreenShare()}
+                className="px-5 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg transition-all font-bold flex items-center gap-2">
+                <Share2 className="w-4 h-4" />
+                Start Deling
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

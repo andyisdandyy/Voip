@@ -9,6 +9,14 @@ const FRAME_SIZE = 960;
 // Fix blank/black screen on macOS (Intel GPU compositor issue)
 if (process.platform === 'darwin') {
   app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+  app.commandLine.appendSwitch('disable-gpu-rasterization');
+  app.commandLine.appendSwitch('disable-software-rasterizer');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+  app.commandLine.appendSwitch('disable-features', 'UseSkiaRenderer,CalculateNativeWinOcclusion');
+  app.commandLine.appendSwitch('force-color-profile', 'srgb');
+  app.commandLine.appendSwitch('in-process-gpu');
 }
 
 let mainWindow = null;
@@ -39,16 +47,33 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
+      paintWhenInitiallyHidden: true,
     },
     backgroundColor: '#0a0e0a',
   });
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
+    // Force a resize toggle to kick the compositor on Intel Macs
+    if (process.platform === 'darwin') {
+      const [w, h] = mainWindow.getSize();
+      mainWindow.setSize(w + 1, h + 1);
+      setTimeout(() => { if (mainWindow) mainWindow.setSize(w, h); }, 100);
+    }
   });
 
   // Safety: show window after timeout even if ready-to-show doesn't fire
-  const showTimeout = setTimeout(() => { if (mainWindow && !mainWindow.isVisible()) mainWindow.show(); }, 5000);
+  const showTimeout = setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      mainWindow.show();
+      if (process.platform === 'darwin') {
+        const [w, h] = mainWindow.getSize();
+        mainWindow.setSize(w + 1, h + 1);
+        setTimeout(() => { if (mainWindow) mainWindow.setSize(w, h); }, 100);
+      }
+    }
+  }, 5000);
   mainWindow.once('ready-to-show', () => clearTimeout(showTimeout));
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
@@ -57,6 +82,9 @@ function createWindow() {
 
   if (!app.isPackaged) {
     mainWindow.loadURL('http://127.0.0.1:5173');
+    if (process.platform === 'darwin') {
+      mainWindow.webContents.openDevTools({ mode: 'detach' });
+    }
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
