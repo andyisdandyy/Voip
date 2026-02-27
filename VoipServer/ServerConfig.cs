@@ -21,6 +21,7 @@ public class ServerConfig
     public int MaxScreenWidth { get; set; } = 1920;
     public int MaxScreenHeight { get; set; } = 1080;
     public int MaxFps { get; set; } = 30;
+    public int MaxScreenBitrate { get; set; } = 20000;
     public int DefaultBitrate { get; set; } = 96000;
 
     // ── Load / Save ─────────────────────────────────────────

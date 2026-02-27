@@ -66,6 +66,10 @@ public class ChatServer
         try
         {
             client.NoDelay = true;
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 30);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 10);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
             using var stream = client.GetStream();
             using var reader = new StreamReader(stream, Encoding.UTF8);
             var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
@@ -402,6 +406,20 @@ public class ChatServer
         {
             var id = _history.AddMessage(roomName, name, text);
             await BroadcastToTextRoomAsync(roomName, $"MSG:{roomName}:{id}:{name}:{text}").ConfigureAwait(false);
+
+            // Detect @mentions and notify mentioned users
+            foreach (var kv in _clients)
+            {
+                var targetName = kv.Value.name;
+                if (targetName != name && text.Contains($"@{targetName}", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        await kv.Value.writer.WriteLineAsync($"MENTION:{roomName}:{name}:{text}").ConfigureAwait(false);
+                    }
+                    catch { }
+                }
+            }
         }
         else
             await writer.WriteLineAsync($"ERROR:Not in room '{roomName}'").ConfigureAwait(false);
@@ -439,6 +457,7 @@ public class ChatServer
             _serverConfig.MaxScreenWidth,
             _serverConfig.MaxScreenHeight,
             _serverConfig.MaxFps,
+            _serverConfig.MaxScreenBitrate,
         };
         var json = JsonSerializer.Serialize(info);
         await writer.WriteLineAsync($"SERVER_INFO:{json}").ConfigureAwait(false);

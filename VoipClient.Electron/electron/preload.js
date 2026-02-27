@@ -73,4 +73,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeWindow: () => ipcRenderer.send('window:close'),
   getPlatform: () => ipcRenderer.invoke('get-platform'),
   fullscreenWindow: () => ipcRenderer.send('window:fullscreen'),
+
+  // ── Autoconnect (background mention listener) ─────────────
+  startAutoConnect: (serverId, host, port, username, password, serverPassword) =>
+    ipcRenderer.send('autoconnect:start', serverId, host, port, username, password, serverPassword),
+  stopAutoConnect: (serverId) =>
+    ipcRenderer.send('autoconnect:stop', serverId),
+  onMention: (callback) => {
+    const handler = (_event, serverId, room, sender, text) => callback(serverId, room, sender, text);
+    ipcRenderer.on('autoconnect:mention', handler);
+    return () => ipcRenderer.removeListener('autoconnect:mention', handler);
+  },
 });

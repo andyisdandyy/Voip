@@ -26,6 +26,10 @@ interface ElectronAPI {
   closeWindow: () => void;
   getPlatform: () => Promise<string>;
   fullscreenWindow: () => void;
+
+  startAutoConnect: (serverId: string, host: string, port: number, username: string, password: string, serverPassword?: string) => void;
+  stopAutoConnect: (serverId: string) => void;
+  onMention: (callback: (serverId: string, room: string, sender: string, text: string) => void) => () => void;
 }
 
 declare global {

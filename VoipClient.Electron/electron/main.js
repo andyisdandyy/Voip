@@ -29,6 +29,7 @@ let currentBitrate = 96000;
 let keepaliveInterval = null;
 let selectedShareSource = null;
 let shareWithAudio = false;
+const autoConnectSockets = new Map(); // serverId → { socket, reconnectTimer }
 
 // ── Window
 
@@ -147,6 +148,7 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   disconnectChat();
   stopVoice();
+  stopAllAutoConnect();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -220,6 +222,16 @@ function setupIPC() {
     shareWithAudio = !!withAudio;
     return true;
   });
+
+  // ── Autoconnect (background mention listener) ──────────────
+  ipcMain.on('autoconnect:start', (_event, serverId, host, port, username, password, serverPassword) => {
+    stopAutoConnect(serverId);
+    startAutoConnect(serverId, host, port, username, password, serverPassword);
+  });
+
+  ipcMain.on('autoconnect:stop', (_event, serverId) => {
+    stopAutoConnect(serverId);
+  });
 }
 
 // ── TCP Chat ────────────────────────────────────────────────
@@ -239,6 +251,7 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
 
     tcpSocket.connect(port, host, () => {
       tcpSocket.setNoDelay(true);
+      tcpSocket.setKeepAlive(true, 30000);
       const prefix = isRegister ? 'REGISTER' : 'AUTH';
       const cmd = serverPassword
         ? `${prefix}:${username}:${password}:${serverPassword}`
@@ -311,6 +324,96 @@ function disconnectChat() {
     tcpSocket.destroy();
     tcpSocket = null;
   }
+}
+
+// ── Autoconnect (background mention listener) ───────────────
+
+function startAutoConnect(serverId, host, port, username, password, serverPassword) {
+  const socket = new net.Socket();
+  let buffer = '';
+  let authed = false;
+  let destroyed = false;
+
+  const entry = { socket, reconnectTimer: null };
+  autoConnectSockets.set(serverId, entry);
+
+  const reconnect = () => {
+    if (destroyed) return;
+    entry.reconnectTimer = setTimeout(() => {
+      if (autoConnectSockets.has(serverId)) {
+        startAutoConnect(serverId, host, port, username, password, serverPassword);
+      }
+    }, 15000);
+  };
+
+  socket.connect(port, host, () => {
+    socket.setNoDelay(true);
+    socket.setKeepAlive(true, 30000);
+    const cmd = serverPassword
+      ? `AUTH:${username}:${password}:${serverPassword}`
+      : `AUTH:${username}:${password}`;
+    socket.write(cmd + '\n');
+    console.log(`[AutoConnect:${serverId}] Connected to ${host}:${port}`);
+  });
+
+  socket.on('data', (data) => {
+    buffer += data.toString('utf8');
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/^\uFEFF/, '').replace(/\r$/, '');
+      if (!line) continue;
+
+      if (!authed) {
+        if (line === 'AUTH_OK' || line === 'REGISTER_OK') {
+          authed = true;
+          console.log(`[AutoConnect:${serverId}] Authenticated`);
+        } else if (line.startsWith('AUTH_FAIL:') || line.startsWith('REGISTER_FAIL:')) {
+          console.error(`[AutoConnect:${serverId}] Auth failed: ${line}`);
+          socket.destroy();
+          return;
+        }
+        continue;
+      }
+
+      // Listen for mentions
+      if (line.startsWith('MENTION:')) {
+        // MENTION:<room>:<sender>:<text>
+        const i1 = line.indexOf(':', 8);
+        const i2 = i1 >= 0 ? line.indexOf(':', i1 + 1) : -1;
+        if (i1 >= 0 && i2 >= 0) {
+          const room = line.substring(8, i1);
+          const sender = line.substring(i1 + 1, i2);
+          const text = line.substring(i2 + 1);
+          console.log(`[AutoConnect:${serverId}] Mention from ${sender} in ${room}`);
+          mainWindow?.webContents.send('autoconnect:mention', serverId, room, sender, text);
+        }
+      }
+    }
+  });
+
+  socket.on('error', (err) => {
+    console.error(`[AutoConnect:${serverId}] Error: ${err.message}`);
+  });
+
+  socket.on('close', () => {
+    console.log(`[AutoConnect:${serverId}] Disconnected`);
+    if (!destroyed) reconnect();
+  });
+}
+
+function stopAutoConnect(serverId) {
+  const entry = autoConnectSockets.get(serverId);
+  if (entry) {
+    if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
+    try { entry.socket.destroy(); } catch {}
+    autoConnectSockets.delete(serverId);
+    console.log(`[AutoConnect:${serverId}] Stopped`);
+  }
+}
+
+function stopAllAutoConnect() {
+  for (const [id] of autoConnectSockets) stopAutoConnect(id);
 }
 
 // ── UDP Voice ───────────────────────────────────────────────

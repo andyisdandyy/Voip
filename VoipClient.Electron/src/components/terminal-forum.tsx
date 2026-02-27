@@ -3,7 +3,7 @@ import {
   Terminal, Hash, User, Circle, Mic, MicOff, Headphones,
   Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, Monitor,
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
-  Plus, LogOut,
+  Plus, LogOut, Command, BellRing, Wifi, WifiOff,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
@@ -15,10 +15,11 @@ interface ChatMsg   { id: string; text: string; msgId: string; sender: string }
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean }
-interface PinnedServer { id: string; name: string; host: string; port: string; username?: string; password?: string; serverPassword?: string }
-interface ServerInfo { serverName: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number }
+interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean }
+interface ServerInfo { serverName: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number }
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
+interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
 
 const VIDEO_RESOLUTIONS = {
   '720p':  { label: '720p',  width: 1280, height: 720 },
@@ -39,6 +40,19 @@ function getVideoBitrate(width: number, height: number, fps: number): number {
 
 type ThemeColor = 'green' | 'blue' | 'red' | 'purple';
 
+function parseAddress(addr: string): { host: string; port: number } {
+  const trimmed = addr.trim();
+  const colonIdx = trimmed.lastIndexOf(':');
+  if (colonIdx > 0) {
+    const portStr = trimmed.substring(colonIdx + 1);
+    const port = parseInt(portStr);
+    if (!isNaN(port) && port > 0 && port <= 65535 && /^\d+$/.test(portStr)) {
+      return { host: trimmed.substring(0, colonIdx), port };
+    }
+  }
+  return { host: trimmed, port: 5001 };
+}
+
 // ── Component ───────────────────────────────────────────────
 
 export function TerminalForum() {
@@ -50,6 +64,7 @@ export function TerminalForum() {
   const [status, setStatus]           = useState('Awaiting connection');
   const [connecting, setConnecting]   = useState(false);
   const [serverInfo, setServerInfo]   = useState<ServerInfo | null>(null);
+  const [connectedServerId, setConnectedServerId] = useState<string | null>(null);
 
   // Rooms (from server)
   const [voiceRooms, setVoiceRooms]       = useState<VoiceRoom[]>([]);
@@ -95,7 +110,8 @@ export function TerminalForum() {
   const [screenShareAudio, setScreenShareAudio] = useState(false);
   const [screenShareResolution, setScreenShareResolution] = useState<VideoResolution>('1080p');
   const [screenShareFps, setScreenShareFps] = useState<VideoFps>(30);
-  const [serverPasswordDialog, setServerPasswordDialog] = useState<{ host: string; port: string; username: string; password: string; isRegister: boolean; serverId?: string } | null>(null);
+  const [screenShareBitrate, setScreenShareBitrate] = useState(10000);
+  const [serverPasswordDialog, setServerPasswordDialog] = useState<{ address: string; username: string; password: string; isRegister: boolean; serverId?: string } | null>(null);
   const [serverPasswordInput, setServerPasswordInput] = useState('');
   const [screenSources, setScreenSources] = useState<Array<{id: string; name: string; thumbnail: string; appIcon: string | null; isScreen: boolean}>>([]);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
@@ -107,16 +123,25 @@ export function TerminalForum() {
   const [pinnedServers, setPinnedServers] = useState<PinnedServer[]>(() => {
     try {
       const raw = JSON.parse(localStorage.getItem('meichat-pinned-servers') || '[]');
-      return raw.map((s: any) => ({ ...s, port: s.port || s.tcpPort || '5001' }));
+      return raw.map((s: any) => ({
+        id: s.id, name: s.name,
+        address: s.address || `${s.host || '127.0.0.1'}:${s.port || s.tcpPort || '5001'}`,
+        username: s.username, password: s.password, serverPassword: s.serverPassword,
+      }));
     } catch { return []; }
   });
   const [loginDialog, setLoginDialog] = useState<string | null>(null);
   const [serverContextMenu, setServerContextMenu] = useState<ServerContextMenu | null>(null);
   const [addServerDialog, setAddServerDialog] = useState(false);
   const [newServerName, setNewServerName] = useState('');
-  const [newServerHost, setNewServerHost] = useState('');
-  const [newServerPort, setNewServerPort] = useState('5001');
+  const [newServerAddress, setNewServerAddress] = useState('');
   const [platform, setPlatform] = useState<string>('win32');
+  const [keybinds, setKeybinds] = useState<Record<string, KeyBind | null>>(() => {
+    try { return JSON.parse(localStorage.getItem('meichat-keybinds') || '{}'); }
+    catch { return {}; }
+  });
+  const [recordingKeybind, setRecordingKeybind] = useState<string | null>(null);
+  const [serverMentions, setServerMentions] = useState<Record<string, number>>({});
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -149,6 +174,8 @@ export function TerminalForum() {
   const decoderTsRef = useRef<Record<string, number>>({});
   const gotKeyframeRef = useRef<Record<string, boolean>>({});
   const systemAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const connectedHostRef = useRef('');
+  const keybindsRef = useRef<Record<string, KeyBind | null>>({});
 
   // Settings
   const [showSettings, setShowSettings] = useState(false);
@@ -166,6 +193,7 @@ export function TerminalForum() {
   useEffect(() => { try { localStorage.setItem('meichat-theme', theme); } catch {} }, [theme]);
   useEffect(() => { window.electronAPI.getPlatform().then(p => setPlatform(p)); }, []);
   useEffect(() => { try { localStorage.setItem('meichat-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
+  useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('meichat-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
 
   useEffect(() => {
     const handleClick = () => { setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); };
@@ -174,6 +202,38 @@ export function TerminalForum() {
       return () => document.removeEventListener('click', handleClick);
     }
   }, [userContextMenu, msgContextMenu, serverContextMenu]);
+
+  // Keybind recording
+  useEffect(() => {
+    if (!recordingKeybind) return;
+    const handler = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Escape') { setRecordingKeybind(null); return; }
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+      setKeybinds(prev => ({ ...prev, [recordingKeybind]: { key: e.key, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey } }));
+      setRecordingKeybind(null);
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [recordingKeybind]);
+
+  // Global keybind handler
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+      for (const [action, bind] of Object.entries(keybindsRef.current)) {
+        if (!bind) continue;
+        if (e.key === bind.key && e.ctrlKey === bind.ctrlKey && e.shiftKey === bind.shiftKey && e.altKey === bind.altKey) {
+          e.preventDefault();
+          if (action === 'toggleMute') setIsMuted(m => !m);
+          else if (action === 'toggleDeafen') setIsDeafened(d => !d);
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   const getUserSetting = (name: string): UserSetting =>
     perUserSettings[name] || { name, volume: 100, isMuted: false };
@@ -200,10 +260,14 @@ export function TerminalForum() {
           maxScreenWidth: d.MaxScreenWidth || 1920,
           maxScreenHeight: d.MaxScreenHeight || 1080,
           maxFps: d.MaxFps || 30,
+          maxScreenBitrate: d.MaxScreenBitrate ? d.MaxScreenBitrate * 1000 : 20_000_000,
         });
-        const voiceHost = d.VoiceHost || '';
+        // Use the same host the client connected to via TCP — the server may
+        // report a private/local IP via LocalEndPoint that is unreachable.
+        const voiceHost = connectedHostRef.current || d.VoiceHost || '';
         const udpPort = d.UdpPort || 5000;
         if (voiceHost && udpPort) {
+          console.log(`[Voice] Connecting UDP to ${voiceHost}:${udpPort} (server said: ${d.VoiceHost})`);
           window.electronAPI.startVoice(voiceHost, udpPort, nicknameRef.current).catch(err => {
             console.error('[Voice] Auto-start failed:', err);
           });
@@ -320,6 +384,15 @@ export function TerminalForum() {
       if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
       delete decoderTsRef.current[user];
       delete gotKeyframeRef.current[user];
+    } else if (line.startsWith('MENTION:')) {
+      // MENTION:<room>:<sender>:<text>
+      const i1 = line.indexOf(':', 8);
+      const i2 = i1 >= 0 ? line.indexOf(':', i1 + 1) : -1;
+      if (i1 >= 0 && i2 >= 0) {
+        const room = line.substring(8, i1);
+        const sender = line.substring(i1 + 1, i2);
+        new Notification(`@${sender} i #${room}`, { body: line.substring(i2 + 1).substring(0, 100) });
+      }
     }
   }, []);
 
@@ -328,9 +401,10 @@ export function TerminalForum() {
   useEffect(() => {
     const unsubs = [
       window.electronAPI.onChatMessage(handleServerMessage),
-      window.electronAPI.onChatError((msg) => { setStatus(`Error: ${msg}`); setIsConnected(false); }),
+      window.electronAPI.onChatError((msg) => { setStatus(`Error: ${msg}`); setIsConnected(false); setConnectedServerId(null); }),
       window.electronAPI.onChatDisconnected(() => {
         setIsConnected(false);
+        setConnectedServerId(null);
         setCurrentVoice(null);
         setStatus('Disconnected');
         stopAudio();
@@ -392,6 +466,34 @@ export function TerminalForum() {
     ];
     return () => unsubs.forEach(fn => fn());
   }, [handleServerMessage]);
+
+  // ── Autoconnect background mention listeners ──────────────
+
+  useEffect(() => {
+    const unsub = window.electronAPI.onMention((serverId, room, sender, text) => {
+      setServerMentions(prev => ({ ...prev, [serverId]: (prev[serverId] || 0) + 1 }));
+      const server = pinnedServers.find(s => s.id === serverId);
+      const title = server ? server.name : 'MeiChat';
+      new Notification(`${title} — @${sender} i #${room}`, { body: text.substring(0, 100) });
+    });
+    return unsub;
+  }, [pinnedServers]);
+
+  useEffect(() => {
+    for (const server of pinnedServers) {
+      // Never autoconnect to the server we're fully connected to — same username would kick us
+      if (isConnected && server.id === connectedServerId) {
+        window.electronAPI.stopAutoConnect(server.id);
+        continue;
+      }
+      if (server.autoConnect && server.username && server.password) {
+        const { host, port } = parseAddress(server.address);
+        window.electronAPI.startAutoConnect(server.id, host, port, server.username, server.password, server.serverPassword);
+      } else {
+        window.electronAPI.stopAutoConnect(server.id);
+      }
+    }
+  }, [pinnedServers, isConnected, connectedServerId]);
 
   // ── Audio lifecycle (tied to currentVoiceRoom) ────────────
 
@@ -549,9 +651,11 @@ export function TerminalForum() {
       canvas.height = capH;
       const ctx = canvas.getContext('2d')!;
       let frameCount = 0;
+      let lastTime = -1;
       const keyInterval = capFps * 2;
       videoIntervalRef.current = setInterval(() => {
-        if (videoEl.readyState >= 2 && enc.state === 'configured') {
+        if (videoEl.readyState >= 2 && enc.state === 'configured' && videoEl.currentTime !== lastTime) {
+          lastTime = videoEl.currentTime;
           ctx.drawImage(videoEl, 0, 0, capW, capH);
           const frame = new VideoFrame(canvas, { timestamp: performance.now() * 1000 });
           enc.encode(frame, { keyFrame: frameCount % keyInterval === 0 });
@@ -610,7 +714,9 @@ export function TerminalForum() {
       const ew = w % 2 === 0 ? w : w - 1;
       const eh = h % 2 === 0 ? h : h - 1;
 
-      const { encoder: enc, codec: codecId } = await createVideoEncoder(ew, eh, getVideoBitrate(ew, eh, capFps), capFps);
+      const { encoder: enc, codec: codecId } = await createVideoEncoder(ew, eh,
+        Math.min(screenShareBitrate * 1000, serverInfo?.maxScreenBitrate || 20_000_000),
+        capFps);
       videoEncoderRef.current = enc;
       videoCodecRef.current = codecId;
 
@@ -619,9 +725,11 @@ export function TerminalForum() {
       canvas.height = eh;
       const ctx2 = canvas.getContext('2d')!;
       let frameCount = 0;
+      let lastTime = -1;
       const keyInterval = capFps * 2;
       videoIntervalRef.current = setInterval(() => {
-        if (videoEl.readyState >= 2 && enc.state === 'configured') {
+        if (videoEl.readyState >= 2 && enc.state === 'configured' && videoEl.currentTime !== lastTime) {
+          lastTime = videoEl.currentTime;
           ctx2.drawImage(videoEl, 0, 0, ew, eh);
           const frame = new VideoFrame(canvas, { timestamp: performance.now() * 1000 });
           enc.encode(frame, { keyFrame: frameCount % keyInterval === 0 });
@@ -746,6 +854,15 @@ export function TerminalForum() {
 
   const fmtTime = (d: Date) => d.toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+  const formatKeyBind = (kb: KeyBind) => {
+    const parts: string[] = [];
+    if (kb.ctrlKey) parts.push('Ctrl');
+    if (kb.shiftKey) parts.push('Shift');
+    if (kb.altKey) parts.push('Alt');
+    parts.push(kb.key.length === 1 ? kb.key.toUpperCase() : kb.key);
+    return parts.join('+');
+  };
+
   const currentMessages = currentTextRoom ? (roomMessages[currentTextRoom] || []) : [];
   const usersInRoom = onlineUsers.filter(u => u.online && u.voiceRoom === currentVoiceRoom);
   const gridCols = usersInRoom.length <= 1 ? 'grid-cols-1' : usersInRoom.length <= 4 ? 'grid-cols-2' : 'grid-cols-3';
@@ -771,19 +888,24 @@ export function TerminalForum() {
 
   const connectToPinnedServer = async (server: PinnedServer) => {
     if (server.username && server.password) {
+      const { host, port } = parseAddress(server.address);
+      // Stop background autoconnect while fully connected
+      window.electronAPI.stopAutoConnect(server.id);
       setConnecting(true);
       setStatus('Connecting...');
       setNickname(server.username);
       nicknameRef.current = server.username;
+      connectedHostRef.current = host;
       try {
-        await window.electronAPI.connectChat(server.host, parseInt(server.port), server.username, server.password, false, server.serverPassword);
-        setServerIp(server.host);
-        setTcpPort(server.port);
+        await window.electronAPI.connectChat(host, port, server.username, server.password, false, server.serverPassword);
+        setServerIp(host);
+        setTcpPort(String(port));
+        setConnectedServerId(server.id);
         setIsConnected(true);
         setStatus('Connected');
       } catch (err: any) {
         if (err.message === 'SERVER_PASSWORD_REQUIRED') {
-          setServerPasswordDialog({ host: server.host, port: server.port, username: server.username, password: server.password, isRegister: false, serverId: server.id });
+          setServerPasswordDialog({ address: server.address, username: server.username, password: server.password, isRegister: false, serverId: server.id });
           setServerPasswordInput('');
           setStatus('Server kræver password');
         } else {
@@ -806,21 +928,24 @@ export function TerminalForum() {
     if (!server) return;
     setConnecting(true);
     setStatus(isRegister ? 'Registering...' : 'Logging in...');
+    const { host, port } = parseAddress(server.address);
     try {
       nicknameRef.current = nickname;
-      await window.electronAPI.connectChat(server.host, parseInt(server.port), nickname, password, isRegister, server.serverPassword);
+      connectedHostRef.current = host;
+      await window.electronAPI.connectChat(host, port, nickname, password, isRegister, server.serverPassword);
       setPinnedServers(prev => prev.map(s =>
         s.id === loginDialog ? { ...s, username: nickname, password } : s
       ));
-      setServerIp(server.host);
-      setTcpPort(server.port);
+      setServerIp(host);
+      setTcpPort(String(port));
+      setConnectedServerId(loginDialog);
       setIsConnected(true);
       setStatus('Connected');
       setLoginDialog(null);
     } catch (err: any) {
       if (err.message === 'SERVER_PASSWORD_REQUIRED') {
         setLoginDialog(null);
-        setServerPasswordDialog({ host: server.host, port: server.port, username: nickname, password, isRegister, serverId: server.id });
+        setServerPasswordDialog({ address: server.address, username: nickname, password, isRegister, serverId: server.id });
         setServerPasswordInput('');
         setStatus('Server kræver password');
       } else {
@@ -831,17 +956,15 @@ export function TerminalForum() {
   };
 
   const addPinnedServer = () => {
-    if (!newServerName.trim() || !newServerHost.trim()) return;
+    if (!newServerName.trim() || !newServerAddress.trim()) return;
     setPinnedServers(prev => [...prev, {
       id: crypto.randomUUID(),
       name: newServerName.trim(),
-      host: newServerHost.trim(),
-      port: newServerPort || '5001',
+      address: newServerAddress.trim(),
     }]);
     setAddServerDialog(false);
     setNewServerName('');
-    setNewServerHost('');
-    setNewServerPort('5001');
+    setNewServerAddress('');
   };
 
   const unpinServer = (serverId: string) => {
@@ -852,6 +975,13 @@ export function TerminalForum() {
   const logoutServer = (serverId: string) => {
     setPinnedServers(prev => prev.map(s =>
       s.id === serverId ? { ...s, username: undefined, password: undefined } : s
+    ));
+    setServerContextMenu(null);
+  };
+
+  const toggleAutoConnect = (serverId: string) => {
+    setPinnedServers(prev => prev.map(s =>
+      s.id === serverId ? { ...s, autoConnect: !s.autoConnect } : s
     ));
     setServerContextMenu(null);
   };
@@ -897,6 +1027,7 @@ export function TerminalForum() {
     window.electronAPI.stopVoice();
     window.electronAPI.disconnectChat();
     setIsConnected(false);
+    setConnectedServerId(null);
     setCurrentVoice(null);
     setCurrentText(null);
     setJoinedText(new Set());
@@ -971,15 +1102,29 @@ export function TerminalForum() {
             <div className="mb-10">
               <div className="text-xs text-green-700 mb-6 text-center tracking-widest">DINE SERVERE</div>
               <div className="flex flex-wrap justify-center gap-6">
-                {pinnedServers.map(server => (
+                {pinnedServers.map(server => {
+                  const mentions = serverMentions[server.id] || 0;
+                  return (
                   <button key={server.id}
-                    onClick={() => connectToPinnedServer(server)}
+                    onClick={() => { setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; }); connectToPinnedServer(server); }}
                     onContextMenu={(e) => { e.preventDefault(); setServerContextMenu({ serverId: server.id, x: e.clientX, y: e.clientY }); }}
                     disabled={connecting}
                     className="group flex flex-col items-center gap-2 transition-all disabled:opacity-50">
-                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-white text-xl font-bold shadow-lg transition-all group-hover:rounded-xl group-hover:shadow-xl group-hover:scale-105"
-                      style={{ backgroundColor: getServerColor(server.name) }}>
-                      {server.name.charAt(0).toUpperCase()}
+                    <div className="relative">
+                      <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-white text-xl font-bold shadow-lg transition-all group-hover:rounded-xl group-hover:shadow-xl group-hover:scale-105"
+                        style={{ backgroundColor: getServerColor(server.name) }}>
+                        {server.name.charAt(0).toUpperCase()}
+                      </div>
+                      {mentions > 0 && (
+                        <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shadow-lg animate-pulse">
+                          {mentions > 9 ? '9+' : mentions}
+                        </div>
+                      )}
+                      {server.autoConnect && server.username && (
+                        <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Autoconnect aktiv">
+                          <Wifi className="w-2 h-2 text-white" />
+                        </div>
+                      )}
                     </div>
                     <span className="text-xs text-green-600 group-hover:text-green-400 transition-colors max-w-[80px] truncate">{server.name}</span>
                     {server.username ? (
@@ -991,7 +1136,8 @@ export function TerminalForum() {
                       <span className="text-[10px] text-green-800">Ikke logget ind</span>
                     )}
                   </button>
-                ))}
+                  );
+                })}
                 {/* Add Server Button */}
                 <button onClick={() => setAddServerDialog(true)}
                   className="group flex flex-col items-center gap-2 transition-all">
@@ -1026,7 +1172,7 @@ export function TerminalForum() {
                     </div>
                     <div>
                       <h2 className="text-lg font-bold text-green-400">{server.name}</h2>
-                      <p className="text-xs text-green-700">{server.host}:{server.port}</p>
+                      <p className="text-xs text-green-700">{server.address}</p>
                     </div>
                     <button onClick={() => setLoginDialog(null)} className="ml-auto p-2 text-green-600 hover:text-green-400">
                       <X className="w-5 h-5" />
@@ -1090,18 +1236,13 @@ export function TerminalForum() {
                     autoFocus />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs text-green-700 block">{'>'} HOST / IP</label>
-                  <input type="text" value={newServerHost} onChange={e => setNewServerHost(e.target.value)}
-                    placeholder="86.52.25.44"
+                  <label className="text-xs text-green-700 block">{'>'} ADRESSE</label>
+                  <input type="text" value={newServerAddress} onChange={e => setNewServerAddress(e.target.value)}
+                    placeholder="86.52.25.44:5001 eller minserver.dk"
                     className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                  <span className="text-[10px] text-green-800">Port 5001 bruges som standard hvis ingen port angives</span>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs text-green-700 block">{'>'} PORT</label>
-                  <input type="text" value={newServerPort} onChange={e => setNewServerPort(e.target.value)}
-                    placeholder="5001"
-                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
-                </div>
-                <button onClick={addPinnedServer} disabled={!newServerName.trim() || !newServerHost.trim()}
+                <button onClick={addPinnedServer} disabled={!newServerName.trim() || !newServerAddress.trim()}
                   className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
                   <Plus className="w-5 h-5" />
                   TILFØJ SERVER
@@ -1117,8 +1258,15 @@ export function TerminalForum() {
           if (!server) return null;
           return (
             <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[180px] z-50"
-              style={{ left: Math.min(serverContextMenu.x, window.innerWidth - 200), top: Math.min(serverContextMenu.y, window.innerHeight - 120) }}
+              style={{ left: Math.min(serverContextMenu.x, window.innerWidth - 200), top: Math.min(serverContextMenu.y, window.innerHeight - 150) }}
               onClick={e => e.stopPropagation()}>
+              {server.username && (
+                <button onClick={() => toggleAutoConnect(server.id)}
+                  className="w-full px-4 py-2.5 rounded-lg text-green-400 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
+                  {server.autoConnect ? <WifiOff className="w-4 h-4" /> : <Wifi className="w-4 h-4" />}
+                  <span>{server.autoConnect ? 'Slå autoconnect fra' : 'Slå autoconnect til'}</span>
+                </button>
+              )}
               {server.username && (
                 <button onClick={() => logoutServer(server.id)}
                   className="w-full px-4 py-2.5 rounded-lg text-yellow-400 hover:bg-yellow-900/30 transition-all flex items-center gap-2 text-sm">
@@ -1144,7 +1292,7 @@ export function TerminalForum() {
                   <Lock className="w-6 h-6 text-green-500" />
                   <div>
                     <h2 className="text-lg font-bold text-green-400">SERVER PASSWORD</h2>
-                    <p className="text-xs text-green-700">{serverPasswordDialog.host}:{serverPasswordDialog.port}</p>
+                    <p className="text-xs text-green-700">{serverPasswordDialog.address}</p>
                   </div>
                 </div>
                 <button onClick={() => { setServerPasswordDialog(null); setStatus('Awaiting connection'); }} className="p-2 text-green-600 hover:text-green-400">
@@ -1154,12 +1302,14 @@ export function TerminalForum() {
               <form onSubmit={async (e) => {
                 e.preventDefault();
                 if (!serverPasswordInput.trim()) return;
+                const { host, port } = parseAddress(serverPasswordDialog.address);
                 setConnecting(true);
                 setStatus('Connecting med server password...');
                 try {
                   nicknameRef.current = serverPasswordDialog.username;
+                  connectedHostRef.current = host;
                   await window.electronAPI.connectChat(
-                    serverPasswordDialog.host, parseInt(serverPasswordDialog.port),
+                    host, port,
                     serverPasswordDialog.username, serverPasswordDialog.password,
                     serverPasswordDialog.isRegister, serverPasswordInput
                   );
@@ -1170,9 +1320,10 @@ export function TerminalForum() {
                         : s
                     ));
                   }
-                  setServerIp(serverPasswordDialog.host);
-                  setTcpPort(serverPasswordDialog.port);
+                  setServerIp(host);
+                  setTcpPort(String(port));
                   setNickname(serverPasswordDialog.username);
+                  setConnectedServerId(serverPasswordDialog.serverId || null);
                   setIsConnected(true);
                   setStatus('Connected');
                   setServerPasswordDialog(null);
@@ -1365,22 +1516,23 @@ export function TerminalForum() {
               {isVideoMode ? (
                 /* ── Video Grid Mode ─────────────────────── */
                 <div className="flex-1 flex flex-col p-4">
-                  <div className={`flex-1 grid gap-4 mb-4 ${
+                  <div className={`flex-1 ${selectedVideoFeed ? '' : `grid gap-4 ${
                     usersInRoom.length === 1 ? 'grid-cols-1' :
                     usersInRoom.length === 2 ? 'grid-cols-2' :
                     usersInRoom.length <= 4 ? 'grid-cols-2 grid-rows-2' :
                     usersInRoom.length <= 6 ? 'grid-cols-3 grid-rows-2' :
                     'grid-cols-3 grid-rows-3'
-                  }`}>
+                  }`} mb-4`}>
                     {usersInRoom.map(u => {
                       const isLocal = u.name === nickname;
                       const isSelected = selectedVideoFeed === u.name;
+                      if (selectedVideoFeed && !isSelected) return null;
                       return (
                         <div key={u.name}
                           onClick={() => setSelectedVideoFeed(isSelected ? null : u.name)}
                           className={`relative bg-[#0a0e0a] rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${
                             isSelected
-                              ? 'col-span-2 row-span-2 border-green-500 shadow-lg shadow-green-900/50'
+                              ? 'h-full border-green-500 shadow-lg shadow-green-900/50'
                               : 'border-green-900/30 hover:border-green-700/50'
                           }`}>
                           <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-green-950/50 to-green-900/30">
@@ -1820,6 +1972,46 @@ export function TerminalForum() {
                   </label>
                 </div>
               </div>
+
+              {/* Keybind Settings */}
+              <div className="pt-4 border-t border-green-900/30">
+                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                  <Command className="w-4 h-4" />
+                  GENVEJSTASTER
+                </h3>
+                <div className="space-y-3 pl-6">
+                  {(['toggleMute', 'toggleDeafen'] as const).map(action => {
+                    const labels: Record<string, string> = { toggleMute: 'Mute / Unmute', toggleDeafen: 'Deafen / Undeafen' };
+                    const bind = keybinds[action];
+                    const isRecording = recordingKeybind === action;
+                    return (
+                      <div key={action} className="flex items-center justify-between">
+                        <span className="text-sm text-green-500">{labels[action]}</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setRecordingKeybind(isRecording ? null : action)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-mono transition-all min-w-[120px] text-center ${
+                              isRecording
+                                ? 'bg-green-900/40 border-2 border-green-500 text-green-400 animate-pulse'
+                                : bind
+                                  ? 'bg-[#0a0e0a] border border-green-900/50 text-green-500 hover:border-green-700'
+                                  : 'bg-[#0a0e0a] border border-green-900/50 text-green-800 hover:border-green-700'
+                            }`}>
+                            {isRecording ? 'Tryk en tast...' : bind ? formatKeyBind(bind) : 'Ikke sat'}
+                          </button>
+                          {bind && !isRecording && (
+                            <button onClick={() => setKeybinds(prev => ({ ...prev, [action]: null }))}
+                              className="p-1 text-green-800 hover:text-red-400 transition-colors">
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <p className="text-[10px] text-green-800 pt-2">Klik på feltet og tryk den ønskede tast. Tryk Escape for at annullere.</p>
+                </div>
+              </div>
             </div>
 
             {/* Footer */}
@@ -2017,6 +2209,20 @@ export function TerminalForum() {
                     Server maks: {serverInfo.maxScreenWidth}×{serverInfo.maxScreenHeight} @ {serverInfo.maxFps}fps
                   </div>
                 )}
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs text-green-600">Bitrate</label>
+                  <span className="text-xs text-green-500 font-mono">{screenShareBitrate} Kbps</span>
+                </div>
+                <input type="range" min="500" max={serverInfo ? Math.round(serverInfo.maxScreenBitrate / 1000) : 20000} step="500"
+                  value={screenShareBitrate}
+                  onChange={e => setScreenShareBitrate(parseInt(e.target.value))}
+                  className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
+                <div className="flex justify-between text-[10px] text-green-800 mt-1">
+                  <span>500 Kbps</span>
+                  <span>{serverInfo ? Math.round(serverInfo.maxScreenBitrate / 1000) : 20000} Kbps (maks)</span>
+                </div>
               </div>
               <label className="flex items-center gap-3 cursor-pointer py-1 px-3 rounded-lg hover:bg-green-900/20 transition-all">
                 <input type="checkbox" checked={screenShareAudio}
