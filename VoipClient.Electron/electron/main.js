@@ -6,17 +6,17 @@ const dgram = require('dgram');
 const SAMPLE_RATE = 48000;
 const FRAME_SIZE = 960;
 
-// Fix blank/black screen on macOS (Intel GPU compositor issue)
+// Fix blank/black screen on macOS Intel (GPU compositor issue)
 if (process.platform === 'darwin') {
-  app.disableHardwareAcceleration();
-  app.commandLine.appendSwitch('disable-gpu');
-  app.commandLine.appendSwitch('disable-gpu-compositing');
-  app.commandLine.appendSwitch('disable-gpu-rasterization');
-  app.commandLine.appendSwitch('disable-software-rasterizer');
-  app.commandLine.appendSwitch('disable-gpu-sandbox');
-  app.commandLine.appendSwitch('disable-features', 'UseSkiaRenderer,CalculateNativeWinOcclusion');
+  if (process.arch === 'x64') {
+    // Intel Mac: GPU compositor is broken in modern Electron — use software rendering.
+    // CRITICAL: do NOT disable-software-rasterizer, that's the only renderer left.
+    app.disableHardwareAcceleration();
+    app.commandLine.appendSwitch('in-process-gpu');
+  }
+  // Common macOS fixes
   app.commandLine.appendSwitch('force-color-profile', 'srgb');
-  app.commandLine.appendSwitch('in-process-gpu');
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
 
 let mainWindow = null;
@@ -64,7 +64,7 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     // Force a resize toggle to kick the compositor on Intel Macs
-    if (process.platform === 'darwin') {
+    if (process.platform === 'darwin' && process.arch === 'x64') {
       const [w, h] = mainWindow.getSize();
       mainWindow.setSize(w + 1, h + 1);
       setTimeout(() => { if (mainWindow) mainWindow.setSize(w, h); }, 100);
@@ -75,7 +75,7 @@ function createWindow() {
   const showTimeout = setTimeout(() => {
     if (mainWindow && !mainWindow.isVisible()) {
       mainWindow.show();
-      if (process.platform === 'darwin') {
+      if (process.platform === 'darwin' && process.arch === 'x64') {
         const [w, h] = mainWindow.getSize();
         mainWindow.setSize(w + 1, h + 1);
         setTimeout(() => { if (mainWindow) mainWindow.setSize(w, h); }, 100);
