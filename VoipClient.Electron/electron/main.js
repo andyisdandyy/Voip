@@ -6,6 +6,11 @@ const dgram = require('dgram');
 const SAMPLE_RATE = 48000;
 const FRAME_SIZE = 960;
 
+// Fix blank/black screen on macOS (Intel GPU compositor issue)
+if (process.platform === 'darwin') {
+  app.disableHardwareAcceleration();
+}
+
 let mainWindow = null;
 let tcpSocket = null;
 let udpSocket = null;
@@ -42,8 +47,16 @@ function createWindow() {
     mainWindow.show();
   });
 
+  // Safety: show window after timeout even if ready-to-show doesn't fire
+  const showTimeout = setTimeout(() => { if (mainWindow && !mainWindow.isVisible()) mainWindow.show(); }, 5000);
+  mainWindow.once('ready-to-show', () => clearTimeout(showTimeout));
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    console.error(`[Window] Content failed to load: ${errorCode} ${errorDescription}`);
+  });
+
   if (!app.isPackaged) {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://127.0.0.1:5173');
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
