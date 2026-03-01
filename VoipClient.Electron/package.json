@@ -1,9 +1,9 @@
 {
-  "name": "meichat",
+  "name": "voip",
   "version": "1.0.0",
-  "description": "MeiChat VoIP Client",
+  "description": "Voip Client",
   "main": "electron/main.js",
-  "author": "MeiChat",
+  "author": "Voip",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
@@ -37,8 +37,8 @@
     "wait-on": "^8.0.0"
   },
   "build": {
-    "appId": "com.meichat.app",
-    "productName": "MeiChat",
+    "appId": "com.voip.app",
+    "productName": "Voip",
     "copyright": "Copyright © 2025",
     "asar": true,
     "asarUnpack": [
@@ -86,12 +86,12 @@
       "entitlements": "build-resources/entitlements.mac.plist",
       "entitlementsInherit": "build-resources/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "MeiChat needs microphone access for voice calls.",
-        "NSCameraUsageDescription": "MeiChat needs camera access for video calls."
+        "NSMicrophoneUsageDescription": "Voip needs microphone access for voice calls.",
+        "NSCameraUsageDescription": "Voip needs camera access for video calls."
       }
     },
     "dmg": {
-      "title": "MeiChat",
+      "title": "Voip",
       "window": {
         "width": 540,
         "height": 380

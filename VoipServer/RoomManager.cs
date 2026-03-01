@@ -1,8 +1,9 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 
+/// <summary>
+/// Tracks which users are in which voice/text rooms.
+/// All operations are thread-safe via ConcurrentDictionary.
+/// </summary>
 public class RoomManager
 {
     private readonly RoomsConfig _config;
@@ -19,6 +20,41 @@ public class RoomManager
     }
 
     public RoomsConfig Config => _config;
+
+    /// <summary>Ensures the text room member tracking exists (called after creating a new text room).</summary>
+    public void EnsureTextRoom(string roomName)
+    {
+        _textRoomMembers.GetOrAdd(roomName, _ => new(StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Removes the text room member tracking and kicks all users from that room.</summary>
+    public void RemoveTextRoom(string roomName)
+    {
+        _textRoomMembers.TryRemove(roomName, out _);
+    }
+
+    /// <summary>Kicks all users from the given voice room.</summary>
+    public List<string> KickVoiceRoom(string roomName)
+    {
+        var kicked = new List<string>();
+        foreach (var kv in _userVoiceRoom)
+        {
+            if (string.Equals(kv.Value, roomName, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_userVoiceRoom.TryRemove(kv.Key, out _))
+                    kicked.Add(kv.Key);
+            }
+        }
+        return kicked;
+    }
+
+    /// <summary>Gets all users in a text room.</summary>
+    public List<string> GetTextRoomUsers(string roomName)
+    {
+        if (_textRoomMembers.TryGetValue(roomName, out var members))
+            return members.Keys.ToList();
+        return new();
+    }
 
     public bool JoinVoiceRoom(string username, string roomName, string? password)
     {

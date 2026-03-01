@@ -1,7 +1,18 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer, session, systemPreferences } = require('electron');
 const path = require('path');
 const net = require('net');
+const tls = require('tls');
 const dgram = require('dgram');
+const nodeCrypto = require('crypto');
+
+// ══════════════════════════════════════════════════════════════
+//  Voip Electron Main Process
+//  Handles: TCP chat, UDP voice, E2EE encryption, TLS negotiation,
+//  video relay, screen sharing, and background autoconnect sockets.
+// ══════════════════════════════════════════════════════════════
+
+// Cached per host:port — avoids repeating the TLS probe every reconnect
+const _tlsCapable = new Map(); // "host:port" → true|false
 
 const SAMPLE_RATE = 48000;
 const FRAME_SIZE = 960;
@@ -20,13 +31,56 @@ let decoder = null;
 let OpusScript = null;
 let currentBitrate = 96000;
 let keepaliveInterval = null;
+let tcpPingInterval = null;
 let selectedShareSource = null;
 let shareWithAudio = false;
+let shareIsWindow = false;
+let e2eeKey = null; // Derived AES-256 key buffer (32 bytes) or null
+let backgroundTcpSocket = null; // Parked TCP for voice preservation during server switch
+
+// ── E2EE (End-to-End Encryption) ────────────────────────────
+// Uses AES-256-GCM with a PBKDF2-derived key. When enabled, audio
+// and video payloads are encrypted before sending and decrypted on
+// receipt. Peers without the key receive raw (unencrypted) data.
+
+function setE2eeKey(passphrase) {
+  if (!passphrase) { e2eeKey = null; return; }
+  e2eeKey = nodeCrypto.pbkdf2Sync(passphrase, 'voip-e2ee-v1', 100000, 32, 'sha256');
+  console.log('[E2EE] Key derived');
+}
+
+function e2eeEncrypt(data) {
+  if (!e2eeKey) return data;
+  const iv = nodeCrypto.randomBytes(12);
+  const cipher = nodeCrypto.createCipheriv('aes-256-gcm', e2eeKey, iv);
+  const enc = cipher.update(data);
+  cipher.final();
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, enc]);
+}
+
+function e2eeDecrypt(data) {
+  if (!e2eeKey) return data;
+  if (data.length < 28) return data; // too short to be encrypted
+  const iv = data.slice(0, 12);
+  const tag = data.slice(12, 28);
+  const ct = data.slice(28);
+  try {
+    const decipher = nodeCrypto.createDecipheriv('aes-256-gcm', e2eeKey, iv);
+    decipher.setAuthTag(tag);
+    const dec = decipher.update(ct);
+    decipher.final();
+    return dec;
+  } catch {
+    return data; // decryption failed — return raw (unencrypted peer)
+  }
+}
 const autoConnectSockets = new Map(); // serverId → { socket, reconnectTimer }
 let _audioSendCount = 0;
 let _audioRecvCount = 0;
 let _videoSendCount = 0;
 let _videoRecvCount = 0;
+// ── Packet type prefix for multiplexing audio over UDP ──────
 const AUDIO_TYPE_BYTE = Buffer.from([0x01]);
 
 // ── Window
@@ -104,11 +158,14 @@ app.whenReady().then(async () => {
       }
       const opts = { video: source };
       if (shareWithAudio && process.platform === 'win32') {
-        opts.audio = 'loopback';
+        // Window source → use loopbackWithMute for per-app audio isolation
+        // Screen source → use loopback (system-wide, no isolation available)
+        opts.audio = shareIsWindow ? 'loopbackWithMute' : 'loopback';
       }
       callback(opts);
       selectedShareSource = null;
       shareWithAudio = false;
+      shareIsWindow = false;
     } catch {
       callback({});
     }
@@ -131,8 +188,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  disconnectChat();
-  stopVoice();
+  fullDisconnect();
   stopAllAutoConnect();
   if (process.platform !== 'darwin') app.quit();
 });
@@ -151,7 +207,17 @@ function setupIPC() {
     }
   });
 
-  ipcMain.on('tcp:disconnect', () => disconnectChat());
+  ipcMain.on('tcp:disconnect', () => fullDisconnect());
+
+  // Diagnostics
+  ipcMain.on('tcp:diag', () => {
+    if (tcpSocket && !tcpSocket.destroyed) {
+      tcpSocket.write('CMD:DIAG\n');
+    }
+  });
+
+  // E2EE key
+  ipcMain.on('e2ee:set-key', (_event, passphrase) => setE2eeKey(passphrase));
 
   // UDP Voice
   ipcMain.handle('udp:start', async (_event, host, port, username) => {
@@ -167,9 +233,11 @@ function setupIPC() {
     if (!tcpSocket || tcpSocket.destroyed) return;
     const flags = (isKeyFrame ? 0x01 : 0x00) | (codec === 'vp8' ? 0x02 : 0x00);
     const flagsHex = flags.toString(16).padStart(2, '0');
-    const base64 = Buffer.from(encodedBuffer).toString('base64');
+    const raw = Buffer.from(encodedBuffer);
+    const payload = e2eeEncrypt(raw);
+    const base64 = payload.toString('base64');
     tcpSocket.write(`VIDEO:${flagsHex}:${base64}\n`);
-    if (++_videoSendCount % 50 === 1) console.log(`[Video/TCP] Sent frame #${_videoSendCount} (${Buffer.from(encodedBuffer).length}B, ${isKeyFrame ? 'KEY' : 'delta'})`);
+    if (++_videoSendCount % 50 === 1) console.log(`[Video/TCP] Sent frame #${_videoSendCount} (${raw.length}B, ${isKeyFrame ? 'KEY' : 'delta'})`);
   });
 
   ipcMain.on('udp:stop', () => stopVoice());
@@ -205,6 +273,8 @@ function setupIPC() {
   ipcMain.handle('set-share-source', (_event, sourceId, withAudio) => {
     selectedShareSource = sourceId || null;
     shareWithAudio = !!withAudio;
+    // Track whether the source is a window (not a screen) for per-app audio
+    shareIsWindow = sourceId ? !sourceId.startsWith('screen:') : false;
     return true;
   });
 
@@ -221,31 +291,54 @@ function setupIPC() {
 
 // ── TCP Chat ────────────────────────────────────────────────
 
+// ── TCP Chat Connection ─────────────────────────────────────
+// Connects to the server over TCP (with automatic TLS negotiation).
+// Handshake phases: (1) server password, (2) user authentication.
+// After auth, relays chat messages and video frames between
+// the server and the renderer process.
+
 function connectChat(host, port, username, password, isRegister, serverPassword) {
   return new Promise((resolve, reject) => {
-    disconnectChat();
+    // If voice is active, park the current TCP socket instead of destroying it
+    // (keeps the server thinking we're still connected = voice room preserved)
+    if (tcpSocket && !tcpSocket.destroyed && udpSocket) {
+      tcpSocket.removeAllListeners();
+      tcpSocket.on('data', () => {}); // consume data silently
+      tcpSocket.on('error', () => {});
+      tcpSocket.on('close', () => { backgroundTcpSocket = null; });
+      if (backgroundTcpSocket) try { backgroundTcpSocket.destroy(); } catch {}
+      backgroundTcpSocket = tcpSocket;
+      tcpSocket = null;
+      console.log('[TCP] Parked connection (voice active)');
+    } else {
+      disconnectChat();
+    }
 
-    tcpSocket = new net.Socket();
     let buffer = '';
-    let authResolved = false;
+    let serverPwDone = false; // Phase 1 complete
+    let settled = false;      // Promise already resolved/rejected
+
+    const settle = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      fn();
+    };
 
     const timeout = setTimeout(() => {
-      tcpSocket.destroy();
-      reject(new Error('Connection timeout'));
+      if (tcpSocket) tcpSocket.destroy();
+      settle(() => reject(new Error('Connection timeout')));
     }, 10000);
 
-    tcpSocket.connect(port, host, () => {
+    const onConnected = (usedTls) => {
       tcpSocket.setNoDelay(true);
       tcpSocket.setKeepAlive(true, 30000);
-      const prefix = isRegister ? 'REGISTER' : 'AUTH';
-      const cmd = serverPassword
-        ? `${prefix}:${username}:${password}:${serverPassword}`
-        : `${prefix}:${username}:${password}`;
-      tcpSocket.write(cmd + '\n');
-      console.log(`[TCP] Connected to ${host}:${port}, sent ${isRegister ? 'REGISTER' : 'AUTH'}`);
-    });
+      console.log(`[TCP] Connected to ${host}:${port}${usedTls ? ' (TLS)' : ''}, waiting for server handshake`);
+      // Don't send AUTH yet — wait for server's READY or SERVER_PASSWORD_REQUIRED
+    };
 
-    tcpSocket.on('data', (data) => {
+    const setupEvents = () => {
+      tcpSocket.on('data', (data) => {
       buffer += data.toString('utf8');
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
@@ -253,21 +346,56 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
         const line = rawLine.replace(/^\uFEFF/, '').replace(/\r$/, '');
         if (!line) continue;
 
-        if (!authResolved) {
-          if (line === 'AUTH_OK' || line === 'REGISTER_OK') {
-            clearTimeout(timeout);
-            authResolved = true;
-            resolve({ success: true });
-          } else if (line.startsWith('AUTH_FAIL:') || line.startsWith('REGISTER_FAIL:')) {
-            clearTimeout(timeout);
-            authResolved = true;
-            tcpSocket.destroy();
+        // ── Phase 1: Server password handshake ──
+        if (!serverPwDone) {
+          if (line === 'SERVER_PASSWORD_REQUIRED') {
+            if (!serverPassword) {
+              // No password provided — tell the UI to prompt
+              settle(() => reject(new Error('SERVER_PASSWORD_REQUIRED')));
+              try { tcpSocket.destroy(); } catch {}
+              tcpSocket = null;
+              return;
+            }
+            tcpSocket.write(`SERVER_PASSWORD:${serverPassword}\n`);
+            console.log('[TCP] Server password required — sent password');
+            continue;
+          }
+          if (line === 'SERVER_PASSWORD_OK' || line === 'READY') {
+            serverPwDone = true;
+            // Now send AUTH/REGISTER (without server password)
+            const prefix = isRegister ? 'REGISTER' : 'AUTH';
+            tcpSocket.write(`${prefix}:${username}:${password}\n`);
+            console.log(`[TCP] ${line === 'READY' ? 'No server password needed' : 'Server password accepted'}, sent ${prefix}`);
+            continue;
+          }
+          if (line.startsWith('SERVER_PASSWORD_FAIL:')) {
+            settle(() => reject(new Error('SERVER_PASSWORD_FAIL')));
+            try { tcpSocket.destroy(); } catch {}
             tcpSocket = null;
-            reject(new Error(line.substring(line.indexOf(':') + 1)));
             return;
           }
           continue;
         }
+
+        // ── Phase 2: User authentication ──
+        if (!settled) {
+          if (line === 'AUTH_OK' || line === 'REGISTER_OK') {
+            // Start application-level keepalive to survive NAT/firewall idle timeouts
+            if (tcpPingInterval) clearInterval(tcpPingInterval);
+            tcpPingInterval = setInterval(() => {
+              if (tcpSocket && !tcpSocket.destroyed) tcpSocket.write('CMD:PING\n');
+            }, 60000);
+            settle(() => resolve({ success: true }));
+          } else if (line.startsWith('AUTH_FAIL:') || line.startsWith('REGISTER_FAIL:')) {
+            settle(() => reject(new Error(line.substring(line.indexOf(':') + 1))));
+            try { tcpSocket.destroy(); } catch {}
+            tcpSocket = null;
+            return;
+          }
+          continue;
+        }
+
+        // ── Post-auth: normal message handling ──
         // Intercept video frames from server — decode base64 and send binary to renderer
         if (line.startsWith('VIDEO:')) {
           // VIDEO:<sender>:<flagsHex>:<base64data>
@@ -278,113 +406,224 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
             const flags = parseInt(line.substring(i1 + 1, i2), 16);
             const isKeyFrame = (flags & 0x01) !== 0;
             const codec = (flags & 0x02) ? 'vp8' : 'h264';
-            const encodedData = Buffer.from(line.substring(i2 + 1), 'base64');
+            const raw = Buffer.from(line.substring(i2 + 1), 'base64');
+            const encodedData = e2eeDecrypt(raw);
             mainWindow?.webContents.send('udp:video', senderName, encodedData, isKeyFrame, codec);
             if (++_videoRecvCount % 50 === 1) console.log(`[Video/TCP] Recv #${_videoRecvCount} from '${senderName}' (${encodedData.length}B, ${isKeyFrame ? 'KEY' : 'delta'})`);
           }
           continue;
+        }
+        // Suppress keepalive response
+        if (line === 'PONG') continue;
+        // Log diagnostics to console
+        if (line.startsWith('DIAG:')) {
+          console.log('[DIAG]', line.substring(5));
         }
         mainWindow?.webContents.send('tcp:message', line);
       }
     });
 
     tcpSocket.on('error', (err) => {
-      clearTimeout(timeout);
       console.error('[TCP] Error:', err.message);
-      if (!authResolved) reject(err);
-      mainWindow?.webContents.send('tcp:error', err.message);
+      if (!settled) {
+        settle(() => reject(err));
+        mainWindow?.webContents.send('tcp:error', err.message);
+      }
     });
 
     tcpSocket.on('close', () => {
-      clearTimeout(timeout);
       console.log('[TCP] Disconnected');
-      if (!authResolved) reject(new Error('Connection closed before authentication'));
+      if (!settled) {
+        settle(() => reject(new Error('Connection closed before authentication')));
+      }
       mainWindow?.webContents.send('tcp:disconnected');
     });
+    }; // end setupEvents
+
+    const key = `${host}:${port}`;
+    const knownPlain = _tlsCapable.get(key) === false;
+
+    if (knownPlain) {
+      // Known plain-TCP server — connect directly
+      tcpSocket = new net.Socket();
+      setupEvents();
+      tcpSocket.connect(port, host, () => onConnected(false));
+    } else {
+      // Try TLS first, fall back to plain TCP on handshake failure
+      tcpSocket = tls.connect({ host, port, rejectUnauthorized: false }, () => {
+        _tlsCapable.set(key, true);
+        onConnected(true);
+      });
+      setupEvents();
+      const origError = tcpSocket.listeners('error').slice(-1)[0];
+      tcpSocket.removeListener('error', origError);
+      tcpSocket.once('error', (err) => {
+        // Only fall back to plain TCP on TLS-specific handshake errors.
+        // Connection errors (ECONNREFUSED, ETIMEDOUT, etc.) mean the server
+        // is unreachable — retrying plain TCP would just fail again.
+        const isTlsError = !settled && (
+          err.code === 'ECONNRESET' ||
+          (err.message && (err.message.includes('ssl') || err.message.includes('SSL') || err.message.includes('wrong version') || err.message.includes('alert')))
+        );
+        if (isTlsError) {
+          console.log(`[TCP] TLS handshake failed (${err.code || err.message}), falling back to plain TCP`);
+          _tlsCapable.set(key, false);
+          try { tcpSocket.destroy(); } catch {}
+          tcpSocket = new net.Socket();
+          setupEvents();
+          tcpSocket.connect(port, host, () => onConnected(false));
+        } else {
+          // Real connection error — pass through to the normal error handler
+          origError(err);
+        }
+      });
+    }
   });
 }
 
 function disconnectChat() {
+  if (tcpPingInterval) { clearInterval(tcpPingInterval); tcpPingInterval = null; }
   if (tcpSocket) {
     tcpSocket.destroy();
     tcpSocket = null;
   }
 }
 
+function killBackground() {
+  if (backgroundTcpSocket) {
+    try { backgroundTcpSocket.destroy(); } catch {}
+    backgroundTcpSocket = null;
+    console.log('[TCP] Background socket killed');
+  }
+}
+
+function fullDisconnect() {
+  disconnectChat();
+  killBackground();
+  stopVoice();
+}
+
 // ── Autoconnect (background mention listener) ───────────────
+// Maintains a lightweight TCP connection per pinned server to receive
+// @mention notifications. Automatically reconnects every 15 seconds
+// on disconnect. Stopped via stopAutoConnect() or stopAllAutoConnect().
 
 function startAutoConnect(serverId, host, port, username, password, serverPassword) {
-  const socket = new net.Socket();
   let buffer = '';
+  let serverPwDone = false;
   let authed = false;
-  let destroyed = false;
 
-  const entry = { socket, reconnectTimer: null };
-  autoConnectSockets.set(serverId, entry);
+  const setupSocket = (socket) => {
+    const entry = { socket, reconnectTimer: null };
+    autoConnectSockets.set(serverId, entry);
 
-  const reconnect = () => {
-    if (destroyed) return;
-    entry.reconnectTimer = setTimeout(() => {
-      if (autoConnectSockets.has(serverId)) {
-        startAutoConnect(serverId, host, port, username, password, serverPassword);
+    const reconnect = () => {
+      // Only reconnect if this entry is still the active one for this serverId
+      if (autoConnectSockets.get(serverId) !== entry) return;
+      entry.reconnectTimer = setTimeout(() => {
+        if (autoConnectSockets.get(serverId) === entry) {
+          startAutoConnect(serverId, host, port, username, password, serverPassword);
+        }
+      }, 15000);
+    };
+
+    socket.on('data', (data) => {
+      buffer += data.toString('utf8');
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/^\uFEFF/, '').replace(/\r$/, '');
+        if (!line) continue;
+
+        // Phase 1: Server password
+        if (!serverPwDone) {
+          if (line === 'SERVER_PASSWORD_REQUIRED') {
+            if (!serverPassword) {
+              console.log(`[AutoConnect:${serverId}] Server requires password — skipping`);
+              socket.destroy();
+              return;
+            }
+            socket.write(`SERVER_PASSWORD:${serverPassword}\n`);
+            continue;
+          }
+          if (line === 'SERVER_PASSWORD_OK' || line === 'READY') {
+            serverPwDone = true;
+            socket.write(`AUTH:${username}:${password}\n`);
+            continue;
+          }
+          if (line.startsWith('SERVER_PASSWORD_FAIL:')) {
+            console.error(`[AutoConnect:${serverId}] Server password failed: ${line}`);
+            socket.destroy();
+            return;
+          }
+          continue;
+        }
+
+        // Phase 2: Auth
+        if (!authed) {
+          if (line === 'AUTH_OK' || line === 'REGISTER_OK') {
+            authed = true;
+            console.log(`[AutoConnect:${serverId}] Authenticated`);
+          } else if (line.startsWith('AUTH_FAIL:') || line.startsWith('REGISTER_FAIL:')) {
+            console.error(`[AutoConnect:${serverId}] Auth failed: ${line}`);
+            socket.destroy();
+            return;
+          }
+          continue;
+        }
+
+        // Listen for mentions
+        if (line.startsWith('MENTION:')) {
+          const i1 = line.indexOf(':', 8);
+          const i2 = i1 >= 0 ? line.indexOf(':', i1 + 1) : -1;
+          if (i1 >= 0 && i2 >= 0) {
+            const room = line.substring(8, i1);
+            const sender = line.substring(i1 + 1, i2);
+            const text = line.substring(i2 + 1);
+            console.log(`[AutoConnect:${serverId}] Mention from ${sender} in ${room}`);
+            mainWindow?.webContents.send('autoconnect:mention', serverId, room, sender, text);
+          }
+        }
       }
-    }, 15000);
+    });
+
+    socket.on('error', (err) => {
+      console.error(`[AutoConnect:${serverId}] Error: ${err.message}`);
+    });
+
+    socket.on('close', () => {
+      console.log(`[AutoConnect:${serverId}] Disconnected`);
+      reconnect();
+    });
   };
 
-  socket.connect(port, host, () => {
-    socket.setNoDelay(true);
-    socket.setKeepAlive(true, 30000);
-    const cmd = serverPassword
-      ? `AUTH:${username}:${password}:${serverPassword}`
-      : `AUTH:${username}:${password}`;
-    socket.write(cmd + '\n');
-    console.log(`[AutoConnect:${serverId}] Connected to ${host}:${port}`);
-  });
-
-  socket.on('data', (data) => {
-    buffer += data.toString('utf8');
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const rawLine of lines) {
-      const line = rawLine.replace(/^\uFEFF/, '').replace(/\r$/, '');
-      if (!line) continue;
-
-      if (!authed) {
-        if (line === 'AUTH_OK' || line === 'REGISTER_OK') {
-          authed = true;
-          console.log(`[AutoConnect:${serverId}] Authenticated`);
-        } else if (line.startsWith('AUTH_FAIL:') || line.startsWith('REGISTER_FAIL:')) {
-          console.error(`[AutoConnect:${serverId}] Auth failed: ${line}`);
-          socket.destroy();
-          return;
-        }
-        continue;
+  const key = `${host}:${port}`;
+  if (_tlsCapable.get(key) === false) {
+    const socket = new net.Socket();
+    setupSocket(socket);
+    socket.connect(port, host, () => {
+      console.log(`[AutoConnect:${serverId}] Connected to ${host}:${port}`);
+      // Don't send AUTH — wait for server handshake
+    });
+  } else {
+    const socket = tls.connect({ host, port, rejectUnauthorized: false }, () => {
+      _tlsCapable.set(key, true);
+      console.log(`[AutoConnect:${serverId}] Connected to ${host}:${port} (TLS)`);
+      // Don't send AUTH — wait for server handshake
+    });
+    socket.once('error', (err) => {
+      const msg = err.message || '';
+      if (!authed && (err.code === 'ECONNRESET' || msg.includes('ssl') || msg.includes('SSL') || msg.includes('wrong version'))) {
+        console.log(`[AutoConnect:${serverId}] TLS failed, falling back to plain TCP`);
+        _tlsCapable.set(key, false);
+        try { socket.destroy(); } catch {}
+        // Retry with plain TCP
+        startAutoConnect(serverId, host, port, username, password, serverPassword);
+        return;
       }
-
-      // Listen for mentions
-      if (line.startsWith('MENTION:')) {
-        // MENTION:<room>:<sender>:<text>
-        const i1 = line.indexOf(':', 8);
-        const i2 = i1 >= 0 ? line.indexOf(':', i1 + 1) : -1;
-        if (i1 >= 0 && i2 >= 0) {
-          const room = line.substring(8, i1);
-          const sender = line.substring(i1 + 1, i2);
-          const text = line.substring(i2 + 1);
-          console.log(`[AutoConnect:${serverId}] Mention from ${sender} in ${room}`);
-          mainWindow?.webContents.send('autoconnect:mention', serverId, room, sender, text);
-        }
-      }
-    }
-  });
-
-  socket.on('error', (err) => {
-    console.error(`[AutoConnect:${serverId}] Error: ${err.message}`);
-  });
-
-  socket.on('close', () => {
-    console.log(`[AutoConnect:${serverId}] Disconnected`);
-    if (!destroyed) reconnect();
-  });
+    });
+    setupSocket(socket);
+  }
 }
 
 function stopAutoConnect(serverId) {
@@ -402,6 +641,9 @@ function stopAllAutoConnect() {
 }
 
 // ── UDP Voice ───────────────────────────────────────────────
+// Connects a UDP socket to the voice server. Sends/receives Opus-
+// encoded audio frames with optional E2EE. A periodic KEEPALIVE
+// prevents the server from timing out the client.
 
 function startVoice(host, port, username) {
   return new Promise((resolve, reject) => {
@@ -463,11 +705,12 @@ function startVoice(host, port, username) {
         const payload = msg.slice(2 + nameLen);
 
         if (typeByte === 0x01) {
-          // Audio
+          // Audio — decrypt if E2EE, then opus decode
           try {
-            const pcm = decoder.decode(payload);
-            mainWindow?.webContents.send('udp:audio', Buffer.from(pcm));
-            if (++_audioRecvCount % 250 === 1) console.log(`[Audio] Recv #${_audioRecvCount} from '${senderName}' (${payload.length}B)`);
+            const decrypted = e2eeDecrypt(payload);
+            const pcm = decoder.decode(decrypted);
+            mainWindow?.webContents.send('udp:audio', senderName, Buffer.from(pcm));
+            if (++_audioRecvCount % 250 === 1) console.log(`[Audio] Recv #${_audioRecvCount} from '${senderName}' (${payload.length}B wire)`);
           } catch (err) {
             console.error('[UDP] Decode error:', err.message);
           }
@@ -484,11 +727,11 @@ function startVoice(host, port, username) {
 
       // Start UDP keepalive to prevent server timeout
       if (keepaliveInterval) clearInterval(keepaliveInterval);
+      const keepaliveBuffer = Buffer.from('KEEPALIVE');
       keepaliveInterval = setInterval(() => {
         if (udpSocket) {
           try {
-            const ping = Buffer.from('KEEPALIVE');
-            udpSocket.send(ping, 0, ping.length, udpSocket._voipPort, udpSocket._voipHost);
+            udpSocket.send(keepaliveBuffer, 0, keepaliveBuffer.length, udpSocket._voipPort, udpSocket._voipHost);
           } catch {}
         }
       }, 10000);
@@ -511,9 +754,10 @@ function sendAudio(pcmArrayBuffer) {
     }
     const encoded = encoder.encode(pcm, FRAME_SIZE);
     if (encoded && encoded.length > 0) {
-      const packet = Buffer.concat([AUDIO_TYPE_BYTE, encoded]);
+      const payload = e2eeEncrypt(Buffer.from(encoded));
+      const packet = Buffer.concat([AUDIO_TYPE_BYTE, payload]);
       udpSocket.send(packet, 0, packet.length, udpSocket._voipPort, udpSocket._voipHost);
-      if (++_audioSendCount % 250 === 1) console.log(`[Audio] Sent packet #${_audioSendCount} (${encoded.length} bytes opus)`);
+      if (++_audioSendCount % 250 === 1) console.log(`[Audio] Sent packet #${_audioSendCount} (${encoded.length}B opus, ${payload.length}B wire)`);
     }
   } catch (err) {
     console.error('[Audio] Encode/send error:', err.message);

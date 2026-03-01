@@ -38,15 +38,19 @@ var roomManager = new RoomManager(roomsConfig, Log);
 var chatHistory = new ChatHistoryStore();
 var userStore = new UserStore();
 var roleStore = new RoleStore();
+var avatarStore = new AvatarStore();
+var soundboardStore = new SoundboardStore();
 
 Log("VoIP Server starting...");
 Log($"Server: '{serverConfig.ServerName}'");
 Log($"Loaded {roomsConfig.VoiceRooms.Count} voice rooms, {roomsConfig.TextRooms.Count} text rooms");
 Log($"Loaded {roleStore.GetRoles().Count} roles");
+Log($"E2EE: {(!string.IsNullOrEmpty(serverConfig.EncryptionKey) ? "Server-managed key" : serverConfig.Encrypted ? "Client-side (ægte E2EE)" : "Disabled")}");
 
 var chatCts = new CancellationTokenSource();
-_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, Log).StartAsync(chatCts.Token));
-Log($"Chat server started on TCP {serverConfig.TcpPort}");
+_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, avatarStore, soundboardStore, Log).StartAsync(chatCts.Token));
+var bindAddr = serverConfig.BindLocalhost ? "127.0.0.1" : "0.0.0.0";
+Log($"Chat server started on {bindAddr}:{serverConfig.TcpPort}{(serverConfig.BindLocalhost ? " (use NGINX for TLS)" : "")}");
 
 var udpPort = serverConfig.UdpPort;
 var udp = new UdpClient(udpPort);
@@ -68,6 +72,8 @@ var broadcastChannel = Channel.CreateUnbounded<(UdpReceiveResult result, string 
 
 // Voice-room-aware broadcaster — tags each packet with sender username
 var lastDropLog = DateTime.MinValue;
+// Cache encoded name bytes per username to avoid re-encoding on every packet
+var nameBytesCache = new ConcurrentDictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
 _ = Task.Run(async () =>
 {
     await foreach (var (res, senderUsername) in broadcastChannel.Reader.ReadAllAsync())
@@ -88,16 +94,13 @@ _ = Task.Run(async () =>
         }
 
         // Build tagged packet: [nameLen:1][name:N][opus data]
-        var nameBytes = Encoding.UTF8.GetBytes(senderUsername);
+        var nameBytes = nameBytesCache.GetOrAdd(senderUsername, static n => Encoding.UTF8.GetBytes(n));
         var tagged = new byte[1 + nameBytes.Length + buffer.Length];
         tagged[0] = (byte)nameBytes.Length;
         Buffer.BlockCopy(nameBytes, 0, tagged, 1, nameBytes.Length);
         Buffer.BlockCopy(buffer, 0, tagged, 1 + nameBytes.Length, buffer.Length);
 
-        var targets = clients.ToArray();
-        var sendTasks = new List<Task>();
-
-        foreach (var kvp in targets)
+        foreach (var kvp in clients)
         {
             var target = kvp.Key;
             if (target.Equals(sender))
@@ -105,13 +108,10 @@ _ = Task.Run(async () =>
 
             var targetRoom = roomManager.GetVoiceRoom(kvp.Value.username);
             if (targetRoom == senderRoom)
-                sendTasks.Add(udp.SendAsync(tagged, tagged.Length, target));
-        }
-
-        if (sendTasks.Count > 0)
-        {
-            try { await Task.WhenAll(sendTasks); }
-            catch { }
+            {
+                try { await udp.SendAsync(tagged, tagged.Length, target).ConfigureAwait(false); }
+                catch { }
+            }
         }
     }
 });
@@ -155,9 +155,20 @@ while (true)
 
     var sender = result.RemoteEndPoint;
 
-    bool handled = false;
-    if (result.Buffer != null && result.Buffer.Length > 0)
+    var handled = false;
+    if (result.Buffer is { Length: > 0 })
     {
+        // Fast-path: audio packets start with 0x01 — skip string parsing entirely
+        if (result.Buffer[0] == 0x01)
+        {
+            if (clients.TryGetValue(sender, out var audioClient))
+            {
+                clients[sender] = (DateTime.UtcNow, audioClient.username);
+                _ = broadcastChannel.Writer.WriteAsync((result, audioClient.username));
+            }
+            continue;
+        }
+
         string? text = null;
         try { text = Encoding.UTF8.GetString(result.Buffer); }
         catch { }

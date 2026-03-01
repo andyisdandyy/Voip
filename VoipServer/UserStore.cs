@@ -1,11 +1,12 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
+/// <summary>
+/// Persists user credentials to a JSON file. Passwords are hashed with PBKDF2-SHA512.
+/// Legacy SHA-256 hashes are automatically migrated on successful login.
+/// </summary>
 public class UserStore
 {
     private static readonly JsonSerializerOptions _jsonOpts = new()
@@ -28,8 +29,11 @@ public class UserStore
     {
         if (string.IsNullOrWhiteSpace(username) || username.Length < 2 || username.Length > 32)
             return (false, "Brugernavn skal være 2-32 tegn");
-        if (username.Contains(':'))
-            return (false, "Brugernavn må ikke indeholde ':'");
+        if (username.Contains(':') || username.Contains('\n') || username.Contains('\r'))
+            return (false, "Brugernavn indeholder ugyldige tegn");
+        // Reject control characters (protocol injection prevention)
+        foreach (var ch in username)
+            if (char.IsControl(ch)) return (false, "Brugernavn indeholder ugyldige tegn");
         if (string.IsNullOrWhiteSpace(password) || password.Length < 4)
             return (false, "Password skal være mindst 4 tegn");
         var hash = HashPassword(password);
@@ -43,8 +47,14 @@ public class UserStore
     {
         if (!_users.TryGetValue(username, out var storedHash))
             return (false, "Forkert brugernavn eller password");
-        if (storedHash != HashPassword(password))
+        if (!VerifyPassword(password, storedHash))
             return (false, "Forkert brugernavn eller password");
+        // Migrate legacy SHA-256 hash to PBKDF2 on successful login
+        if (!storedHash.StartsWith("$PBKDF2$"))
+        {
+            _users[username] = HashPassword(password);
+            Save();
+        }
         return (true, "");
     }
 
@@ -52,9 +62,15 @@ public class UserStore
 
     public string GetDisplayName(string username)
     {
-        foreach (var kv in _users)
-            if (string.Equals(kv.Key, username, StringComparison.OrdinalIgnoreCase))
-                return kv.Key;
+        // ConcurrentDictionary uses OrdinalIgnoreCase comparer, so the stored key
+        // preserves the original casing. Enumerate only if needed for casing match.
+        if (_users.TryGetValue(username, out _))
+        {
+            // Fast path: find the key with matching casing from the comparer
+            foreach (var key in _users.Keys)
+                if (string.Equals(key, username, StringComparison.OrdinalIgnoreCase))
+                    return key;
+        }
         return username;
     }
 
@@ -63,10 +79,37 @@ public class UserStore
         return _users.Keys.ToList();
     }
 
+    private const int Pbkdf2Iterations = 100_000;
+    private const int SaltSize = 16;
+    private const int HashSize = 32;
+
     private static string HashPassword(string password)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
-        return Convert.ToBase64String(bytes);
+        var salt = RandomNumberGenerator.GetBytes(SaltSize);
+        var hash = Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(password), salt, Pbkdf2Iterations,
+            HashAlgorithmName.SHA512, HashSize);
+        return $"$PBKDF2${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+    }
+
+    private static bool VerifyPassword(string password, string storedHash)
+    {
+        if (storedHash.StartsWith("$PBKDF2$"))
+        {
+            var parts = storedHash.Split('$', StringSplitOptions.RemoveEmptyEntries);
+            // parts: ["PBKDF2", "<salt>", "<hash>"]
+            if (parts.Length < 3) return false;
+            var salt = Convert.FromBase64String(parts[1]);
+            var expected = Convert.FromBase64String(parts[2]);
+            var actual = Rfc2898DeriveBytes.Pbkdf2(
+                Encoding.UTF8.GetBytes(password), salt, Pbkdf2Iterations,
+                HashAlgorithmName.SHA512, HashSize);
+            return CryptographicOperations.FixedTimeEquals(actual, expected);
+        }
+        // Legacy SHA-256 fallback (migrated on next successful login)
+        var legacyHash = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+        var legacyStored = Convert.FromBase64String(storedHash);
+        return CryptographicOperations.FixedTimeEquals(legacyHash, legacyStored);
     }
 
     private void Load()

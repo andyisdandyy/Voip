@@ -1,10 +1,9 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text.Json;
 
+/// <summary>
+/// Represents a single chat message stored in history.
+/// </summary>
 public class ChatMessage
 {
     public string Id { get; set; } = "";
@@ -13,6 +12,11 @@ public class ChatMessage
     public DateTime Time { get; set; }
 }
 
+/// <summary>
+/// Persists the last <see cref="MaxPerRoom"/> messages per text room to a JSON file.
+/// Thread-safe: room message lists are individually locked during mutation.
+/// Disk writes are debounced to avoid I/O on every message.
+/// </summary>
 public class ChatHistoryStore
 {
     private static readonly JsonSerializerOptions _jsonOpts = new()
@@ -25,6 +29,8 @@ public class ChatHistoryStore
     private readonly ConcurrentDictionary<string, List<ChatMessage>> _history = new();
     private readonly object _saveLock = new();
     private const int MaxPerRoom = 200;
+    private Timer? _saveTimer;
+    private volatile bool _dirty;
 
     public ChatHistoryStore(string? filePath = null)
     {
@@ -42,7 +48,7 @@ public class ChatHistoryStore
             if (msgs.Count > MaxPerRoom)
                 msgs.RemoveRange(0, msgs.Count - MaxPerRoom);
         }
-        Save();
+        ScheduleSave();
         return id;
     }
 
@@ -55,7 +61,7 @@ public class ChatHistoryStore
             if (msg == null || msg.User != username) return false;
             msgs.Remove(msg);
         }
-        Save();
+        ScheduleSave();
         return true;
     }
 
@@ -68,7 +74,7 @@ public class ChatHistoryStore
             if (msg == null) return false;
             msgs.Remove(msg);
         }
-        Save();
+        ScheduleSave();
         return true;
     }
 
@@ -96,8 +102,19 @@ public class ChatHistoryStore
         catch { }
     }
 
-    private void Save()
+    private void ScheduleSave()
     {
+        _dirty = true;
+        if (_saveTimer != null) return;
+        var timer = new Timer(_ => FlushSave(), null, 2000, 2000);
+        if (Interlocked.CompareExchange(ref _saveTimer, timer, null) != null)
+            timer.Dispose();
+    }
+
+    private void FlushSave()
+    {
+        if (!_dirty) return;
+        _dirty = false;
         lock (_saveLock)
         {
             try

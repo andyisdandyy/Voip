@@ -1,11 +1,9 @@
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+/// <summary>
+/// A named role with a color, priority, and set of permission strings.
+/// </summary>
 public class RoleDefinition
 {
     public string Name { get; set; } = "";
@@ -20,6 +18,10 @@ public class RoleStoreData
     public Dictionary<string, List<string>> UserRoles { get; set; } = new();
 }
 
+/// <summary>
+/// Manages role definitions and user-to-role assignments.
+/// Default roles: Admin (priority 100, full permissions) and Member (priority 0, no permissions).
+/// </summary>
 public class RoleStore
 {
     public static readonly string[] ALL_PERMISSIONS =
@@ -33,7 +35,7 @@ public class RoleStore
 
     private RoleStoreData _data;
     private readonly string _path;
-    private readonly object _saveLock = new();
+    private readonly object _lock = new();
 
     private static readonly JsonSerializerOptions _jsonOpts = new()
     {
@@ -50,114 +52,153 @@ public class RoleStore
 
     // ── Queries ──────────────────────────────────────────────
 
-    public List<RoleDefinition> GetRoles() => _data.Roles.ToList();
+    public List<RoleDefinition> GetRoles() { lock (_lock) return _data.Roles.ToList(); }
 
-    public RoleDefinition? GetRole(string roleName) =>
-        _data.Roles.FirstOrDefault(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
+    public RoleDefinition? GetRole(string roleName)
+    {
+        lock (_lock)
+            return _data.Roles.FirstOrDefault(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
+    }
 
     public List<string> GetUserRoleNames(string username)
     {
-        if (_data.UserRoles.TryGetValue(username, out var roles))
-            return roles.ToList();
-        return new List<string>();
+        lock (_lock)
+        {
+            if (_data.UserRoles.TryGetValue(username, out var roles))
+                return roles.ToList();
+            return new List<string>();
+        }
     }
 
     public RoleDefinition? GetHighestRole(string username)
     {
-        var roleNames = GetUserRoleNames(username);
-        if (roleNames.Count == 0) return null;
-        return _data.Roles
-            .Where(r => roleNames.Contains(r.Name, StringComparer.OrdinalIgnoreCase))
-            .OrderByDescending(r => r.Priority)
-            .FirstOrDefault();
+        lock (_lock)
+        {
+            if (!_data.UserRoles.TryGetValue(username, out var roleNames) || roleNames.Count == 0)
+                return null;
+            RoleDefinition? highest = null;
+            foreach (var role in _data.Roles)
+            {
+                if (roleNames.Contains(role.Name, StringComparer.OrdinalIgnoreCase) &&
+                    (highest == null || role.Priority > highest.Priority))
+                    highest = role;
+            }
+            return highest;
+        }
     }
 
     public bool HasPermission(string username, string permission)
     {
-        var roleNames = GetUserRoleNames(username);
-        return _data.Roles
-            .Where(r => roleNames.Contains(r.Name, StringComparer.OrdinalIgnoreCase))
-            .Any(r => r.Permissions.Contains("admin") || r.Permissions.Contains(permission));
+        lock (_lock)
+        {
+            if (!_data.UserRoles.TryGetValue(username, out var roleNames) || roleNames.Count == 0)
+                return false;
+            foreach (var role in _data.Roles)
+            {
+                if (roleNames.Contains(role.Name, StringComparer.OrdinalIgnoreCase) &&
+                    (role.Permissions.Contains("admin") || role.Permissions.Contains(permission)))
+                    return true;
+            }
+            return false;
+        }
     }
 
     // ── Mutations ────────────────────────────────────────────
 
     public bool AssignRole(string username, string roleName)
     {
-        if (GetRole(roleName) == null) return false;
-        if (!_data.UserRoles.ContainsKey(username))
-            _data.UserRoles[username] = new List<string>();
-        if (_data.UserRoles[username].Contains(roleName, StringComparer.OrdinalIgnoreCase))
-            return false;
-        _data.UserRoles[username].Add(roleName);
-        Save();
-        return true;
+        lock (_lock)
+        {
+            if (GetRoleUnsafe(roleName) == null) return false;
+            if (!_data.UserRoles.ContainsKey(username))
+                _data.UserRoles[username] = new List<string>();
+            if (_data.UserRoles[username].Contains(roleName, StringComparer.OrdinalIgnoreCase))
+                return false;
+            _data.UserRoles[username].Add(roleName);
+            SaveUnsafe();
+            return true;
+        }
     }
 
     public bool RemoveRole(string username, string roleName)
     {
-        if (!_data.UserRoles.ContainsKey(username)) return false;
-        var removed = _data.UserRoles[username].RemoveAll(r =>
-            string.Equals(r, roleName, StringComparison.OrdinalIgnoreCase)) > 0;
-        if (removed) Save();
-        return removed;
+        lock (_lock)
+        {
+            if (!_data.UserRoles.ContainsKey(username)) return false;
+            var removed = _data.UserRoles[username].RemoveAll(r =>
+                string.Equals(r, roleName, StringComparison.OrdinalIgnoreCase)) > 0;
+            if (removed) SaveUnsafe();
+            return removed;
+        }
     }
 
     public bool CreateRole(string name, string color, int priority, List<string> permissions)
     {
-        if (GetRole(name) != null) return false;
-        _data.Roles.Add(new RoleDefinition
+        lock (_lock)
         {
-            Name = name,
-            Color = color,
-            Priority = priority,
-            Permissions = permissions,
-        });
-        Save();
-        return true;
+            if (GetRoleUnsafe(name) != null) return false;
+            _data.Roles.Add(new RoleDefinition
+            {
+                Name = name,
+                Color = color,
+                Priority = priority,
+                Permissions = permissions,
+            });
+            SaveUnsafe();
+            return true;
+        }
     }
 
     public bool DeleteRole(string name)
     {
-        // Cannot delete Admin or Member
-        if (string.Equals(name, "Admin", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "Member", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var removed = _data.Roles.RemoveAll(r =>
-            string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase)) > 0;
-        if (removed)
+        lock (_lock)
         {
-            // Remove role from all users
-            foreach (var kv in _data.UserRoles)
-                kv.Value.RemoveAll(r => string.Equals(r, name, StringComparison.OrdinalIgnoreCase));
-            Save();
+            if (string.Equals(name, "Admin", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, "Member", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var removed = _data.Roles.RemoveAll(r =>
+                string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase)) > 0;
+            if (removed)
+            {
+                foreach (var kv in _data.UserRoles)
+                    kv.Value.RemoveAll(r => string.Equals(r, name, StringComparison.OrdinalIgnoreCase));
+                SaveUnsafe();
+            }
+            return removed;
         }
-        return removed;
     }
 
     /// <summary>Ensure user has at least the Member role. Returns true if Admin was auto-assigned (first user).</summary>
     public bool EnsureDefaultRole(string username, bool isFirstUser)
     {
-        if (!_data.UserRoles.ContainsKey(username))
-            _data.UserRoles[username] = new List<string>();
-
-        bool assignedAdmin = false;
-        if (isFirstUser && !_data.UserRoles.Values.Any(roles => roles.Contains("Admin", StringComparer.OrdinalIgnoreCase)))
+        lock (_lock)
         {
-            if (!_data.UserRoles[username].Contains("Admin", StringComparer.OrdinalIgnoreCase))
+            if (!_data.UserRoles.ContainsKey(username))
+                _data.UserRoles[username] = new List<string>();
+
+            bool assignedAdmin = false;
+            if (isFirstUser && !_data.UserRoles.Values.Any(roles => roles.Contains("Admin", StringComparer.OrdinalIgnoreCase)))
             {
-                _data.UserRoles[username].Add("Admin");
-                assignedAdmin = true;
+                if (!_data.UserRoles[username].Contains("Admin", StringComparer.OrdinalIgnoreCase))
+                {
+                    _data.UserRoles[username].Add("Admin");
+                    assignedAdmin = true;
+                }
             }
+
+            if (!_data.UserRoles[username].Contains("Member", StringComparer.OrdinalIgnoreCase))
+                _data.UserRoles[username].Add("Member");
+
+            SaveUnsafe();
+            return assignedAdmin;
         }
-
-        if (!_data.UserRoles[username].Contains("Member", StringComparer.OrdinalIgnoreCase))
-            _data.UserRoles[username].Add("Member");
-
-        Save();
-        return assignedAdmin;
     }
+
+    // ── Internal helpers (must be called under _lock) ────────
+
+    private RoleDefinition? GetRoleUnsafe(string roleName) =>
+        _data.Roles.FirstOrDefault(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
 
     // ── Persistence ──────────────────────────────────────────
 
@@ -180,17 +221,14 @@ public class RoleStore
         }
     }
 
-    private void Save()
+    private void SaveUnsafe()
     {
-        lock (_saveLock)
+        try
         {
-            try
-            {
-                var json = JsonSerializer.Serialize(_data, _jsonOpts);
-                File.WriteAllText(_path, json);
-            }
-            catch { }
+            var json = JsonSerializer.Serialize(_data, _jsonOpts);
+            File.WriteAllText(_path, json);
         }
+        catch { }
     }
 
     private static RoleStoreData CreateDefault() => new()

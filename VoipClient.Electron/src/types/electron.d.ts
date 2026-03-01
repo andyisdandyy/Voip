@@ -4,6 +4,7 @@ interface ElectronAPI {
   connectChat: (host: string, port: number, username: string, password: string, isRegister: boolean, serverPassword?: string) => Promise<{ success: boolean }>;
   sendChat: (message: string) => void;
   disconnectChat: () => void;
+  requestDiag: () => void;
   onChatMessage: (callback: (line: string) => void) => () => void;
   onChatError: (callback: (msg: string) => void) => () => void;
   onChatDisconnected: (callback: () => void) => () => void;
@@ -12,7 +13,7 @@ interface ElectronAPI {
   sendAudio: (pcmBuffer: ArrayBuffer) => void;
   stopVoice: () => void;
   setBitrate: (bitrate: number) => void;
-  onAudioReceived: (callback: (pcm: Uint8Array) => void) => () => void;
+  onAudioReceived: (callback: (senderName: string, pcm: Uint8Array) => void) => () => void;
   onVoiceConnected: (callback: () => void) => () => void;
 
   sendVideo: (buffer: ArrayBuffer, isKeyFrame: boolean, codec: string) => void;
@@ -20,6 +21,7 @@ interface ElectronAPI {
 
   getScreenSources: () => Promise<Array<{ id: string; name: string; thumbnail: string; appIcon: string | null; isScreen: boolean }>>;
   setShareSource: (sourceId: string, withAudio: boolean) => Promise<boolean>;
+  setEncryptionKey: (passphrase: string | null) => void;
 
   minimizeWindow: () => void;
   maximizeWindow: () => void;

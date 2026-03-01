@@ -1,36 +1,54 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 
+/// <summary>
+/// TCP chat server handling authentication, text/voice room management,
+/// video relay, role/permission enforcement, and real-time user presence.
+/// Each connected client is served on its own async task.
+/// </summary>
 public class ChatServer
 {
+    // ── Dependencies ────────────────────────────────────────
     private readonly TcpListener _listener;
-    private readonly ConcurrentDictionary<TcpClient, (StreamWriter writer, string name)> _clients = new();
     private readonly RoomManager _rooms;
     private readonly ChatHistoryStore _history;
     private readonly UserStore _userStore;
     private readonly RoleStore _roleStore;
-    private readonly Action<string>? _log;
+    private readonly AvatarStore _avatarStore;
+    private readonly SoundboardStore _soundboardStore;
     private readonly ServerConfig _serverConfig;
+    private readonly Action<string>? _log;
+
+    // ── Connected clients ───────────────────────────────────
+    private readonly ConcurrentDictionary<TcpClient, (StreamWriter writer, string name)> _clients = new();
+
+    // ── Active media state per username ─────────────────────
     private readonly ConcurrentDictionary<string, byte> _cameraActive = new();
     private readonly ConcurrentDictionary<string, byte> _screenActive = new();
 
-    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, Action<string>? log = null)
+    // ── User presence status (online / away) ────────────────
+    private readonly ConcurrentDictionary<string, string> _userStatus = new(StringComparer.OrdinalIgnoreCase);
+
+    // ── Auth rate limiting per IP ───────────────────────────
+    private readonly ConcurrentDictionary<string, (int attempts, DateTime resetAt)> _authRateLimit = new();
+    private const int MaxAuthAttempts = 5;
+    private static readonly TimeSpan AuthLockoutDuration = TimeSpan.FromMinutes(2);
+
+    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, AvatarStore avatarStore, SoundboardStore soundboardStore, Action<string>? log = null)
     {
         _serverConfig = serverConfig;
-        _listener = new TcpListener(IPAddress.Any, serverConfig.TcpPort);
+        var bindAddress = serverConfig.BindLocalhost ? IPAddress.Loopback : IPAddress.Any;
+        _listener = new TcpListener(bindAddress, serverConfig.TcpPort);
         _rooms = rooms;
         _history = history;
         _userStore = userStore;
         _roleStore = roleStore;
+        _avatarStore = avatarStore;
+        _soundboardStore = soundboardStore;
         _log = log;
     }
 
@@ -74,28 +92,55 @@ public class ChatServer
             using var reader = new StreamReader(stream, Encoding.UTF8);
             var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
 
-            // Authentication: first line must be AUTH: or REGISTER:
+            // ── Phase 1: Server password gate (before any user credentials) ──
+            var clientIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "unknown";
+
+            if (!string.IsNullOrEmpty(_serverConfig.ServerPassword))
+            {
+                await writer.WriteLineAsync("SERVER_PASSWORD_REQUIRED").ConfigureAwait(false);
+
+                var pwLine = (await reader.ReadLineAsync().ConfigureAwait(false))?.Trim();
+                if (string.IsNullOrEmpty(pwLine) || !pwLine.StartsWith("SERVER_PASSWORD:"))
+                {
+                    await writer.WriteLineAsync("SERVER_PASSWORD_FAIL:Ugyldigt format").ConfigureAwait(false);
+                    return;
+                }
+
+                var submittedPw = pwLine.Substring("SERVER_PASSWORD:".Length);
+                if (!CryptographicOperations.FixedTimeEquals(
+                    Encoding.UTF8.GetBytes(submittedPw), Encoding.UTF8.GetBytes(_serverConfig.ServerPassword)))
+                {
+                    await writer.WriteLineAsync("SERVER_PASSWORD_FAIL:Forkert server-adgangskode").ConfigureAwait(false);
+                    return;
+                }
+
+                await writer.WriteLineAsync("SERVER_PASSWORD_OK").ConfigureAwait(false);
+                _log?.Invoke($"[Chat] Server password accepted from {clientIp}");
+            }
+            else
+            {
+                await writer.WriteLineAsync("READY").ConfigureAwait(false);
+            }
+
+            // ── Phase 2: User authentication ──
             var authLine = (await reader.ReadLineAsync().ConfigureAwait(false))?.Trim();
             if (string.IsNullOrEmpty(authLine))
                 return;
 
+            // Rate limiting per IP
+            if (_authRateLimit.TryGetValue(clientIp, out var rl) && rl.attempts >= MaxAuthAttempts && DateTime.UtcNow < rl.resetAt)
+            {
+                await writer.WriteLineAsync("AUTH_FAIL:For mange forsøg — prøv igen senere").ConfigureAwait(false);
+                return;
+            }
+
             if (authLine.StartsWith("REGISTER:"))
             {
-                var parts = authLine.Substring(9).Split(':', 3);
+                var parts = authLine.Substring(9).Split(':', 2);
                 if (parts.Length < 2)
                 {
                     await writer.WriteLineAsync("REGISTER_FAIL:Invalid format").ConfigureAwait(false);
                     return;
-                }
-                // Check server password if configured
-                if (!string.IsNullOrEmpty(_serverConfig.ServerPassword))
-                {
-                    var serverPw = parts.Length > 2 ? parts[2] : null;
-                    if (serverPw != _serverConfig.ServerPassword)
-                    {
-                        await writer.WriteLineAsync("REGISTER_FAIL:SERVER_PASSWORD_REQUIRED").ConfigureAwait(false);
-                        return;
-                    }
                 }
                 var (ok, err) = _userStore.Register(parts[0], parts[1]);
                 if (!ok)
@@ -110,28 +155,24 @@ public class ChatServer
             }
             else if (authLine.StartsWith("AUTH:"))
             {
-                var parts = authLine.Substring(5).Split(':', 3);
+                var parts = authLine.Substring(5).Split(':', 2);
                 if (parts.Length < 2)
                 {
                     await writer.WriteLineAsync("AUTH_FAIL:Invalid format").ConfigureAwait(false);
                     return;
                 }
-                // Check server password if configured
-                if (!string.IsNullOrEmpty(_serverConfig.ServerPassword))
-                {
-                    var serverPw = parts.Length > 2 ? parts[2] : null;
-                    if (serverPw != _serverConfig.ServerPassword)
-                    {
-                        await writer.WriteLineAsync("AUTH_FAIL:SERVER_PASSWORD_REQUIRED").ConfigureAwait(false);
-                        return;
-                    }
-                }
                 var (ok, err) = _userStore.Authenticate(parts[0], parts[1]);
                 if (!ok)
                 {
+                    // Track failed attempt for rate limiting
+                    _authRateLimit.AddOrUpdate(clientIp,
+                        _ => (1, DateTime.UtcNow + AuthLockoutDuration),
+                        (_, prev) => (prev.attempts + 1, DateTime.UtcNow + AuthLockoutDuration));
                     await writer.WriteLineAsync($"AUTH_FAIL:{err}").ConfigureAwait(false);
                     return;
                 }
+                // Clear rate limit on success
+                _authRateLimit.TryRemove(clientIp, out _);
                 name = _userStore.GetDisplayName(parts[0]);
                 _roleStore.EnsureDefaultRole(name, false);
                 await writer.WriteLineAsync("AUTH_OK").ConfigureAwait(false);
@@ -142,18 +183,19 @@ public class ChatServer
                 return;
             }
 
-            // Kick existing connection with same username
+            // Register new connection first (so old connection's cleanup preserves voice)
+            _clients[client] = (writer, name);
+            _log?.Invoke($"[Chat] '{name}' authenticated and connected");
+
+            // Kick existing connections with same username (old one's cleanup will see new client)
             foreach (var existingKv in _clients.ToArray())
             {
-                if (existingKv.Value.name == name)
+                if (existingKv.Key != client && existingKv.Value.name == name)
                 {
                     _clients.TryRemove(existingKv.Key, out _);
                     try { existingKv.Key.Close(); } catch { }
                 }
             }
-
-            _clients[client] = (writer, name);
-            _log?.Invoke($"[Chat] '{name}' authenticated and connected");
 
             // Send server info so the client can auto-connect voice
             await SendServerInfoAsync(writer, client).ConfigureAwait(false);
@@ -176,13 +218,20 @@ public class ChatServer
             // Broadcast updated users list
             await BroadcastUserListAsync().ConfigureAwait(false);
 
+            // Send soundboard list
+            await SendSoundboardListAsync(writer).ConfigureAwait(false);
+
             string? line;
             while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
             {
+                // Reject oversized messages to prevent memory exhaustion (10 MB max for video frames)
+                if (line.Length > 10_000_000) continue;
                 if (line.StartsWith("VIDEO:"))
                     await RelayVideoAsync(name, line).ConfigureAwait(false);
                 else if (line.StartsWith("CMD:"))
-                    await HandleCommandAsync(writer, name, line.Substring(4)).ConfigureAwait(false);
+                    await HandleCommandAsync(writer, name, line.Substring(4), client).ConfigureAwait(false);
+                else if (line.StartsWith("FILE:"))
+                    await HandleFileAsync(writer, name, line.Substring(5)).ConfigureAwait(false);
                 else if (line.StartsWith("MSG:"))
                     await HandleMessageAsync(writer, name, line.Substring(4)).ConfigureAwait(false);
             }
@@ -191,13 +240,22 @@ public class ChatServer
         catch (ObjectDisposedException) { }
         finally
         {
-            if (_cameraActive.TryRemove(name, out _))
-                try { await BroadcastToVoiceRoomAsync(name, $"CAMERA_OFF:{name}").ConfigureAwait(false); } catch { }
-            if (_screenActive.TryRemove(name, out _))
-                try { await BroadcastToVoiceRoomAsync(name, $"SCREEN_OFF:{name}").ConfigureAwait(false); } catch { }
             _clients.TryRemove(client, out _);
-            _rooms.RemoveUser(name);
-            _log?.Invoke($"[Chat] '{name}' disconnected");
+
+            // Only remove from rooms if no other connection exists for this user
+            // (preserves voice room membership on reconnect / server switch)
+            var stillConnected = _clients.Values.Any(c => c.name == name);
+            if (!stillConnected)
+            {
+                if (_cameraActive.TryRemove(name, out _))
+                    try { await BroadcastToVoiceRoomAsync(name, $"CAMERA_OFF:{name}").ConfigureAwait(false); } catch { }
+                if (_screenActive.TryRemove(name, out _))
+                    try { await BroadcastToVoiceRoomAsync(name, $"SCREEN_OFF:{name}").ConfigureAwait(false); } catch { }
+                _rooms.RemoveUser(name);
+                _userStatus.TryRemove(name, out _);
+            }
+
+            _log?.Invoke($"[Chat] '{name}' disconnected{(stillConnected ? " (reconnect, preserving rooms)" : "")}");
 
             await BroadcastUserListAsync().ConfigureAwait(false);
 
@@ -205,7 +263,7 @@ public class ChatServer
         }
     }
 
-    private async Task HandleCommandAsync(StreamWriter writer, string name, string cmd)
+    private async Task HandleCommandAsync(StreamWriter writer, string name, string cmd, TcpClient client)
     {
         if (cmd == "LIST_ROOMS")
         {
@@ -223,12 +281,36 @@ public class ChatServer
                 await writer.WriteLineAsync($"JOINED_VOICE:{roomName}:{bitrate}").ConfigureAwait(false);
 
                 // Tell the joining user about active cameras/screens in this room
+                var activeStreamers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var camUser in _cameraActive.Keys)
+                {
                     if (camUser != name && _rooms.GetVoiceRoom(camUser) == roomName)
+                    {
                         await writer.WriteLineAsync($"CAMERA_ON:{camUser}").ConfigureAwait(false);
+                        activeStreamers.Add(camUser);
+                    }
+                }
                 foreach (var scrUser in _screenActive.Keys)
+                {
                     if (scrUser != name && _rooms.GetVoiceRoom(scrUser) == roomName)
+                    {
                         await writer.WriteLineAsync($"SCREEN_ON:{scrUser}").ConfigureAwait(false);
+                        activeStreamers.Add(scrUser);
+                    }
+                }
+
+                // Ask active streamers to send a keyframe so the new joiner can decode immediately
+                if (activeStreamers.Count > 0)
+                {
+                    foreach (var kv in _clients)
+                    {
+                        if (activeStreamers.Contains(kv.Value.name))
+                        {
+                            try { await kv.Value.writer.WriteLineAsync("REQUEST_KEYFRAME").ConfigureAwait(false); }
+                            catch { }
+                        }
+                    }
+                }
 
                 await BroadcastUserListAsync().ConfigureAwait(false);
             }
@@ -392,6 +474,254 @@ public class ChatServer
             else
                 await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
         }
+        else if (cmd.StartsWith("SET_AVATAR:"))
+        {
+            var base64 = cmd.Substring("SET_AVATAR:".Length);
+            if (_avatarStore.SetAvatar(name, base64))
+            {
+                _log?.Invoke($"[Avatar] {name} updated avatar ({base64.Length} chars)");
+                await BroadcastAsync($"AVATAR:{name}:{base64}").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Avatar for stor (maks ~32KB)").ConfigureAwait(false);
+        }
+        else if (cmd == "REMOVE_AVATAR")
+        {
+            _avatarStore.RemoveAvatar(name);
+            _log?.Invoke($"[Avatar] {name} removed avatar");
+            await BroadcastAsync($"AVATAR:{name}:").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("SET_STATUS:"))
+        {
+            var status = cmd.Substring("SET_STATUS:".Length).Trim().ToLowerInvariant();
+            if (status is "online" or "away")
+            {
+                _userStatus[name] = status;
+                _log?.Invoke($"[Status] {name} -> {status}");
+                await BroadcastUserListAsync().ConfigureAwait(false);
+            }
+        }
+        else if (cmd == "PING")
+        {
+            await writer.WriteLineAsync("PONG").ConfigureAwait(false);
+        }
+        else if (cmd == "DIAG")
+        {
+            var remoteEp = client.Client.RemoteEndPoint as IPEndPoint;
+            var localEp = client.Client.LocalEndPoint as IPEndPoint;
+            var isLoopback = remoteEp?.Address.Equals(IPAddress.Loopback) == true ||
+                             remoteEp?.Address.Equals(IPAddress.IPv6Loopback) == true;
+            var diag = new Dictionary<string, object?>
+            {
+                ["RemoteIP"] = remoteEp?.Address.ToString(),
+                ["RemotePort"] = remoteEp?.Port,
+                ["LocalIP"] = localEp?.Address.ToString(),
+                ["LocalPort"] = localEp?.Port,
+                ["ViaProxy"] = isLoopback && _serverConfig.BindLocalhost,
+                ["BindLocalhost"] = _serverConfig.BindLocalhost,
+                ["UdpPort"] = _serverConfig.UdpPort,
+                ["PublicUdpPort"] = _serverConfig.PublicUdpPort,
+                ["ServerTime"] = DateTime.UtcNow.ToString("O"),
+            };
+            var json = JsonSerializer.Serialize(diag);
+            await writer.WriteLineAsync($"DIAG:{json}").ConfigureAwait(false);
+            _log?.Invoke($"[Diag] {name} requested diagnostics from {remoteEp}");
+        }
+        else if (cmd.StartsWith("UPLOAD_SOUND:"))
+        {
+            // UPLOAD_SOUND:<name>:<base64data>  (requires admin)
+            var payload = cmd.Substring("UPLOAD_SOUND:".Length);
+            var idx = payload.IndexOf(':');
+            if (idx > 0 && _roleStore.HasPermission(name, "admin"))
+            {
+                var soundName = payload.Substring(0, idx);
+                var base64Data = payload.Substring(idx + 1);
+                var estimatedBytes = base64Data.Length * 3 / 4;
+                if (estimatedBytes > _serverConfig.MaxSoundSizeKB * 1024)
+                {
+                    await writer.WriteLineAsync($"ERROR:Sound too large (max {_serverConfig.MaxSoundSizeKB} KB)").ConfigureAwait(false);
+                }
+                else if (_soundboardStore.AddSound(soundName, base64Data))
+                {
+                    _log?.Invoke($"[Soundboard] {name} uploaded sound '{soundName}' ({estimatedBytes / 1024}KB)");
+                    await BroadcastSoundboardListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Could not upload sound").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("DELETE_SOUND:"))
+        {
+            var soundName = cmd.Substring("DELETE_SOUND:".Length);
+            if (_roleStore.HasPermission(name, "admin"))
+            {
+                if (_soundboardStore.RemoveSound(soundName))
+                {
+                    _log?.Invoke($"[Soundboard] {name} deleted sound '{soundName}'");
+                    await BroadcastSoundboardListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Sound not found").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("PLAY_SOUND:"))
+        {
+            var soundName = cmd.Substring("PLAY_SOUND:".Length);
+            var senderRoom = _rooms.GetVoiceRoom(name);
+            if (senderRoom == null)
+            {
+                await writer.WriteLineAsync("ERROR:Not in a voice room").ConfigureAwait(false);
+            }
+            else
+            {
+                var base64Data = _soundboardStore.GetSound(soundName);
+                if (base64Data != null)
+                {
+                    // Relay to all users in the same voice room (including sender)
+                    var message = $"SOUNDBOARD_PLAY:{name}:{soundName}:{base64Data}";
+                    foreach (var kv in _clients)
+                    {
+                        var (w, clientName) = kv.Value;
+                        if (_rooms.GetVoiceRoom(clientName) == senderRoom)
+                        {
+                            try { await w.WriteLineAsync(message).ConfigureAwait(false); }
+                            catch { }
+                        }
+                    }
+                    _log?.Invoke($"[Soundboard] {name} played '{soundName}' in '{senderRoom}'");
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Sound not found").ConfigureAwait(false);
+            }
+        }
+        else if (cmd.StartsWith("CREATE_VOICE_ROOM:"))
+        {
+            // CREATE_VOICE_ROOM:<name>:<password>:<bitrate>
+            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            var args = cmd.Substring("CREATE_VOICE_ROOM:".Length).Split(':', 3);
+            var roomName = args[0];
+            var password = args.Length > 1 && !string.IsNullOrEmpty(args[1]) ? args[1] : null;
+            var bitrate = args.Length > 2 && int.TryParse(args[2], out var br) ? br : 96000;
+            if (_rooms.Config.CreateVoiceRoom(roomName, password, bitrate))
+            {
+                _log?.Invoke($"[Rooms] {name} created voice room '{roomName}'");
+                await BroadcastRoomListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Room already exists or invalid name").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("CREATE_TEXT_ROOM:"))
+        {
+            // CREATE_TEXT_ROOM:<name>:<password>
+            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            var args = cmd.Substring("CREATE_TEXT_ROOM:".Length).Split(':', 2);
+            var roomName = args[0];
+            var password = args.Length > 1 && !string.IsNullOrEmpty(args[1]) ? args[1] : null;
+            if (_rooms.Config.CreateTextRoom(roomName, password))
+            {
+                _rooms.EnsureTextRoom(roomName);
+                _log?.Invoke($"[Rooms] {name} created text room '{roomName}'");
+                await BroadcastRoomListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Room already exists or invalid name").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("DELETE_VOICE_ROOM:"))
+        {
+            var roomName = cmd.Substring("DELETE_VOICE_ROOM:".Length);
+            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            // Kick all users from that voice room first
+            var kicked = _rooms.KickVoiceRoom(roomName);
+            foreach (var kv in _clients)
+            {
+                if (kicked.Contains(kv.Value.name, StringComparer.OrdinalIgnoreCase))
+                {
+                    try { await kv.Value.writer.WriteLineAsync("LEFT_VOICE").ConfigureAwait(false); } catch { }
+                }
+            }
+            if (_rooms.Config.DeleteVoiceRoom(roomName))
+            {
+                _log?.Invoke($"[Rooms] {name} deleted voice room '{roomName}'");
+                await BroadcastRoomListAsync().ConfigureAwait(false);
+                await BroadcastUserListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Room not found").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("DELETE_TEXT_ROOM:"))
+        {
+            var roomName = cmd.Substring("DELETE_TEXT_ROOM:".Length);
+            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            // Notify users in the room
+            var users = _rooms.GetTextRoomUsers(roomName);
+            foreach (var kv in _clients)
+            {
+                if (users.Contains(kv.Value.name, StringComparer.OrdinalIgnoreCase))
+                {
+                    try { await kv.Value.writer.WriteLineAsync($"LEFT_TEXT:{roomName}").ConfigureAwait(false); } catch { }
+                }
+            }
+            _rooms.RemoveTextRoom(roomName);
+            if (_rooms.Config.DeleteTextRoom(roomName))
+            {
+                _log?.Invoke($"[Rooms] {name} deleted text room '{roomName}'");
+                await BroadcastRoomListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Room not found").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("REORDER_VOICE_ROOMS:"))
+        {
+            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            var names = cmd.Substring("REORDER_VOICE_ROOMS:".Length).Split(',').ToList();
+            if (_rooms.Config.ReorderVoiceRooms(names))
+            {
+                _log?.Invoke($"[Rooms] {name} reordered voice rooms");
+                await BroadcastRoomListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Invalid room order").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("REORDER_TEXT_ROOMS:"))
+        {
+            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            var names = cmd.Substring("REORDER_TEXT_ROOMS:".Length).Split(',').ToList();
+            if (_rooms.Config.ReorderTextRooms(names))
+            {
+                _log?.Invoke($"[Rooms] {name} reordered text rooms");
+                await BroadcastRoomListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Invalid room order").ConfigureAwait(false);
+        }
     }
 
     private async Task HandleMessageAsync(StreamWriter writer, string name, string payload)
@@ -425,6 +755,44 @@ public class ChatServer
             await writer.WriteLineAsync($"ERROR:Not in room '{roomName}'").ConfigureAwait(false);
     }
 
+    private async Task HandleFileAsync(StreamWriter writer, string name, string payload)
+    {
+        // payload = <room>:<filename>:<mimeType>:<base64data>
+        var i1 = payload.IndexOf(':');
+        if (i1 < 0) return;
+        var roomName = payload.Substring(0, i1);
+        var rest = payload.Substring(i1 + 1);
+
+        var i2 = rest.IndexOf(':');
+        if (i2 < 0) return;
+        var fileName = rest.Substring(0, i2);
+        var rest2 = rest.Substring(i2 + 1);
+
+        var i3 = rest2.IndexOf(':');
+        if (i3 < 0) return;
+        var mimeType = rest2.Substring(0, i3);
+        var base64Data = rest2.Substring(i3 + 1);
+
+        // Validate size (base64 is ~4/3 of original, allow overhead for E2EE)
+        var estimatedBytes = base64Data.Length * 3 / 4;
+        if (estimatedBytes > _serverConfig.MaxFileSizeKB * 1024)
+        {
+            await writer.WriteLineAsync($"ERROR:Filen er for stor (maks {_serverConfig.MaxFileSizeKB} KB)").ConfigureAwait(false);
+            return;
+        }
+
+        if (!_rooms.IsInTextRoom(name, roomName))
+        {
+            await writer.WriteLineAsync($"ERROR:Not in room '{roomName}'").ConfigureAwait(false);
+            return;
+        }
+
+        var text = $"__FILE__:{fileName}:{mimeType}:{base64Data}";
+        var id = _history.AddMessage(roomName, name, text);
+        await BroadcastToTextRoomAsync(roomName, $"MSG:{roomName}:{id}:{name}:{text}").ConfigureAwait(false);
+        _log?.Invoke($"[Chat] File '{fileName}' ({estimatedBytes / 1024}KB) from '{name}' in '{roomName}'");
+    }
+
     private async Task SendHistoryAsync(StreamWriter writer, string roomName)
     {
         var history = _history.GetHistory(roomName);
@@ -446,24 +814,33 @@ public class ChatServer
             voiceHost = localEp?.Address.ToString() ?? "127.0.0.1";
         }
 
-        var info = new
+        var encrypted = _serverConfig.Encrypted || !string.IsNullOrEmpty(_serverConfig.EncryptionKey);
+        var encKey = string.IsNullOrEmpty(_serverConfig.EncryptionKey) ? null : _serverConfig.EncryptionKey;
+
+        var info = new Dictionary<string, object?>
         {
-            _serverConfig.ServerName,
-            HasPassword = !string.IsNullOrEmpty(_serverConfig.ServerPassword),
-            VoiceHost = voiceHost,
-            _serverConfig.UdpPort,
-            _serverConfig.MaxCameraWidth,
-            _serverConfig.MaxCameraHeight,
-            _serverConfig.MaxScreenWidth,
-            _serverConfig.MaxScreenHeight,
-            _serverConfig.MaxFps,
-            _serverConfig.MaxScreenBitrate,
+            ["ServerName"] = _serverConfig.ServerName,
+            ["HasPassword"] = !string.IsNullOrEmpty(_serverConfig.ServerPassword),
+            ["VoiceHost"] = voiceHost,
+            ["UdpPort"] = _serverConfig.PublicUdpPort is > 0 ? _serverConfig.PublicUdpPort.Value : _serverConfig.UdpPort,
+            ["MaxCameraWidth"] = _serverConfig.MaxCameraWidth,
+            ["MaxCameraHeight"] = _serverConfig.MaxCameraHeight,
+            ["MaxScreenWidth"] = _serverConfig.MaxScreenWidth,
+            ["MaxScreenHeight"] = _serverConfig.MaxScreenHeight,
+            ["MaxFps"] = _serverConfig.MaxFps,
+            ["MaxScreenBitrate"] = _serverConfig.MaxScreenBitrate,
+            ["MaxFileSizeKB"] = _serverConfig.MaxFileSizeKB,
+            ["Encrypted"] = encrypted,
         };
+        if (encKey != null)
+            info["EncryptionKey"] = encKey;
+        if (!string.IsNullOrEmpty(_serverConfig.GiphyApiKey))
+            info["GiphyApiKey"] = _serverConfig.GiphyApiKey;
         var json = JsonSerializer.Serialize(info);
         await writer.WriteLineAsync($"SERVER_INFO:{json}").ConfigureAwait(false);
     }
 
-    private async Task SendRoomListAsync(StreamWriter writer)
+    private string BuildRoomListJson()
     {
         var voiceRooms = _rooms.Config.VoiceRooms.Select(r => new
         {
@@ -476,34 +853,44 @@ public class ChatServer
             r.Name,
             HasPassword = !string.IsNullOrEmpty(r.Password)
         });
-        var json = JsonSerializer.Serialize(new { VoiceRooms = voiceRooms, TextRooms = textRooms });
-        await writer.WriteLineAsync($"ROOMS:{json}").ConfigureAwait(false);
+        return JsonSerializer.Serialize(new { VoiceRooms = voiceRooms, TextRooms = textRooms });
+    }
+
+    private async Task SendRoomListAsync(StreamWriter writer)
+    {
+        await writer.WriteLineAsync($"ROOMS:{BuildRoomListJson()}").ConfigureAwait(false);
+    }
+
+    private async Task BroadcastRoomListAsync()
+    {
+        var message = $"ROOMS:{BuildRoomListJson()}";
+        foreach (var (writer, _) in _clients.Values)
+        {
+            try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
+            catch { }
+        }
+    }
+
+    private string BuildRoleListJson()
+    {
+        var roles = _roleStore.GetRoles().Select(r => new
+        {
+            r.Name,
+            r.Color,
+            r.Priority,
+            r.Permissions,
+        });
+        return JsonSerializer.Serialize(roles);
     }
 
     private async Task SendRoleListAsync(StreamWriter writer)
     {
-        var roles = _roleStore.GetRoles().Select(r => new
-        {
-            r.Name,
-            r.Color,
-            r.Priority,
-            r.Permissions,
-        });
-        var json = JsonSerializer.Serialize(roles);
-        await writer.WriteLineAsync($"ROLES:{json}").ConfigureAwait(false);
+        await writer.WriteLineAsync($"ROLES:{BuildRoleListJson()}").ConfigureAwait(false);
     }
 
     private async Task BroadcastRoleListAsync()
     {
-        var roles = _roleStore.GetRoles().Select(r => new
-        {
-            r.Name,
-            r.Color,
-            r.Priority,
-            r.Permissions,
-        });
-        var json = JsonSerializer.Serialize(roles);
-        var message = $"ROLES:{json}";
+        var message = $"ROLES:{BuildRoleListJson()}";
         foreach (var (writer, _) in _clients.Values)
         {
             try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
@@ -513,43 +900,48 @@ public class ChatServer
 
     private async Task BroadcastUserListAsync()
     {
-        var onlineNames = new HashSet<string>(_clients.Values.Select(c => c.name), StringComparer.OrdinalIgnoreCase);
-        var allNames = _userStore.GetAllUsernames();
+        var clientSnapshot = _clients.Values.ToArray();
+        var onlineNames = new HashSet<string>(clientSnapshot.Length, StringComparer.OrdinalIgnoreCase);
+        var users = new List<object>(clientSnapshot.Length + 16);
 
-        var users = new List<object>();
-        foreach (var c in _clients.Values)
+        foreach (var c in clientSnapshot)
         {
+            if (!onlineNames.Add(c.name)) continue; // skip duplicate connections
             var highest = _roleStore.GetHighestRole(c.name);
+            _userStatus.TryGetValue(c.name, out var status);
             users.Add(new
             {
                 Name = c.name,
                 VoiceRoom = _rooms.GetVoiceRoom(c.name),
                 Online = true,
+                Status = status ?? "online",
                 Roles = _roleStore.GetUserRoleNames(c.name),
                 RoleColor = highest?.Color,
+                Avatar = _avatarStore.GetAvatar(c.name),
             });
         }
-        foreach (var name in allNames)
+
+        foreach (var name in _userStore.GetAllUsernames())
         {
-            if (!onlineNames.Contains(name))
+            if (onlineNames.Contains(name)) continue;
+            var highest = _roleStore.GetHighestRole(name);
+            users.Add(new
             {
-                var highest = _roleStore.GetHighestRole(name);
-                users.Add(new
-                {
-                    Name = name,
-                    VoiceRoom = (string?)null,
-                    Online = false,
-                    Roles = _roleStore.GetUserRoleNames(name),
-                    RoleColor = highest?.Color,
-                });
-            }
+                Name = name,
+                VoiceRoom = (string?)null,
+                Online = false,
+                Status = "offline",
+                Roles = _roleStore.GetUserRoleNames(name),
+                RoleColor = highest?.Color,
+                Avatar = _avatarStore.GetAvatar(name),
+            });
         }
 
         var json = JsonSerializer.Serialize(users);
         var message = $"USERS:{json}";
-        foreach (var (writer, _) in _clients.Values)
+        foreach (var c in clientSnapshot)
         {
-            try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
+            try { await c.writer.WriteLineAsync(message).ConfigureAwait(false); }
             catch { }
         }
     }
@@ -565,7 +957,17 @@ public class ChatServer
                 catch { }
             }
         }
-        _log?.Invoke(message);
+        // Log only metadata, never message content (privacy)
+        _log?.Invoke($"[Chat] Message broadcast to room '{roomName}'");
+    }
+
+    private async Task BroadcastAsync(string message)
+    {
+        foreach (var (writer, _) in _clients.Values)
+        {
+            try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
+            catch { }
+        }
     }
 
     private async Task BroadcastToVoiceRoomAsync(string senderName, string message)
@@ -581,7 +983,25 @@ public class ChatServer
                 catch { }
             }
         }
-        _log?.Invoke(message);
+    }
+
+    private async Task SendSoundboardListAsync(StreamWriter writer)
+    {
+        var names = _soundboardStore.GetNames();
+        var json = JsonSerializer.Serialize(names);
+        await writer.WriteLineAsync($"SOUNDBOARD:{json}").ConfigureAwait(false);
+    }
+
+    private async Task BroadcastSoundboardListAsync()
+    {
+        var names = _soundboardStore.GetNames();
+        var json = JsonSerializer.Serialize(names);
+        var message = $"SOUNDBOARD:{json}";
+        foreach (var (writer, _) in _clients.Values)
+        {
+            try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
+            catch { }
+        }
     }
 
     private async Task RelayVideoAsync(string senderName, string rawLine)

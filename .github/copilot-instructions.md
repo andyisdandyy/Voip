@@ -7,5 +7,8 @@
 - Do not switch UI to chat view unless chat connection succeeds.
 - Prefers chat in a separate window after connecting.
 
+## Documentation
+- After adding or modifying any feature, always update `ARCHITECTURE.md` to reflect the change (new protocol messages, commands, classes, IPC channels, config options, file structure, etc.).
+
 ## Interaction Guidelines
 - When the user explicitly requests no code (e.g., "Du skal ikke lave noget kode"), avoid providing code and only give conceptual guidance or instructions.

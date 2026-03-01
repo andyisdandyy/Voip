@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   disconnectChat: () =>
     ipcRenderer.send('tcp:disconnect'),
 
+  requestDiag: () =>
+    ipcRenderer.send('tcp:diag'),
+
   onChatMessage: (callback) => {
     const handler = (_event, msg) => callback(msg);
     ipcRenderer.on('tcp:message', handler);
@@ -43,7 +46,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('udp:set-bitrate', bitrate),
 
   onAudioReceived: (callback) => {
-    const handler = (_event, pcm) => callback(pcm);
+    const handler = (_event, senderName, pcm) => callback(senderName, pcm);
     ipcRenderer.on('udp:audio', handler);
     return () => ipcRenderer.removeListener('udp:audio', handler);
   },
@@ -66,6 +69,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ── Screen Source Picker ──────────────────────────────────
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   setShareSource: (sourceId, withAudio) => ipcRenderer.invoke('set-share-source', sourceId, withAudio),
+
+  // ── E2EE ───────────────────────────────────────────────────
+  setEncryptionKey: (passphrase) =>
+    ipcRenderer.send('e2ee:set-key', passphrase),
 
   // ── Window Controls ───────────────────────────────────────
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
