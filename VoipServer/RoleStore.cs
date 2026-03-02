@@ -28,9 +28,15 @@ public class RoleStore
     {
         "admin",
         "manage_roles",
-        "manage_rooms",
+        "create_rooms",
+        "delete_rooms",
+        "reorder_rooms",
         "kick_users",
         "delete_messages",
+        "pin_messages",
+        "manage_soundboard",
+        "manage_emojis",
+        "server_settings",
     };
 
     private RoleStoreData _data;

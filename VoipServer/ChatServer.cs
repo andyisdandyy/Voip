@@ -370,21 +370,25 @@ public class ChatServer
         {
             _cameraActive[name] = 0;
             await BroadcastToVoiceRoomAsync(name, $"CAMERA_ON:{name}").ConfigureAwait(false);
+            await BroadcastUserListAsync().ConfigureAwait(false);
         }
         else if (cmd == "CAMERA_OFF")
         {
             _cameraActive.TryRemove(name, out _);
             await BroadcastToVoiceRoomAsync(name, $"CAMERA_OFF:{name}").ConfigureAwait(false);
+            await BroadcastUserListAsync().ConfigureAwait(false);
         }
         else if (cmd == "SCREEN_ON")
         {
             _screenActive[name] = 0;
             await BroadcastToVoiceRoomAsync(name, $"SCREEN_ON:{name}").ConfigureAwait(false);
+            await BroadcastUserListAsync().ConfigureAwait(false);
         }
         else if (cmd == "SCREEN_OFF")
         {
             _screenActive.TryRemove(name, out _);
             await BroadcastToVoiceRoomAsync(name, $"SCREEN_OFF:{name}").ConfigureAwait(false);
+            await BroadcastUserListAsync().ConfigureAwait(false);
         }
         else if (cmd.StartsWith("DELETE_MSG:"))
         {
@@ -403,7 +407,7 @@ public class ChatServer
         {
             // PIN_MSG:<room>:<msgId>
             var args = cmd.Substring("PIN_MSG:".Length).Split(':', 2);
-            if (args.Length >= 2 && _roleStore.HasPermission(name, "manage_rooms"))
+            if (args.Length >= 2 && _roleStore.HasPermission(name, "pin_messages"))
             {
                 var roomName = args[0];
                 var msgId = args[1];
@@ -411,13 +415,13 @@ public class ChatServer
                     await BroadcastToTextRoomAsync(roomName, $"MSG_PINNED:{roomName}:{msgId}").ConfigureAwait(false);
             }
             else if (args.Length >= 2)
-                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("UNPIN_MSG:"))
         {
             // UNPIN_MSG:<room>:<msgId>
             var args = cmd.Substring("UNPIN_MSG:".Length).Split(':', 2);
-            if (args.Length >= 2 && _roleStore.HasPermission(name, "manage_rooms"))
+            if (args.Length >= 2 && _roleStore.HasPermission(name, "pin_messages"))
             {
                 var roomName = args[0];
                 var msgId = args[1];
@@ -425,7 +429,7 @@ public class ChatServer
                     await BroadcastToTextRoomAsync(roomName, $"MSG_UNPINNED:{roomName}:{msgId}").ConfigureAwait(false);
             }
             else if (args.Length >= 2)
-                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("ASSIGN_ROLE:"))
         {
@@ -586,10 +590,10 @@ public class ChatServer
         }
         else if (cmd.StartsWith("UPLOAD_SOUND:"))
         {
-            // UPLOAD_SOUND:<name>:<base64data>  (requires admin)
+            // UPLOAD_SOUND:<name>:<base64data>  (requires manage_soundboard)
             var payload = cmd.Substring("UPLOAD_SOUND:".Length);
             var idx = payload.IndexOf(':');
-            if (idx > 0 && _roleStore.HasPermission(name, "admin"))
+            if (idx > 0 && _roleStore.HasPermission(name, "manage_soundboard"))
             {
                 var soundName = payload.Substring(0, idx);
                 var base64Data = payload.Substring(idx + 1);
@@ -612,7 +616,7 @@ public class ChatServer
         else if (cmd.StartsWith("DELETE_SOUND:"))
         {
             var soundName = cmd.Substring("DELETE_SOUND:".Length);
-            if (_roleStore.HasPermission(name, "admin"))
+            if (_roleStore.HasPermission(name, "manage_soundboard"))
             {
                 if (_soundboardStore.RemoveSound(soundName))
                 {
@@ -662,10 +666,10 @@ public class ChatServer
         }
         else if (cmd.StartsWith("UPLOAD_EMOJI:"))
         {
-            // UPLOAD_EMOJI:<name>:<base64data>  (requires admin)
+            // UPLOAD_EMOJI:<name>:<base64data>  (requires manage_emojis)
             var payload = cmd.Substring("UPLOAD_EMOJI:".Length);
             var idx = payload.IndexOf(':');
-            if (idx > 0 && _roleStore.HasPermission(name, "admin"))
+            if (idx > 0 && _roleStore.HasPermission(name, "manage_emojis"))
             {
                 var emojiName = payload.Substring(0, idx);
                 var base64Data = payload.Substring(idx + 1);
@@ -688,7 +692,7 @@ public class ChatServer
         else if (cmd.StartsWith("DELETE_EMOJI:"))
         {
             var emojiName = cmd.Substring("DELETE_EMOJI:".Length);
-            if (_roleStore.HasPermission(name, "admin"))
+            if (_roleStore.HasPermission(name, "manage_emojis"))
             {
                 if (_emojiStore.RemoveEmoji(emojiName))
                 {
@@ -704,7 +708,7 @@ public class ChatServer
         else if (cmd.StartsWith("CREATE_VOICE_ROOM:"))
         {
             // CREATE_VOICE_ROOM:<name>:<password>:<bitrate>
-            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            if (!_roleStore.HasPermission(name, "create_rooms"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
@@ -724,7 +728,7 @@ public class ChatServer
         else if (cmd.StartsWith("CREATE_TEXT_ROOM:"))
         {
             // CREATE_TEXT_ROOM:<name>:<password>
-            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            if (!_roleStore.HasPermission(name, "create_rooms"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
@@ -744,7 +748,7 @@ public class ChatServer
         else if (cmd.StartsWith("DELETE_VOICE_ROOM:"))
         {
             var roomName = cmd.Substring("DELETE_VOICE_ROOM:".Length);
-            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            if (!_roleStore.HasPermission(name, "delete_rooms"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
@@ -770,7 +774,7 @@ public class ChatServer
         else if (cmd.StartsWith("DELETE_TEXT_ROOM:"))
         {
             var roomName = cmd.Substring("DELETE_TEXT_ROOM:".Length);
-            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            if (!_roleStore.HasPermission(name, "delete_rooms"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
@@ -795,7 +799,7 @@ public class ChatServer
         }
         else if (cmd.StartsWith("REORDER_VOICE_ROOMS:"))
         {
-            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            if (!_roleStore.HasPermission(name, "reorder_rooms"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
@@ -811,7 +815,7 @@ public class ChatServer
         }
         else if (cmd.StartsWith("REORDER_TEXT_ROOMS:"))
         {
-            if (!_roleStore.HasPermission(name, "manage_rooms"))
+            if (!_roleStore.HasPermission(name, "reorder_rooms"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
@@ -827,7 +831,7 @@ public class ChatServer
         }
         else if (cmd.StartsWith("UPDATE_SERVER_CONFIG:"))
         {
-            if (!_roleStore.HasPermission(name, "admin"))
+            if (!_roleStore.HasPermission(name, "server_settings"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
@@ -1100,6 +1104,8 @@ public class ChatServer
                 Avatar = _avatarStore.GetAvatar(c.name),
                 Muted = _userMuted.ContainsKey(c.name),
                 Deafened = _userDeafened.ContainsKey(c.name),
+                Camera = _cameraActive.ContainsKey(c.name),
+                Screen = _screenActive.ContainsKey(c.name),
             });
         }
 
@@ -1118,6 +1124,8 @@ public class ChatServer
                 Avatar = _avatarStore.GetAvatar(name),
                 Muted = false,
                 Deafened = false,
+                Camera = false,
+                Screen = false,
             });
         }
 

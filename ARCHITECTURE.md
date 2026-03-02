@@ -103,20 +103,20 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `KICK_USER:<name>` | Kick a user (requires `kick_users`) |
 | `PING` | Application-level keepalive (server responds with `PONG`) |
 | `DIAG` | Request server diagnostics |
-| `UPLOAD_SOUND:<name>:<base64>` | Upload a soundboard sound (requires `admin`) |
-| `DELETE_SOUND:<name>` | Delete a soundboard sound (requires `admin`) |
+| `UPLOAD_SOUND:<name>:<base64>` | Upload a soundboard sound (requires `manage_soundboard`) |
+| `DELETE_SOUND:<name>` | Delete a soundboard sound (requires `manage_soundboard`) |
 | `PLAY_SOUND:<name>` | Play a soundboard sound to everyone in voice room (1 s cooldown per user; client enforces one-at-a-time playback) |
-| `UPLOAD_EMOJI:<name>:<base64>` | Upload a custom emoji image (requires `admin`, max 256 KB) |
-| `DELETE_EMOJI:<name>` | Delete a custom emoji (requires `admin`) |
-| `PIN_MSG:<room>:<msgId>` | Pin a message in a text room (requires `manage_rooms`) |
-| `UNPIN_MSG:<room>:<msgId>` | Unpin a message (requires `manage_rooms`) |
-| `CREATE_VOICE_ROOM:<name>:<password>:<bitrate>` | Create a voice room (requires `manage_rooms`) |
-| `CREATE_TEXT_ROOM:<name>:<password>` | Create a text room (requires `manage_rooms`) |
-| `DELETE_VOICE_ROOM:<name>` | Delete a voice room (requires `manage_rooms`) |
-| `DELETE_TEXT_ROOM:<name>` | Delete a text room (requires `manage_rooms`) |
-| `REORDER_VOICE_ROOMS:<name1>,<name2>,...` | Reorder voice rooms (requires `manage_rooms`) |
-| `REORDER_TEXT_ROOMS:<name1>,<name2>,...` | Reorder text rooms (requires `manage_rooms`) |
-| `UPDATE_SERVER_CONFIG:<json>` | Update safe server settings (requires `admin`) — saves to disk and re-broadcasts `SERVER_INFO`. Values are parsed via `TryGetInt64` and clamped to safe ranges to prevent overflow. |
+| `UPLOAD_EMOJI:<name>:<base64>` | Upload a custom emoji image (requires `manage_emojis`, max 256 KB) |
+| `DELETE_EMOJI:<name>` | Delete a custom emoji (requires `manage_emojis`) |
+| `PIN_MSG:<room>:<msgId>` | Pin a message in a text room (requires `pin_messages`) |
+| `UNPIN_MSG:<room>:<msgId>` | Unpin a message (requires `pin_messages`) |
+| `CREATE_VOICE_ROOM:<name>:<password>:<bitrate>` | Create a voice room (requires `create_rooms`) |
+| `CREATE_TEXT_ROOM:<name>:<password>` | Create a text room (requires `create_rooms`) |
+| `DELETE_VOICE_ROOM:<name>` | Delete a voice room (requires `delete_rooms`) |
+| `DELETE_TEXT_ROOM:<name>` | Delete a text room (requires `delete_rooms`) |
+| `REORDER_VOICE_ROOMS:<name1>,<name2>,...` | Reorder voice rooms (requires `reorder_rooms`) |
+| `REORDER_TEXT_ROOMS:<name1>,<name2>,...` | Reorder text rooms (requires `reorder_rooms`) |
+| `UPDATE_SERVER_CONFIG:<json>` | Update safe server settings (requires `server_settings`) — saves to disk and re-broadcasts `SERVER_INFO`. Values are parsed via `TryGetInt64` and clamped to safe ranges to prevent overflow. |
 
 #### Video Relay
 - Video frames are sent as `VIDEO:<flags>:<base64data>` over TCP
@@ -150,7 +150,20 @@ Default roles:
 - **Admin** (priority 100): has `admin` permission (grants all)
 - **Member** (priority 0): no special permissions
 
-Available permissions: `admin`, `manage_roles`, `manage_rooms`, `kick_users`, `delete_messages`
+Available permissions:
+| Permission | Description |
+|---|---|
+| `admin` | Full access — implicitly grants every other permission |
+| `manage_roles` | Create, delete, and assign roles |
+| `create_rooms` | Create voice/text channels |
+| `delete_rooms` | Delete voice/text channels |
+| `reorder_rooms` | Reorder channels |
+| `kick_users` | Kick users from the server |
+| `delete_messages` | Delete any user's messages |
+| `pin_messages` | Pin/unpin messages in text channels |
+| `manage_soundboard` | Upload/delete soundboard sounds |
+| `manage_emojis` | Upload/delete custom emojis |
+| `server_settings` | Update server configuration |
 
 ---
 
@@ -215,9 +228,16 @@ Camera/Screen → getUserMedia/getDisplayMedia
     → E2EE encrypt → base64 → TCP send
 
 TCP receive → base64 decode → E2EE decrypt
+    → watchingStreams gate (viewer must opt-in via "Join stream" button)
     → VideoDecoder → VideoFrame
     → canvas drawImage (rendered via canvas element per user)
 ```
+
+Streams are **not auto-played**. When a user starts a camera or screen share,
+other voice room members see a "Join stream" / "Watch camera" button on the
+user tile. Clicking it opts-in to decode and display that user's video frames.
+The text-chat bar also shows a "Join screenshare" shortcut when streams are
+available but not yet watched.
 
 #### Autoconnect
 For each pinned server with `autoConnect` enabled, a lightweight background TCP
@@ -319,7 +339,7 @@ Server → Client:
   SERVER_INFO:<json>
   (SERVER_INFO includes ServerLogo data-URI and GiphyApiKey when configured)
   ROOMS:<json>
-  USERS:<json>                                   (includes Muted/Deafened per user)
+  USERS:<json>                                   (includes Muted/Deafened/Camera/Screen per user)
   ROLES:<json>
   JOINED_VOICE:<room>:<bitrate> | LEFT_VOICE
   JOINED_TEXT:<room> | LEFT_TEXT:<room>

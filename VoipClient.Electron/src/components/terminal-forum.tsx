@@ -151,6 +151,8 @@ export function TerminalForum() {
   const [poppedOut, setPoppedOut] = useState<Set<string>>(new Set());
   const [cameraUsers, setCameraUsers] = useState<Set<string>>(new Set());
   const [screenUsers, setScreenUsers] = useState<Set<string>>(new Set());
+  const [watchingStreams, setWatchingStreams] = useState<Set<string>>(new Set());
+  const watchingStreamsRef = useRef<Set<string>>(new Set());
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedVideoInput, setSelectedVideoInput] = useState('');
   const [videoResolution, setVideoResolution] = useState<VideoResolution>('1080p');
@@ -169,6 +171,7 @@ export function TerminalForum() {
   const [sourceTab, setSourceTab] = useState<'screen' | 'window'>('screen');
   const [avatarEditor, setAvatarEditor] = useState<{ img: HTMLImageElement; zoom: number; offsetX: number; offsetY: number } | null>(null);
   const [logoEditor, setLogoEditor] = useState<{ img: HTMLImageElement; zoom: number; offsetX: number; offsetY: number } | null>(null);
+  const [emojiEditor, setEmojiEditor] = useState<{ img: HTMLImageElement; zoom: number; offsetX: number; offsetY: number; name: string } | null>(null);
   const [theme, setTheme] = useState<ThemeColor>(() => {
     try { return (localStorage.getItem('voip-theme') as ThemeColor) || 'mono'; }
     catch { return 'mono'; }
@@ -423,6 +426,37 @@ export function TerminalForum() {
         }
         if (decrypted.size > 0) {
           setRoomMessages(cur => {
+            const result: Record<string, ChatMsg[]> = {};
+            for (const [room, msgs] of Object.entries(cur)) {
+              result[room] = msgs.map(m => {
+                const d = decrypted.get(m.id);
+                return d !== undefined ? { ...m, body: d } : m;
+              });
+            }
+            return result;
+          });
+        }
+      })();
+      return prev;
+    });
+
+    // Also re-decrypt pinned messages
+    setPinnedMessages(prev => {
+      const entries = Object.entries(prev);
+      const hasEnc = entries.some(([, msgs]) => msgs.some(m => m.body.startsWith('ENC:')));
+      if (!hasEnc) return prev;
+      (async () => {
+        const decrypted = new Map<string, string>();
+        for (const [, msgs] of entries) {
+          for (const m of msgs) {
+            if (m.body.startsWith('ENC:')) {
+              const body = await e2eeDecryptText(m.body);
+              if (body !== m.body) decrypted.set(m.id, body);
+            }
+          }
+        }
+        if (decrypted.size > 0) {
+          setPinnedMessages(cur => {
             const result: Record<string, ChatMsg[]> = {};
             for (const [room, msgs] of Object.entries(cur)) {
               result[room] = msgs.map(m => {
@@ -772,6 +806,15 @@ export function TerminalForum() {
       try {
         const d = JSON.parse(line.substring(6));
         setOnlineUsers(d.map((u: any) => ({ name: u.Name, voiceRoom: u.VoiceRoom || null, online: u.Online !== false, status: (u.Status || (u.Online !== false ? 'online' : 'offline')) as 'online' | 'away' | 'offline', roles: u.Roles || [], roleColor: u.RoleColor || null, avatar: u.Avatar || null, muted: !!u.Muted, deafened: !!u.Deafened })));
+        // Sync camera/screen state from authoritative USERS list
+        const cams = new Set<string>();
+        const scrs = new Set<string>();
+        for (const u of d) {
+          if (u.Camera) cams.add(u.Name);
+          if (u.Screen) scrs.add(u.Name);
+        }
+        setCameraUsers(cams);
+        setScreenUsers(scrs);
       } catch {}
     } else if (line.startsWith('ROLES:')) {
       try {
@@ -922,6 +965,8 @@ export function TerminalForum() {
       if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
       delete decoderTsRef.current[user];
       delete gotKeyframeRef.current[user];
+      watchingStreamsRef.current.delete(user);
+      setWatchingStreams(new Set(watchingStreamsRef.current));
       window.electronAPI.closePopout(user);
       setPoppedOut(prev => { const s = new Set(prev); s.delete(user); return s; });
     } else if (line.startsWith('SCREEN_ON:')) {
@@ -936,6 +981,8 @@ export function TerminalForum() {
       if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
       delete decoderTsRef.current[user];
       delete gotKeyframeRef.current[user];
+      watchingStreamsRef.current.delete(user);
+      setWatchingStreams(new Set(watchingStreamsRef.current));
       window.electronAPI.closePopout(user);
       setPoppedOut(prev => { const s = new Set(prev); s.delete(user); return s; });
     } else if (line.startsWith('MENTION:')) {
@@ -1056,6 +1103,9 @@ export function TerminalForum() {
         }
       }),
       window.electronAPI.onVideoReceived((senderName: string, encodedData: Uint8Array, isKeyFrame: boolean, codec: string) => {
+        // Only decode video from streams the user has opted-in to watch
+        if (!watchingStreamsRef.current.has(senderName)) return;
+
         // Wait for a keyframe before feeding delta frames to the decoder
         if (!isKeyFrame && !gotKeyframeRef.current[senderName]) return;
         if (isKeyFrame) gotKeyframeRef.current[senderName] = true;
@@ -1440,6 +1490,8 @@ export function TerminalForum() {
     setCameraUsers(new Set());
     setScreenUsers(new Set());
     setPoppedOut(new Set());
+    watchingStreamsRef.current = new Set();
+    setWatchingStreams(new Set());
   }
 
   const openScreenShareDialog = async () => {
@@ -1529,6 +1581,47 @@ export function TerminalForum() {
       img.src = URL.createObjectURL(file);
     };
     input.click();
+  }
+
+  function openEmojiPicker() {
+    const nameInput = document.getElementById('srv-emoji-name') as HTMLInputElement;
+    const name = nameInput?.value?.trim();
+    if (!name) { nameInput?.focus(); return; }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const img = new window.Image();
+      img.onload = () => setEmojiEditor({ img, zoom: 1, offsetX: 0, offsetY: 0, name });
+      img.src = URL.createObjectURL(file);
+    };
+    input.click();
+  }
+
+  function exportEmoji(editor: NonNullable<typeof emojiEditor>): string {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    const { img, zoom, offsetX, offsetY } = editor;
+    const minDim = Math.min(img.width, img.height);
+    const srcSize = minDim / zoom;
+    const sx = (img.width - srcSize) / 2 - (offsetX / 192) * srcSize;
+    const sy = (img.height - srcSize) / 2 - (offsetY / 192) * srcSize;
+    ctx.drawImage(img, sx, sy, srcSize, srcSize, 0, 0, size, size);
+    return canvas.toDataURL('image/png').split(',')[1];
+  }
+
+  function saveEmoji() {
+    if (!emojiEditor) return;
+    const base64 = exportEmoji(emojiEditor);
+    window.electronAPI.sendChat(`CMD:UPLOAD_EMOJI:${emojiEditor.name}:${base64}`);
+    const nameInput = document.getElementById('srv-emoji-name') as HTMLInputElement;
+    if (nameInput) nameInput.value = '';
+    setEmojiEditor(null);
   }
 
   function exportLogo(editor: NonNullable<typeof logoEditor>): string {
@@ -1790,7 +1883,7 @@ export function TerminalForum() {
   const offlineUsersList = onlineUsers.filter(u => !u.online);
 
   const myUser = onlineUsers.find(u => u.name === nickname);
-  const ALL_PERMISSIONS = ['admin', 'manage_roles', 'manage_rooms', 'kick_users', 'delete_messages'];
+  const ALL_PERMISSIONS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings'];
   const myPermissions = new Set<string>();
   if (myUser) {
     for (const roleName of myUser.roles) {
@@ -2010,6 +2103,8 @@ export function TerminalForum() {
     setSelectedVideoFeed(null);
     setCameraUsers(new Set());
     setScreenUsers(new Set());
+    watchingStreamsRef.current = new Set();
+    setWatchingStreams(new Set());
     setServerInfo(null);
     setServerRoles([]);
     setPendingFile(null);
@@ -2443,7 +2538,7 @@ export function TerminalForum() {
             <div className="p-4 border-b border-green-900/30">
               <div className="flex items-center justify-between">
                 <div className="text-xs text-green-700">TEXT CHANNELS</div>
-                {hasPermission('manage_rooms') && (
+                {hasPermission('create_rooms') && (
                   <button onClick={() => { setCreateRoomDialog({ type: 'text' }); setNewRoomName(''); setNewRoomPassword(''); }}
                     className="p-1 text-green-700 hover:text-green-400 transition-colors" title="Create text channel">
                     <Plus className="w-3.5 h-3.5" />
@@ -2465,24 +2560,26 @@ export function TerminalForum() {
                     {r.hasPassword ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
                     <span className="text-sm truncate">{r.name}</span>
                   </button>
-                  {hasPermission('manage_rooms') && (
+                  {(hasPermission('reorder_rooms') || hasPermission('delete_rooms')) && (
                     <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
-                      {idx > 0 && (
+                      {hasPermission('reorder_rooms') && idx > 0 && (
                         <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; window.electronAPI.sendChat(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
                           className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move up">
                           <ChevronUp className="w-3 h-3" />
                         </button>
                       )}
-                      {idx < textRooms.length - 1 && (
+                      {hasPermission('reorder_rooms') && idx < textRooms.length - 1 && (
                         <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx], names[idx + 1]] = [names[idx + 1], names[idx]]; window.electronAPI.sendChat(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
                           className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move down">
                           <ChevronDown className="w-3 h-3" />
                         </button>
                       )}
-                      <button onClick={() => { if (confirm(`Delete text channel "${r.name}"?`)) window.electronAPI.sendChat(`CMD:DELETE_TEXT_ROOM:${r.name}`); }}
-                        className="p-0.5 text-green-800 hover:text-red-400 transition-colors" title="Delete channel">
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                      {hasPermission('delete_rooms') && (
+                        <button onClick={() => { if (confirm(`Delete text channel "${r.name}"?`)) window.electronAPI.sendChat(`CMD:DELETE_TEXT_ROOM:${r.name}`); }}
+                          className="p-0.5 text-green-800 hover:text-red-400 transition-colors" title="Delete channel">
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2493,7 +2590,7 @@ export function TerminalForum() {
             <div className="p-4 border-b border-green-900/30">
               <div className="flex items-center justify-between">
                 <div className="text-xs text-green-700">VOICE CHANNELS</div>
-                {hasPermission('manage_rooms') && (
+                {hasPermission('create_rooms') && (
                   <button onClick={() => { setCreateRoomDialog({ type: 'voice' }); setNewRoomName(''); setNewRoomPassword(''); setNewRoomBitrate('96000'); }}
                     className="p-1 text-green-700 hover:text-green-400 transition-colors" title="Create voice channel">
                     <Plus className="w-3.5 h-3.5" />
@@ -2517,24 +2614,26 @@ export function TerminalForum() {
                         <span className="text-sm truncate">{r.name}</span>
                         {r.bitrate > 0 && <span className="ml-auto text-xs text-green-800">{r.bitrate / 1000}k</span>}
                       </button>
-                      {hasPermission('manage_rooms') && (
+                      {(hasPermission('reorder_rooms') || hasPermission('delete_rooms')) && (
                         <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
-                          {idx > 0 && (
+                          {hasPermission('reorder_rooms') && idx > 0 && (
                             <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; window.electronAPI.sendChat(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
                               className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move up">
                               <ChevronUp className="w-3 h-3" />
                             </button>
                           )}
-                          {idx < voiceRooms.length - 1 && (
+                          {hasPermission('reorder_rooms') && idx < voiceRooms.length - 1 && (
                             <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx], names[idx + 1]] = [names[idx + 1], names[idx]]; window.electronAPI.sendChat(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
                               className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move down">
                               <ChevronDown className="w-3 h-3" />
                             </button>
                           )}
-                          <button onClick={() => { if (confirm(`Delete voice channel "${r.name}"?`)) window.electronAPI.sendChat(`CMD:DELETE_VOICE_ROOM:${r.name}`); }}
-                            className="p-0.5 text-green-800 hover:text-red-400 transition-colors" title="Delete channel">
-                            <Trash2 className="w-3 h-3" />
-                          </button>
+                          {hasPermission('delete_rooms') && (
+                            <button onClick={() => { if (confirm(`Delete voice channel "${r.name}"?`)) window.electronAPI.sendChat(`CMD:DELETE_VOICE_ROOM:${r.name}`); }}
+                              className="p-0.5 text-green-800 hover:text-red-400 transition-colors" title="Delete channel">
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -2661,7 +2760,7 @@ export function TerminalForum() {
                 title="Settings">
                 <Settings className="w-4 h-4" />
               </button>
-              {hasPermission('admin') && (
+              {(hasPermission('server_settings') || hasPermission('manage_roles') || hasPermission('manage_soundboard') || hasPermission('manage_emojis')) && (
                 <button onClick={() => setShowServerSettings(true)}
                   className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all"
                   title="Server Settings">
@@ -2738,9 +2837,25 @@ export function TerminalForum() {
                             ) : (
                               <>
                                 <UserAvatar name={u.name} size="lg" />
+                                {(cameraUsers.has(u.name) || screenUsers.has(u.name)) && !watchingStreams.has(u.name) ? (
+                                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-10">
+                                    <div className="text-green-500 text-xs mb-2 flex items-center gap-1">
+                                      {screenUsers.has(u.name) ? <><Share2 className="w-3.5 h-3.5" /> Sharing screen</> : <><Video className="w-3.5 h-3.5" /> Camera on</>}
+                                    </div>
+                                    <button onClick={(e) => {
+                                        e.stopPropagation();
+                                        watchingStreamsRef.current.add(u.name);
+                                        setWatchingStreams(new Set(watchingStreamsRef.current));
+                                      }}
+                                      className="px-4 py-2 rounded-lg bg-green-600/30 text-green-400 hover:bg-green-600/50 transition-all text-sm font-bold flex items-center gap-2">
+                                      <Play className="w-4 h-4" />
+                                      Join stream
+                                    </button>
+                                  </div>
+                                ) : null}
                                 <canvas id={`vc-${u.name}`}
                                   className="absolute inset-0 w-full h-full object-contain"
-                                  style={{ display: (cameraUsers.has(u.name) || screenUsers.has(u.name)) ? 'block' : 'none' }} />
+                                  style={{ display: watchingStreams.has(u.name) && (cameraUsers.has(u.name) || screenUsers.has(u.name)) ? 'block' : 'none' }} />
                               </>
                             )}
                           </div>
@@ -2748,7 +2863,7 @@ export function TerminalForum() {
                             <div className="flex items-center justify-between">
                               <span className="text-green-400 font-bold text-sm">{u.name}{isLocal ? ' (du)' : ''}</span>
                               <div className="flex items-center gap-2">
-                                {!isLocal && (cameraUsers.has(u.name) || screenUsers.has(u.name)) && (
+                                {!isLocal && watchingStreams.has(u.name) && (cameraUsers.has(u.name) || screenUsers.has(u.name)) && (
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -2884,6 +2999,17 @@ export function TerminalForum() {
                             {userMuted ? <MicOff className="w-3 h-3 text-red-500" /> : userDeafened ? <VolumeX className="w-3 h-3 text-red-500" /> : <Mic className="w-3 h-3" />}
                             <span className={userMuted ? 'text-red-500' : userDeafened ? 'text-red-500' : ''}>{userMuted ? 'Muted' : userDeafened ? 'Deafened' : 'Listening'}</span>
                           </div>
+                          {!isSelf && (cameraUsers.has(u.name) || screenUsers.has(u.name)) && !watchingStreams.has(u.name) && (
+                            <button onClick={() => {
+                                watchingStreamsRef.current.add(u.name);
+                                setWatchingStreams(new Set(watchingStreamsRef.current));
+                                setViewModeTracked('voice');
+                              }}
+                              className="mt-2 px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 hover:bg-green-600/30 transition-all text-xs font-bold flex items-center gap-1.5">
+                              <Play className="w-3 h-3" />
+                              {screenUsers.has(u.name) ? 'Join stream' : 'Watch camera'}
+                            </button>
+                          )}
                         </div>
                         );
                       })}
@@ -2963,12 +3089,20 @@ export function TerminalForum() {
                       <Volume2 className="w-3.5 h-3.5 text-green-500" />
                       <span className="text-green-500">{currentVoiceRoom}</span>
                       <span className="text-green-700">{fmt(callDuration)}</span>
-                      {(cameraUsers.size > 0 || screenUsers.size > 0) && (
-                        <button onClick={() => setViewModeTracked('voice')}
-                          className="ml-2 px-2.5 py-1 rounded-md bg-green-600/20 text-green-400 hover:bg-green-600/30 transition-all flex items-center gap-1.5 font-bold animate-pulse">
-                          {screenUsers.size > 0 ? <><Share2 className="w-3 h-3" /> Join screenshare</> : <><Video className="w-3 h-3" /> Join camera</>}
-                        </button>
-                      )}
+                      {(cameraUsers.size > 0 || screenUsers.size > 0) && (() => {
+                        const unwatched = [...cameraUsers, ...screenUsers].filter(u => !watchingStreams.has(u) && u !== nickname);
+                        if (unwatched.length === 0) return null;
+                        return (
+                          <button onClick={() => {
+                              unwatched.forEach(u => watchingStreamsRef.current.add(u));
+                              setWatchingStreams(new Set(watchingStreamsRef.current));
+                              setViewModeTracked('voice');
+                            }}
+                            className="ml-2 px-2.5 py-1 rounded-md bg-green-600/20 text-green-400 hover:bg-green-600/30 transition-all flex items-center gap-1.5 font-bold animate-pulse">
+                            {screenUsers.size > 0 ? <><Share2 className="w-3 h-3" /> Join screenshare</> : <><Video className="w-3 h-3" /> Join camera</>}
+                          </button>
+                        );
+                      })()}
                       <button onClick={() => setViewModeTracked('voice')} className="ml-auto text-green-600 hover:text-green-400 transition-colors">
                         Vis voice
                       </button>
@@ -3017,7 +3151,7 @@ export function TerminalForum() {
                                 <span className="text-xs font-bold" style={{ color: senderUser?.roleColor || '#22c55e' }}>{msg.sender}</span>
                                 <div className="flex items-center gap-2">
                                   <span className="text-[10px] text-green-800">{dateStr} {timeStr}</span>
-                                  {hasPermission('manage_rooms') && (
+                                  {hasPermission('pin_messages') && (
                                     <button onClick={() => window.electronAPI.sendChat(`CMD:UNPIN_MSG:${currentTextRoom}:${msg.msgId}`)}
                                       className="opacity-0 group-hover/pin:opacity-100 p-0.5 text-green-800 hover:text-red-400 transition-all" title="Unpin">
                                       <X className="w-3 h-3" />
@@ -3705,13 +3839,19 @@ export function TerminalForum() {
 
       {/* ── Server Settings Modal (admin only) ─────────────────── */}
       {showServerSettings && serverInfo && (() => {
-        const ALL_PERMS = ['admin', 'manage_roles', 'manage_rooms', 'kick_users', 'delete_messages'];
+        const ALL_PERMS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings'];
         const PERM_LABELS: Record<string, string> = {
           admin: 'Administrator — full access to everything',
           manage_roles: 'Manage Roles — create, delete, assign roles',
-          manage_rooms: 'Manage Rooms — create, delete, reorder channels',
+          create_rooms: 'Create Rooms — create voice/text channels',
+          delete_rooms: 'Delete Rooms — delete voice/text channels',
+          reorder_rooms: 'Reorder Rooms — reorder channels',
           kick_users: 'Kick Users — remove users from the server',
           delete_messages: 'Delete Messages — delete any user\'s messages',
+          pin_messages: 'Pin Messages — pin/unpin messages in text channels',
+          manage_soundboard: 'Manage Soundboard — upload/delete sounds',
+          manage_emojis: 'Manage Emojis — upload/delete custom emojis',
+          server_settings: 'Server Settings — update server configuration',
         };
         const NumberField = ({ label, value, field, unit, min, max }: { label: string; value: number; field: string; unit?: string; min?: number; max?: number }) => (
           <div>
@@ -3749,12 +3889,13 @@ export function TerminalForum() {
           window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify(config)}`);
           setShowServerSettings(false);
         };
-        const tabs: { id: typeof serverSettingsTab; label: string; icon: React.ReactNode }[] = [
-          { id: 'general', label: 'General', icon: <Sliders className="w-4 h-4" /> },
-          { id: 'roles', label: 'Roles', icon: <Users className="w-4 h-4" /> },
-          { id: 'soundboard', label: 'Soundboard', icon: <Music className="w-4 h-4" /> },
-          { id: 'emojis', label: 'Emojis', icon: <Smile className="w-4 h-4" /> },
+        const allTabs: { id: typeof serverSettingsTab; label: string; icon: React.ReactNode; perm?: string }[] = [
+          { id: 'general', label: 'General', icon: <Sliders className="w-4 h-4" />, perm: 'server_settings' },
+          { id: 'roles', label: 'Roles', icon: <Users className="w-4 h-4" />, perm: 'manage_roles' },
+          { id: 'soundboard', label: 'Soundboard', icon: <Music className="w-4 h-4" />, perm: 'manage_soundboard' },
+          { id: 'emojis', label: 'Emojis', icon: <Smile className="w-4 h-4" />, perm: 'manage_emojis' },
         ];
+        const tabs = allTabs.filter(t => !t.perm || hasPermission(t.perm));
         return (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
             onClick={() => setShowServerSettings(false)}>
@@ -4150,29 +4291,10 @@ export function TerminalForum() {
                             className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
                           <span className="text-[10px] text-green-800 mt-1 block">Use in chat as :name:</span>
                         </div>
-                        <div>
-                          <label className="text-xs text-green-600 block mb-1">Image File</label>
-                          <input type="file" id="srv-emoji-file" accept="image/*"
-                            className="w-full text-sm text-green-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-green-900/30 file:text-green-400 file:font-bold file:cursor-pointer hover:file:bg-green-900/50 transition-all" />
-                          <span className="text-[10px] text-green-800 mt-1 block">Max 256 KB — PNG, GIF, WebP recommended</span>
-                        </div>
-                        <button onClick={() => {
-                            const emojiName = (document.getElementById('srv-emoji-name') as HTMLInputElement)?.value?.trim();
-                            const fileInput = document.getElementById('srv-emoji-file') as HTMLInputElement;
-                            const file = fileInput?.files?.[0];
-                            if (!emojiName || !file) return;
-                            const reader = new FileReader();
-                            reader.onload = () => {
-                              const b64 = (reader.result as string).split(',')[1];
-                              if (!b64) return;
-                              window.electronAPI.sendChat(`CMD:UPLOAD_EMOJI:${emojiName}:${b64}`);
-                              (document.getElementById('srv-emoji-name') as HTMLInputElement).value = '';
-                              fileInput.value = '';
-                            };
-                            reader.readAsDataURL(file);
-                          }}
-                          className="w-full py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold text-sm">
-                          Upload Emoji
+                        <button onClick={openEmojiPicker}
+                          className="w-full py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold text-sm flex items-center justify-center gap-2">
+                          <Upload className="w-4 h-4" />
+                          Choose Image
                         </button>
                       </div>
                     </div>
@@ -4287,7 +4409,7 @@ export function TerminalForum() {
       {msgContextMenu && (() => {
         const isPinned = (pinnedMessages[msgContextMenu.room] || []).some(m => m.msgId === msgContextMenu.msgId);
         const canDelete = msgContextMenu.sender === nickname || hasPermission('delete_messages');
-        const canPin = hasPermission('manage_rooms');
+        const canPin = hasPermission('pin_messages');
         return (
           <div
             className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[180px] z-50"
@@ -4639,6 +4761,62 @@ export function TerminalForum() {
                 <button onClick={saveLogo}
                   className="flex-1 px-4 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg transition-all font-bold text-sm">
                   Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Emoji Editor Modal ────────────────────────────── */}
+      {emojiEditor && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
+            <div className="bg-green-900/40 p-4 border-b border-green-900/50 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-green-400">CROP EMOJI — :{emojiEditor.name}:</h3>
+              <button onClick={() => setEmojiEditor(null)} className="p-1 text-green-600 hover:text-green-400">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 flex flex-col items-center gap-4">
+              <div className="relative w-48 h-48 rounded-2xl overflow-hidden border-2 border-green-900/50 bg-[#0a0e0a]">
+                <canvas width={192} height={192}
+                  ref={el => {
+                    if (!el) return;
+                    const ctx = el.getContext('2d');
+                    if (!ctx) return;
+                    const { img, zoom, offsetX, offsetY } = emojiEditor;
+                    ctx.clearRect(0, 0, 192, 192);
+                    const minDim = Math.min(img.width, img.height);
+                    const srcSize = minDim / zoom;
+                    const sx = (img.width - srcSize) / 2 - (offsetX / 192) * srcSize;
+                    const sy = (img.height - srcSize) / 2 - (offsetY / 192) * srcSize;
+                    ctx.drawImage(img, sx, sy, srcSize, srcSize, 0, 0, 192, 192);
+                  }}
+                  onMouseDown={e => {
+                    const startX = e.clientX, startY = e.clientY;
+                    const { offsetX: ox, offsetY: oy } = emojiEditor;
+                    const move = (ev: MouseEvent) => setEmojiEditor(prev => prev ? { ...prev, offsetX: ox + (ev.clientX - startX), offsetY: oy + (ev.clientY - startY) } : null);
+                    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+                    window.addEventListener('mousemove', move);
+                    window.addEventListener('mouseup', up);
+                  }}
+                  className="w-full h-full cursor-grab active:cursor-grabbing" />
+              </div>
+              <div className="w-full">
+                <label className="text-xs text-green-600 block mb-1">Zoom</label>
+                <input type="range" min="100" max="400" value={emojiEditor.zoom * 100}
+                  onChange={e => setEmojiEditor(prev => prev ? { ...prev, zoom: parseInt(e.target.value) / 100 } : null)}
+                  className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
+              </div>
+              <div className="flex gap-3 w-full">
+                <button onClick={() => setEmojiEditor(null)}
+                  className="flex-1 px-4 py-2 text-green-700 hover:text-green-500 rounded-lg hover:bg-green-900/20 transition-all text-sm">
+                  Cancel
+                </button>
+                <button onClick={saveEmoji}
+                  className="flex-1 px-4 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg transition-all font-bold text-sm">
+                  Upload
                 </button>
               </div>
             </div>
