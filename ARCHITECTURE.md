@@ -23,13 +23,16 @@ Voip/
 │   ├── AvatarStore.cs       # Per-user avatar images as base64 (avatars.json)
 │   ├── ChatHistoryStore.cs  # Last 200 messages per text room (chat_history.json)
 │   ├── SoundboardStore.cs   # Soundboard sound entries — name → base64 audio (soundboard.json)
+│   ├── EmojiStore.cs        # Custom emoji entries — name → base64 image (emojis.json)
 │   └── deploy/
 │       └── update.sh        # Server-side script — downloads latest GitHub Release binary
 │
 ├── VoipClient.Electron/     # Electron + React + Tailwind CSS (client)
 │   ├── electron/
 │   │   ├── main.js          # Main process — TCP/UDP networking, E2EE, TLS negotiation
-│   │   └── preload.js       # Context bridge — exposes IPC APIs to renderer
+│   │   ├── preload.js       # Context bridge — exposes IPC APIs to renderer
+│   │   ├── popout-preload.js  # Context bridge for pop-out video windows
+│   │   └── popout-video.html  # Pop-out video window (canvas + VideoDecoder)
 │   ├── src/
 │   │   ├── App.tsx           # Root React component
 │   │   ├── main.tsx          # React entry point
@@ -103,6 +106,10 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `UPLOAD_SOUND:<name>:<base64>` | Upload a soundboard sound (requires `admin`) |
 | `DELETE_SOUND:<name>` | Delete a soundboard sound (requires `admin`) |
 | `PLAY_SOUND:<name>` | Play a soundboard sound to everyone in voice room (1 s cooldown per user; client enforces one-at-a-time playback) |
+| `UPLOAD_EMOJI:<name>:<base64>` | Upload a custom emoji image (requires `admin`, max 256 KB) |
+| `DELETE_EMOJI:<name>` | Delete a custom emoji (requires `admin`) |
+| `PIN_MSG:<room>:<msgId>` | Pin a message in a text room (requires `manage_rooms`) |
+| `UNPIN_MSG:<room>:<msgId>` | Unpin a message (requires `manage_rooms`) |
 | `CREATE_VOICE_ROOM:<name>:<password>:<bitrate>` | Create a voice room (requires `manage_rooms`) |
 | `CREATE_TEXT_ROOM:<name>:<password>` | Create a text room (requires `manage_rooms`) |
 | `DELETE_VOICE_ROOM:<name>` | Delete a voice room (requires `manage_rooms`) |
@@ -124,6 +131,8 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `AvatarStore` | `avatars.json` | Username → base64 JPEG |
 | `ChatHistoryStore` | `chat_history.json` | Room → last 200 messages (debounced save) |
 | `SoundboardStore` | `soundboard.json` | Sound name → base64 audio data |
+| `EmojiStore` | `emojis.json` | Emoji name → base64 image data |
+| `ChatHistoryStore` | `pinned_messages.json` | Room → set of pinned message IDs |
 | `ServerConfig` | `server-config.json` | Network, encryption, quality config |
 | `RoomsConfig` | `rooms.json` | Voice/text room definitions (CRUD + reorder) |
 
@@ -152,6 +161,14 @@ Available permissions: `admin`, `manage_roles`, `manage_rooms`, `kick_users`, `d
 - **React 19** + **TypeScript 5.7** + **Tailwind CSS 4.1** (Vite)
 - **opusscript** for Opus audio encoding/decoding (runs in main process)
 - **WebCodecs API** (`VideoEncoder`/`VideoDecoder`) for H.264/VP8 video
+
+### Platform Support
+- **Windows** — frameless window with custom titlebar buttons
+- **macOS** — hidden titlebar with native traffic light buttons, media permission prompts
+- **Linux** — frameless window with custom titlebar buttons; Ozone auto-detection for
+  Wayland support; PipeWire capturer enabled for screen sharing on Wayland compositors.
+  When `desktopCapturer` returns no sources (Wayland), the OS-native PipeWire portal
+  handles source selection. Screen share audio is supported via PipeWire.
 
 ### Main Process — `electron/main.js`
 
@@ -227,6 +244,23 @@ Release workflow: `.github/workflows/release-client.yml` builds Windows (NSIS),
 macOS (DMG + ZIP), and Linux (AppImage + deb) artifacts and publishes them to the
 GitHub Release via `--publish always`.
 
+#### Video Pop-out
+Remote camera/screen-share feeds can be popped out into a separate frameless window.
+The main process creates a new `BrowserWindow` per username, loads `popout-video.html`,
+and forwards the raw encoded video frames in parallel with the main renderer. Each
+pop-out window has its own `VideoDecoder` and `<canvas>`. Pop-out windows are
+automatically closed when the feed source ends (`CAMERA_OFF`/`SCREEN_OFF`) or on
+disconnect.
+
+| IPC Channel           | Direction      | Description                          |
+|-----------------------|----------------|--------------------------------------|
+| `popout:open`         | invoke → main  | Open a pop-out window for a username |
+| `popout:close`        | send → main    | Close a specific pop-out window      |
+| `popout:closed`       | main → renderer| Notifies renderer a pop-out closed   |
+| `popout:get-info`     | invoke (popout) | Pop-out window queries its username  |
+| `popout:video-frame`  | main → popout  | Forward encoded video frame          |
+| `popout:feed-ended`   | main → popout  | Notifies pop-out that feed ended     |
+
 ### Renderer — `terminal-forum.tsx`
 
 The entire UI lives in a single React component (`TerminalForum`). Key sections:
@@ -255,6 +289,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Window controls (minimize, maximize, close, fullscreen)
 - Autoconnect (start, stop, mention listener)
 - Auto-updater (version, check, install, progress/status listeners)
+- Video pop-out (open, close, closed listener)
 
 ### AudioWorklet Processors
 - **`audio-capture-processor.js`**: Buffers Float32 samples into 960-sample frames (20 ms at 48 kHz), converts to Int16, and posts to main thread.
@@ -282,7 +317,7 @@ Server → Client:
   READY
   AUTH_OK | AUTH_FAIL:<reason> | REGISTER_OK | REGISTER_FAIL:<reason>
   SERVER_INFO:<json>
-  (SERVER_INFO includes GiphyApiKey when configured — enables client GIF picker)
+  (SERVER_INFO includes ServerLogo data-URI and GiphyApiKey when configured)
   ROOMS:<json>
   USERS:<json>                                   (includes Muted/Deafened per user)
   ROLES:<json>
@@ -299,6 +334,10 @@ Server → Client:
   MENTION:<room>:<sender>:<text>
   SOUNDBOARD:<json>                              (list of sound names)
   SOUNDBOARD_PLAY:<sender>:<name>:<base64data>   (sound played in voice room)
+  EMOJIS:<json>                                  (name → base64 image data for custom emojis)
+  PINS:<room>:<json>                             (list of pinned messages sent on room join)
+  MSG_PINNED:<room>:<msgId>                      (broadcast when a message is pinned)
+  MSG_UNPINNED:<room>:<msgId>                    (broadcast when a message is unpinned)
   KICKED
   PONG
   ERROR:<message>
@@ -327,6 +366,7 @@ Server → Client:
 {
   "ServerName": "Voip Server",
   "ServerPassword": null,           // Optional gate password
+  "ServerLogo": null,               // Base64 data-URI (max ~64 KB, cropped via editor)
   "Encrypted": false,               // True E2EE (client-side key)
   "EncryptionKey": null,            // Server-managed E2EE key
   "VoiceHost": "0.0.0.0",

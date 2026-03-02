@@ -44,6 +44,7 @@ var userStore = new UserStore(Path.Combine(exeDir, "users.json"));
 var roleStore = new RoleStore(Path.Combine(exeDir, "roles.json"));
 var avatarStore = new AvatarStore(Path.Combine(exeDir, "avatars.json"));
 var soundboardStore = new SoundboardStore(Path.Combine(exeDir, "soundboard.json"));
+var emojiStore = new EmojiStore(Path.Combine(exeDir, "emojis.json"));
 
 Log("VoIP Server starting...");
 Log($"Server: '{serverConfig.ServerName}'");
@@ -52,7 +53,7 @@ Log($"Loaded {roleStore.GetRoles().Count} roles");
 Log($"E2EE: {(!string.IsNullOrEmpty(serverConfig.EncryptionKey) ? "Server-managed key" : serverConfig.Encrypted ? "Client-side (ægte E2EE)" : "Disabled")}");
 
 var chatCts = new CancellationTokenSource();
-_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, avatarStore, soundboardStore, Log).StartAsync(chatCts.Token));
+_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, avatarStore, soundboardStore, emojiStore, Log).StartAsync(chatCts.Token));
 var bindAddr = serverConfig.BindLocalhost ? "127.0.0.1" : "0.0.0.0";
 Log($"Chat server started on {bindAddr}:{serverConfig.TcpPort}{(serverConfig.BindLocalhost ? " (use NGINX for TLS)" : "")}");
 

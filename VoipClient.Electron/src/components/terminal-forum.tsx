@@ -5,7 +5,7 @@ import {
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
   Plus, LogOut, Command, Wifi, WifiOff, Home, Paperclip, Download, FileText, Send, Smile, Moon, Image as ImageIcon,
   Music, Upload, Play, Trash, ChevronUp, ChevronDown, Eye, EyeOff, Shield, Sliders, Users, Check,
-  PanelRightClose, PanelRightOpen,
+  PanelRightClose, PanelRightOpen, ExternalLink, Pin,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
@@ -57,6 +57,25 @@ function parseAddress(addr: string): { host: string; port: number } {
 
 const SERVER_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'] as const;
 
+// Standard emoji shortcode map
+const EMOJI_SHORTCODES: Record<string, string> = {
+  grinning: '😀', joy: '😂', sweat_smile: '😅', blush: '😊', sunglasses: '😎', heart_eyes: '😍',
+  partying: '🥳', sob: '😭', rage: '😤', thinking: '🤔', exploding_head: '🤯', pleading: '🥺',
+  sleeping: '😴', clown: '🤡', thumbsup: '👍', thumbsdown: '👎', clap: '👏', raised_hands: '🙌',
+  handshake: '🤝', peace: '✌️', call_me: '🤙', muscle: '💪', heart: '❤️', fire: '🔥',
+  star: '⭐', hundred: '💯', tada: '🎉', notes: '🎶', skull: '💀', eyes: '👀',
+  salute: '🫡', melting: '🫠', imp: '😈', poop: '💩', robot: '🤖', alien: '👾',
+  goat: '🐐', fox: '🦊', cat: '🐱', dog: '🐶', coffee: '☕', pizza: '🍕',
+  beer: '🍺', gaming: '🎮', computer: '💻', tools: '🛠️', zap: '⚡', check: '✅',
+  x: '❌', warning: '⚠️', speech: '💬', pin: '📌', rocket: '🚀', earth: '🌍',
+  moon: '🌙', sun: '☀️', rainbow: '🌈', gem: '💎', laugh: '😂', laughing: '😂',
+  smile: '😊', wink: '😉', cool: '😎', cry: '😭', angry: '😤', think: '🤔',
+  love: '❤️', ok: '👍', no: '👎', wave: '👋', pray: '🙏', shrug: '🤷',
+  facepalm: '🤦', roll_eyes: '🙄', nerd: '🤓', money: '🤑', sick: '🤢',
+  devil: '😈', angel: '😇', poo: '💩', ghost: '👻', party: '🥳',
+  '+1': '👍', '-1': '👎', 'thumbs_up': '👍', 'thumbs_down': '👎',
+};
+
 // ── Component ───────────────────────────────────────────────
 
 export function TerminalForum() {
@@ -81,6 +100,8 @@ export function TerminalForum() {
 
   // Messages per room
   const [roomMessages, setRoomMessages] = useState<Record<string, ChatMsg[]>>({});
+  const [pinnedMessages, setPinnedMessages] = useState<Record<string, ChatMsg[]>>({});
+  const [showPins, setShowPins] = useState(false);
 
   // Users
   const [onlineUsers, setOnlineUsers] = useState<UserInfo[]>([]);
@@ -127,6 +148,7 @@ export function TerminalForum() {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [selectedVideoFeed, setSelectedVideoFeed] = useState<string | null>(null);
   const [activeVideos, setActiveVideos] = useState<Set<string>>(new Set());
+  const [poppedOut, setPoppedOut] = useState<Set<string>>(new Set());
   const [cameraUsers, setCameraUsers] = useState<Set<string>>(new Set());
   const [screenUsers, setScreenUsers] = useState<Set<string>>(new Set());
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
@@ -142,9 +164,11 @@ export function TerminalForum() {
   const [serverPasswordDialog, setServerPasswordDialog] = useState<{ address: string; username: string; password: string; isRegister: boolean; serverId?: string } | null>(null);
   const [serverPasswordInput, setServerPasswordInput] = useState('');
   const [screenSources, setScreenSources] = useState<Array<{id: string; name: string; thumbnail: string; appIcon: string | null; isScreen: boolean}>>([]);
+  const [screenSourcesLoaded, setScreenSourcesLoaded] = useState(false);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [sourceTab, setSourceTab] = useState<'screen' | 'window'>('screen');
   const [avatarEditor, setAvatarEditor] = useState<{ img: HTMLImageElement; zoom: number; offsetX: number; offsetY: number } | null>(null);
+  const [logoEditor, setLogoEditor] = useState<{ img: HTMLImageElement; zoom: number; offsetX: number; offsetY: number } | null>(null);
   const [theme, setTheme] = useState<ThemeColor>(() => {
     try { return (localStorage.getItem('voip-theme') as ThemeColor) || 'mono'; }
     catch { return 'mono'; }
@@ -224,7 +248,7 @@ export function TerminalForum() {
   // Settings
   const [showSettings, setShowSettings] = useState(false);
   const [showServerSettings, setShowServerSettings] = useState(false);
-  const [serverSettingsTab, setServerSettingsTab] = useState<'general' | 'roles' | 'soundboard'>('general');
+  const [serverSettingsTab, setServerSettingsTab] = useState<'general' | 'roles' | 'soundboard' | 'emojis'>('general');
   const [audioInputs, setAudioInputs]   = useState<MediaDeviceInfo[]>([]);
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedInput, setSelectedInput]   = useState('');
@@ -262,6 +286,11 @@ export function TerminalForum() {
   const soundboardSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const soundboardGainRef = useRef<GainNode | null>(null);
   const [playingSound, setPlayingSound] = useState<string | null>(null);
+
+  // Custom emojis (name → base64 image data from server)
+  const [customEmojis, setCustomEmojis] = useState<Record<string, string>>({});
+  const [emojiQuery, setEmojiQuery] = useState<string | null>(null);
+  const [emojiAutoIndex, setEmojiAutoIndex] = useState(0);
 
   // Room management
   const [createRoomDialog, setCreateRoomDialog] = useState<{ type: 'voice' | 'text' } | null>(null);
@@ -828,13 +857,63 @@ export function TerminalForum() {
           [room]: [...(prev[room] || []), { id: crypto.randomUUID(), msgId, sender, body, timestamp: now }],
         }));
       });
+    } else if (line.startsWith('PINS:')) {
+      // PINS:<room>:<json array of pinned messages>
+      const payload = line.substring(5);
+      const idx = payload.indexOf(':');
+      if (idx >= 0) {
+        const room = payload.substring(0, idx);
+        try {
+          const msgs: any[] = JSON.parse(payload.substring(idx + 1));
+          Promise.all(msgs.map(async m => ({
+            id: crypto.randomUUID(),
+            msgId: m.Id || '',
+            sender: m.User || '',
+            body: await e2eeDecryptText(m.Text || ''),
+            timestamp: new Date(m.Time).getTime(),
+          }))).then(formatted => {
+            setPinnedMessages(prev => ({ ...prev, [room]: formatted }));
+          });
+        } catch {}
+      }
+    } else if (line.startsWith('MSG_PINNED:')) {
+      // MSG_PINNED:<room>:<msgId>
+      const payload = line.substring(11);
+      const idx = payload.indexOf(':');
+      if (idx >= 0) {
+        const room = payload.substring(0, idx);
+        const msgId = payload.substring(idx + 1);
+        // Find the message in room history and add it to pinned
+        setRoomMessages(prev => {
+          const msgs = prev[room] || [];
+          const msg = msgs.find(m => m.msgId === msgId);
+          if (msg) {
+            setPinnedMessages(p => ({
+              ...p,
+              [room]: [...(p[room] || []), msg],
+            }));
+          }
+          return prev;
+        });
+      }
+    } else if (line.startsWith('MSG_UNPINNED:')) {
+      // MSG_UNPINNED:<room>:<msgId>
+      const payload = line.substring(13);
+      const idx = payload.indexOf(':');
+      if (idx >= 0) {
+        const room = payload.substring(0, idx);
+        const msgId = payload.substring(idx + 1);
+        setPinnedMessages(prev => ({
+          ...prev,
+          [room]: (prev[room] || []).filter(m => m.msgId !== msgId),
+        }));
+      }
     } else if (line.startsWith('ERROR:')) {
       setStatus(`⚠ ${line.substring(6)}`);
     } else if (line.startsWith('CAMERA_ON:')) {
       const user = line.substring(10);
       setCameraUsers(prev => new Set(prev).add(user));
       playUiSound('cameraOn');
-      if (viewModeRef.current !== 'voice') setViewModeTracked('voice');
     } else if (line.startsWith('CAMERA_OFF:')) {
       const user = line.substring(11);
       setCameraUsers(prev => { const s = new Set(prev); s.delete(user); return s; });
@@ -843,11 +922,12 @@ export function TerminalForum() {
       if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
       delete decoderTsRef.current[user];
       delete gotKeyframeRef.current[user];
+      window.electronAPI.closePopout(user);
+      setPoppedOut(prev => { const s = new Set(prev); s.delete(user); return s; });
     } else if (line.startsWith('SCREEN_ON:')) {
       const user = line.substring(10);
       setScreenUsers(prev => new Set(prev).add(user));
       playUiSound('screenOn');
-      if (viewModeRef.current !== 'voice') setViewModeTracked('voice');
     } else if (line.startsWith('SCREEN_OFF:')) {
       const user = line.substring(11);
       setScreenUsers(prev => { const s = new Set(prev); s.delete(user); return s; });
@@ -856,6 +936,8 @@ export function TerminalForum() {
       if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
       delete decoderTsRef.current[user];
       delete gotKeyframeRef.current[user];
+      window.electronAPI.closePopout(user);
+      setPoppedOut(prev => { const s = new Set(prev); s.delete(user); return s; });
     } else if (line.startsWith('MENTION:')) {
       // MENTION:<room>:<sender>:<text>
       const i1 = line.indexOf(':', 8);
@@ -871,6 +953,11 @@ export function TerminalForum() {
       try {
         const names: string[] = JSON.parse(line.substring(11));
         setSoundboardSounds(names);
+      } catch {}
+    } else if (line.startsWith('EMOJIS:')) {
+      try {
+        const data: Record<string, string> = JSON.parse(line.substring(7));
+        setCustomEmojis(data);
       } catch {}
     } else if (line.startsWith('SOUNDBOARD_PLAY:')) {
       // SOUNDBOARD_PLAY:<sender>:<name>:<base64data>
@@ -932,6 +1019,8 @@ export function TerminalForum() {
         setCurrentText(null);
         setJoinedText(new Set());
         setRoomMessages({});
+        setPinnedMessages({});
+        setShowPins(false);
         setOnlineUsers([]);
         setVoiceRooms([]);
         setTextRooms([]);
@@ -1013,6 +1102,9 @@ export function TerminalForum() {
           activeVideosRef.current.add(senderName);
           setActiveVideos(new Set(activeVideosRef.current));
         }
+      }),
+      window.electronAPI.onPopoutClosed((username: string) => {
+        setPoppedOut(prev => { const s = new Set(prev); s.delete(username); return s; });
       }),
     ];
     return () => unsubs.forEach(fn => fn());
@@ -1347,6 +1439,7 @@ export function TerminalForum() {
     setActiveVideos(new Set());
     setCameraUsers(new Set());
     setScreenUsers(new Set());
+    setPoppedOut(new Set());
   }
 
   const openScreenShareDialog = async () => {
@@ -1354,13 +1447,16 @@ export function TerminalForum() {
     setSourceTab('screen');
     setSelectedSource(null);
     setScreenSources([]);
+    setScreenSourcesLoaded(false);
     try {
       const sources = await window.electronAPI.getScreenSources();
       setScreenSources(sources);
+      setScreenSourcesLoaded(true);
       const firstScreen = sources.find((s: any) => s.isScreen);
       if (firstScreen) setSelectedSource(firstScreen.id);
     } catch (err) {
       console.error('[ScreenShare] Failed to get sources:', err);
+      setScreenSourcesLoaded(true);
     }
   };
 
@@ -1419,6 +1515,42 @@ export function TerminalForum() {
 
   function removeAvatar() {
     window.electronAPI.sendChat('CMD:REMOVE_AVATAR');
+  }
+
+  function openLogoPicker() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const img = new window.Image();
+      img.onload = () => setLogoEditor({ img, zoom: 1, offsetX: 0, offsetY: 0 });
+      img.src = URL.createObjectURL(file);
+    };
+    input.click();
+  }
+
+  function exportLogo(editor: NonNullable<typeof logoEditor>): string {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    const { img, zoom, offsetX, offsetY } = editor;
+    const minDim = Math.min(img.width, img.height);
+    const srcSize = minDim / zoom;
+    const sx = (img.width - srcSize) / 2 - (offsetX / size) * srcSize;
+    const sy = (img.height - srcSize) / 2 - (offsetY / size) * srcSize;
+    ctx.drawImage(img, sx, sy, srcSize, srcSize, 0, 0, size, size);
+    return canvas.toDataURL('image/png', 0.9);
+  }
+
+  function saveLogo() {
+    if (!logoEditor) return;
+    const dataUri = exportLogo(logoEditor);
+    window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: dataUri })}`);
+    setLogoEditor(null);
   }
 
   function stageFile(file: File) {
@@ -1497,43 +1629,68 @@ export function TerminalForum() {
         </div>
       );
     }
-    if (!body.startsWith('__FILE__:')) return <>{body}</>;
-    const rest = body.substring('__FILE__:'.length);
-    const i1 = rest.indexOf(':');
-    if (i1 < 0) return <>{body}</>;
-    const fileName = rest.substring(0, i1);
-    const rest2 = rest.substring(i1 + 1);
-    const i2 = rest2.indexOf(':');
-    if (i2 < 0) return <>{body}</>;
-    const mimeType = rest2.substring(0, i2);
-    const base64Data = rest2.substring(i2 + 1);
-    const dataUrl = `data:${mimeType};base64,${base64Data}`;
-    if (mimeType.startsWith('image/')) {
-      return (
-        <div className="mt-1">
-          <img src={dataUrl} alt={fileName}
-            className="max-w-sm max-h-80 rounded-lg border border-green-900/30 cursor-pointer hover:border-green-700/50 transition-all"
-            onClick={() => setLightboxSrc(dataUrl)} />
-          <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
-            <FileText className="w-3 h-3" />
-            {fileName}
+    if (body.startsWith('__FILE__:')) {
+      const rest = body.substring('__FILE__:'.length);
+      const i1 = rest.indexOf(':');
+      if (i1 < 0) return <>{body}</>;
+      const fileName = rest.substring(0, i1);
+      const rest2 = rest.substring(i1 + 1);
+      const i2 = rest2.indexOf(':');
+      if (i2 < 0) return <>{body}</>;
+      const mimeType = rest2.substring(0, i2);
+      const base64Data = rest2.substring(i2 + 1);
+      const dataUrl = `data:${mimeType};base64,${base64Data}`;
+      if (mimeType.startsWith('image/')) {
+        return (
+          <div className="mt-1">
+            <img src={dataUrl} alt={fileName}
+              className="max-w-sm max-h-80 rounded-lg border border-green-900/30 cursor-pointer hover:border-green-700/50 transition-all"
+              onClick={() => setLightboxSrc(dataUrl)} />
+            <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+              <FileText className="w-3 h-3" />
+              {fileName}
+            </div>
           </div>
+        );
+      }
+      return (
+        <div className="mt-1 inline-flex items-center gap-3 bg-[#0a0e0a] border border-green-900/30 rounded-lg px-4 py-3 hover:border-green-700/50 transition-all">
+          <FileText className="w-8 h-8 text-green-600" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-green-400 truncate">{fileName}</div>
+            <div className="text-xs text-green-700">{mimeType}</div>
+          </div>
+          <a href={dataUrl} download={fileName}
+            className="p-2 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all">
+            <Download className="w-4 h-4" />
+          </a>
         </div>
       );
     }
-    return (
-      <div className="mt-1 inline-flex items-center gap-3 bg-[#0a0e0a] border border-green-900/30 rounded-lg px-4 py-3 hover:border-green-700/50 transition-all">
-        <FileText className="w-8 h-8 text-green-600" />
-        <div className="flex-1 min-w-0">
-          <div className="text-sm text-green-400 truncate">{fileName}</div>
-          <div className="text-xs text-green-700">{mimeType}</div>
-        </div>
-        <a href={dataUrl} download={fileName}
-          className="p-2 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all">
-          <Download className="w-4 h-4" />
-        </a>
-      </div>
-    );
+    // Replace :shortcode: with emojis
+    return renderEmojiText(body);
+  }
+
+  function renderEmojiText(text: string): React.ReactNode {
+    const parts: React.ReactNode[] = [];
+    const regex = /:([a-zA-Z0-9_+-]+):/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) parts.push(text.substring(lastIndex, match.index));
+      const code = match[1].toLowerCase();
+      const customData = customEmojis[code];
+      if (customData) {
+        parts.push(<img key={match.index} src={`data:image/png;base64,${customData}`} alt={`:${code}:`} title={`:${code}:`} className="inline-block w-6 h-6 align-middle object-contain" />);
+      } else if (EMOJI_SHORTCODES[code]) {
+        parts.push(<span key={match.index} title={`:${code}:`}>{EMOJI_SHORTCODES[code]}</span>);
+      } else {
+        parts.push(match[0]);
+      }
+      lastIndex = regex.lastIndex;
+    }
+    if (lastIndex < text.length) parts.push(text.substring(lastIndex));
+    return parts.length === 1 && typeof parts[0] === 'string' ? <>{parts[0]}</> : <>{parts}</>;
   }
 
   function UserAvatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' | 'lg' }) {
@@ -1668,6 +1825,8 @@ export function TerminalForum() {
         setCurrentText(null);
         setJoinedText(new Set());
         setRoomMessages({});
+        setPinnedMessages({});
+        setShowPins(false);
         setOnlineUsers([]);
         setVoiceRooms([]);
         setTextRooms([]);
@@ -1841,6 +2000,8 @@ export function TerminalForum() {
     setCurrentText(null);
     setJoinedText(new Set());
     setRoomMessages({});
+    setPinnedMessages({});
+    setShowPins(false);
     setOnlineUsers([]);
     setVoiceRooms([]);
     setTextRooms([]);
@@ -1855,6 +2016,7 @@ export function TerminalForum() {
     setIsAway(false);
     setSoundboardSounds([]);
     setShowSoundboard(false);
+    setCustomEmojis({});
     stopAudio();
   };
 
@@ -2585,11 +2747,30 @@ export function TerminalForum() {
                           <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
                             <div className="flex items-center justify-between">
                               <span className="text-green-400 font-bold text-sm">{u.name}{isLocal ? ' (du)' : ''}</span>
-                              {!isLocal && (() => {
-                                const s = getUserSetting(u.name);
-                                return s.isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> :
-                                  s.volume !== 100 ? <span className="text-xs text-green-600">{s.volume}%</span> : null;
-                              })()}
+                              <div className="flex items-center gap-2">
+                                {!isLocal && (cameraUsers.has(u.name) || screenUsers.has(u.name)) && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (poppedOut.has(u.name)) {
+                                        window.electronAPI.closePopout(u.name);
+                                        setPoppedOut(prev => { const s = new Set(prev); s.delete(u.name); return s; });
+                                      } else {
+                                        window.electronAPI.openPopout(u.name);
+                                        setPoppedOut(prev => new Set(prev).add(u.name));
+                                      }
+                                    }}
+                                    className={`p-1 rounded transition-all ${poppedOut.has(u.name) ? 'text-green-400 bg-green-900/40' : 'text-green-600 hover:text-green-400 hover:bg-green-900/30'}`}
+                                    title={poppedOut.has(u.name) ? 'Close pop-out' : 'Pop out'}>
+                                    <ExternalLink className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                {!isLocal && (() => {
+                                  const s = getUserSetting(u.name);
+                                  return s.isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> :
+                                    s.volume !== 100 ? <span className="text-xs text-green-600">{s.volume}%</span> : null;
+                                })()}
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -2599,19 +2780,19 @@ export function TerminalForum() {
                   <div className={`flex justify-center gap-3 pb-2 ${hideUiOverlay && isCallFullscreen ? `absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur-sm py-4 transition-opacity duration-300 z-10 ${mouseActive ? 'opacity-100' : 'opacity-0 pointer-events-none'}` : ''}`}>
                     <button onClick={() => setIsMuted(!isMuted)}
                       className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isMuted ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30'}`}
+                        isMuted ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                       title={isMuted ? 'Unmute' : 'Mute'}>
                       {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
                     </button>
                     <button onClick={() => isCameraOn ? stopVideoCapture() : startCamera()}
                       className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isCameraOn ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
+                        isCameraOn ? 'bg-green-600/30 text-green-400 hover:bg-green-600/50 shadow-green-900/30' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                       title={isCameraOn ? 'Turn off camera' : 'Turn on camera'}>
                       {isCameraOn ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
                     </button>
                     <button onClick={() => isScreenSharing ? stopVideoCapture() : openScreenShareDialog()}
                       className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isScreenSharing ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
+                        isScreenSharing ? 'bg-green-600/30 text-green-400 hover:bg-green-600/50 shadow-green-900/30' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                       title={isScreenSharing ? 'Stop sharing' : 'Share screen'}>
                       <Share2 className="w-6 h-6" />
                     </button>
@@ -2622,12 +2803,12 @@ export function TerminalForum() {
                     </button>
                     <button onClick={() => setIsDeafened(!isDeafened)}
                       className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isDeafened ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30'}`}
+                        isDeafened ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                       title={isDeafened ? 'Undeafen' : 'Deafen'}>
                       {isDeafened ? <VolumeX className="w-6 h-6" /> : <Headphones className="w-6 h-6" />}
                     </button>
                     <button onClick={() => { setIsCallFullscreen(f => { if (f) { setHideUiOverlay(false); setMouseActive(true); if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current); } return !f; }); }}
-                      className="w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30"
+                      className="w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20"
                       title={isCallFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
                       {isCallFullscreen ? <Minimize2 className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
                     </button>
@@ -2648,7 +2829,7 @@ export function TerminalForum() {
                           });
                         }}
                         className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                          hideUiOverlay ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
+                          hideUiOverlay ? 'bg-green-600/30 text-green-400 hover:bg-green-600/50 shadow-green-900/30' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                         title={hideUiOverlay ? 'Show UI' : 'Hide UI'}>
                         {hideUiOverlay ? <Eye className="w-6 h-6" /> : <EyeOff className="w-6 h-6" />}
                       </button>
@@ -2718,19 +2899,19 @@ export function TerminalForum() {
                   <div className="flex justify-center gap-4 pb-8">
                     <button onClick={() => setIsMuted(!isMuted)}
                       className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isMuted ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30'}`}
+                        isMuted ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                       title={isMuted ? 'Unmute' : 'Mute'}>
                       {isMuted ? <MicOff className="w-7 h-7" /> : <Mic className="w-7 h-7" />}
                     </button>
                     <button onClick={() => isCameraOn ? stopVideoCapture() : startCamera()}
                       className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isCameraOn ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
+                        isCameraOn ? 'bg-green-600/30 text-green-400 hover:bg-green-600/50 shadow-green-900/30' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                       title={isCameraOn ? 'Turn off camera' : 'Turn on camera'}>
                       {isCameraOn ? <Video className="w-7 h-7" /> : <VideoOff className="w-7 h-7" />}
                     </button>
                     <button onClick={() => isScreenSharing ? stopVideoCapture() : openScreenShareDialog()}
                       className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isScreenSharing ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
+                        isScreenSharing ? 'bg-green-600/30 text-green-400 hover:bg-green-600/50 shadow-green-900/30' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                       title={isScreenSharing ? 'Stop sharing' : 'Share screen'}>
                       <Share2 className="w-7 h-7" />
                     </button>
@@ -2741,12 +2922,12 @@ export function TerminalForum() {
                     </button>
                     <button onClick={() => setIsDeafened(!isDeafened)}
                       className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isDeafened ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30'}`}
+                        isDeafened ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20'}`}
                       title={isDeafened ? 'Undeafen' : 'Deafen'}>
                       {isDeafened ? <VolumeX className="w-7 h-7" /> : <Headphones className="w-7 h-7" />}
                     </button>
                     <button onClick={() => { setIsCallFullscreen(f => { if (f) { setHideUiOverlay(false); setMouseActive(true); if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current); } return !f; }); }}
-                      className="w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30"
+                      className="w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg bg-white/10 text-white/80 hover:bg-white/20 shadow-black/20"
                       title={isCallFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
                       {isCallFullscreen ? <Minimize2 className="w-7 h-7" /> : <Maximize className="w-7 h-7" />}
                     </button>
@@ -2782,6 +2963,12 @@ export function TerminalForum() {
                       <Volume2 className="w-3.5 h-3.5 text-green-500" />
                       <span className="text-green-500">{currentVoiceRoom}</span>
                       <span className="text-green-700">{fmt(callDuration)}</span>
+                      {(cameraUsers.size > 0 || screenUsers.size > 0) && (
+                        <button onClick={() => setViewModeTracked('voice')}
+                          className="ml-2 px-2.5 py-1 rounded-md bg-green-600/20 text-green-400 hover:bg-green-600/30 transition-all flex items-center gap-1.5 font-bold animate-pulse">
+                          {screenUsers.size > 0 ? <><Share2 className="w-3 h-3" /> Join screenshare</> : <><Video className="w-3 h-3" /> Join camera</>}
+                        </button>
+                      )}
                       <button onClick={() => setViewModeTracked('voice')} className="ml-auto text-green-600 hover:text-green-400 transition-colors">
                         Vis voice
                       </button>
@@ -2795,8 +2982,58 @@ export function TerminalForum() {
                   <Hash className="w-5 h-5" />
                   <span className="font-bold">{currentTextRoom}</span>
                   <span className="text-xs text-green-700 ml-2">{currentMessages.length} beskeder</span>
+                  <button onClick={() => setShowPins(p => !p)}
+                    className={`ml-auto p-2 rounded-lg transition-all flex items-center gap-1.5 ${
+                      showPins ? 'bg-green-900/40 text-green-400' : 'text-green-700 hover:text-green-400 hover:bg-green-900/20'
+                    }`}
+                    title="Pinned messages">
+                    <Pin className="w-4 h-4" />
+                    {(pinnedMessages[currentTextRoom!] || []).length > 0 && (
+                      <span className="text-[10px]">{(pinnedMessages[currentTextRoom!] || []).length}</span>
+                    )}
+                  </button>
                 </div>
               </div>
+              {showPins && (
+                <div className="border-b border-green-900/30 bg-[#0d120d]/60 max-h-64 overflow-y-auto">
+                  <div className="p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Pin className="w-3.5 h-3.5 text-green-500" />
+                      <span className="text-xs font-bold text-green-500">PINNED MESSAGES</span>
+                      <span className="text-[10px] text-green-700">{(pinnedMessages[currentTextRoom!] || []).length}</span>
+                    </div>
+                    {(pinnedMessages[currentTextRoom!] || []).length === 0 ? (
+                      <div className="text-center py-4 text-green-800 text-xs">No pinned messages</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(pinnedMessages[currentTextRoom!] || []).map(msg => {
+                          const msgDate = new Date(msg.timestamp);
+                          const timeStr = msgDate.toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' });
+                          const dateStr = msgDate.toLocaleDateString('da-DK', { day: 'numeric', month: 'short' });
+                          const senderUser = onlineUsers.find(u => u.name === msg.sender);
+                          return (
+                            <div key={msg.msgId} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg px-3 py-2 group/pin">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-bold" style={{ color: senderUser?.roleColor || '#22c55e' }}>{msg.sender}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-green-800">{dateStr} {timeStr}</span>
+                                  {hasPermission('manage_rooms') && (
+                                    <button onClick={() => window.electronAPI.sendChat(`CMD:UNPIN_MSG:${currentTextRoom}:${msg.msgId}`)}
+                                      className="opacity-0 group-hover/pin:opacity-100 p-0.5 text-green-800 hover:text-red-400 transition-all" title="Unpin">
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="text-sm text-green-500 break-words">{renderMessageBody(msg.body)}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               <div className="flex-1 overflow-y-auto p-6 space-y-0">
                 {currentMessages.map((msg, idx) => {
                   const prev = idx > 0 ? currentMessages[idx - 1] : null;
@@ -2815,7 +3052,7 @@ export function TerminalForum() {
                   return (
                   <div key={msg.id} className={`group ${mentionBg}`}
                     onContextMenu={(e) => {
-                      if (msg.msgId && (msg.sender === nickname || hasPermission('delete_messages'))) {
+                      if (msg.msgId) {
                         e.preventDefault();
                         setMsgContextMenu({ msgId: msg.msgId, sender: msg.sender, room: currentTextRoom!, x: e.clientX, y: e.clientY });
                       }
@@ -2861,6 +3098,37 @@ export function TerminalForum() {
                   </div>
                 )}
                 <form onSubmit={handleSubmit} className="flex gap-3 items-center p-4 pt-3 relative">
+                  {emojiQuery !== null && (() => {
+                    const allEntries: { key: string; emoji?: string; customData?: string }[] = [
+                      ...Object.keys(customEmojis).filter(k => k.toLowerCase().includes(emojiQuery.toLowerCase())).map(k => ({ key: k, customData: customEmojis[k] })),
+                      ...Object.keys(EMOJI_SHORTCODES).filter(k => k.includes(emojiQuery.toLowerCase())).map(k => ({ key: k, emoji: EMOJI_SHORTCODES[k] })),
+                    ].slice(0, 8);
+                    if (allEntries.length === 0) return null;
+                    return (
+                      <div className="absolute bottom-full left-4 mb-1 w-64 bg-[#0d120d] border border-green-900/40 rounded-lg shadow-xl shadow-black/40 overflow-hidden z-50">
+                        {allEntries.map((entry, i) => (
+                          <button key={entry.key} type="button"
+                            className={`w-full px-3 py-2 flex items-center gap-2 text-sm text-left transition-all ${i === emojiAutoIndex ? 'bg-green-900/30 text-green-400' : 'text-green-600 hover:bg-green-900/20'}`}
+                            onMouseEnter={() => setEmojiAutoIndex(i)}
+                            onClick={() => {
+                              const cursor = inputRef.current?.selectionStart || input.length;
+                              const before = input.substring(0, cursor);
+                              const after = input.substring(cursor);
+                              const replacement = entry.customData ? `:${entry.key}: ` : `${entry.emoji} `;
+                              const newBefore = before.replace(/:[a-zA-Z0-9_+-]*$/, replacement);
+                              setInput(newBefore + after);
+                              setEmojiQuery(null);
+                              inputRef.current?.focus();
+                            }}>
+                            {entry.customData
+                              ? <img src={`data:image/png;base64,${entry.customData}`} className="w-5 h-5 object-contain" alt={entry.key} />
+                              : <span className="text-lg w-5 text-center">{entry.emoji}</span>}
+                            <span className="text-green-600">:{entry.key}:</span>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   {mentionQuery !== null && (() => {
                     const filtered = onlineUsers.filter(u => u.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 8);
                     if (filtered.length === 0) return null;
@@ -2896,8 +3164,33 @@ export function TerminalForum() {
                       const atMatch = before.match(/@(\w*)$/);
                       if (atMatch) { setMentionQuery(atMatch[1]); setMentionIndex(0); }
                       else setMentionQuery(null);
+                      const colonMatch = before.match(/:([a-zA-Z0-9_+-]{1,})$/);
+                      if (colonMatch && !before.match(/:([a-zA-Z0-9_+-]+):$/)) { setEmojiQuery(colonMatch[1]); setEmojiAutoIndex(0); }
+                      else setEmojiQuery(null);
                     }}
                     onKeyDown={e => {
+                      if (emojiQuery !== null) {
+                        const allEntries: { key: string; isCustom: boolean }[] = [
+                          ...Object.keys(customEmojis).filter(k => k.toLowerCase().includes(emojiQuery.toLowerCase())).map(k => ({ key: k, isCustom: true })),
+                          ...Object.keys(EMOJI_SHORTCODES).filter(k => k.includes(emojiQuery.toLowerCase())).map(k => ({ key: k, isCustom: false })),
+                        ].slice(0, 8);
+                        if (allEntries.length > 0) {
+                          if (e.key === 'ArrowDown') { e.preventDefault(); setEmojiAutoIndex(i => Math.min(i + 1, allEntries.length - 1)); }
+                          else if (e.key === 'ArrowUp') { e.preventDefault(); setEmojiAutoIndex(i => Math.max(i - 1, 0)); }
+                          else if ((e.key === 'Tab' || e.key === 'Enter') && allEntries.length > 0) {
+                            e.preventDefault();
+                            const sel = allEntries[emojiAutoIndex];
+                            const cursor = inputRef.current?.selectionStart || input.length;
+                            const before = input.substring(0, cursor);
+                            const after = input.substring(cursor);
+                            const replacement = sel.isCustom ? `:${sel.key}: ` : `${EMOJI_SHORTCODES[sel.key]} `;
+                            const newBefore = before.replace(/:[a-zA-Z0-9_+-]*$/, replacement);
+                            setInput(newBefore + after);
+                            setEmojiQuery(null);
+                          } else if (e.key === 'Escape') { setEmojiQuery(null); }
+                          else if (allEntries.length > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) return;
+                        }
+                      }
                       if (mentionQuery !== null) {
                         const filtered = onlineUsers.filter(u => u.name.toLowerCase().includes(mentionQuery.toLowerCase()));
                         if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => Math.min(i + 1, filtered.length - 1)); }
@@ -2930,7 +3223,24 @@ export function TerminalForum() {
                       <Smile className="w-4 h-4" />
                     </button>
                     {showEmojiPicker && (
-                      <div className="absolute bottom-full right-0 mb-2 w-72 max-h-64 overflow-y-auto bg-[#0d120d] border border-green-900/40 rounded-lg shadow-xl shadow-black/40 p-2 z-50">
+                      <div className="absolute bottom-full right-0 mb-2 w-80 max-h-80 overflow-y-auto bg-[#0d120d] border border-green-900/40 rounded-lg shadow-xl shadow-black/40 p-2 z-50">
+                        {Object.keys(customEmojis).length > 0 && (
+                          <>
+                            <div className="text-[10px] text-green-700 px-1 py-1 font-bold uppercase">Custom</div>
+                            <div className="grid grid-cols-8 gap-1 mb-2">
+                              {Object.entries(customEmojis).map(([name, data]) => (
+                                <button key={name} type="button"
+                                  className="w-8 h-8 flex items-center justify-center hover:bg-green-900/30 rounded transition-all"
+                                  title={`:${name}:`}
+                                  onClick={() => { setInput(prev => prev + `:${name}:`); setShowEmojiPicker(false); inputRef.current?.focus(); }}>
+                                  <img src={`data:image/png;base64,${data}`} className="w-6 h-6 object-contain" alt={name} />
+                                </button>
+                              ))}
+                            </div>
+                            <div className="border-t border-green-900/30 mb-1" />
+                          </>
+                        )}
+                        <div className="text-[10px] text-green-700 px-1 py-1 font-bold uppercase">Standard</div>
                         <div className="grid grid-cols-8 gap-1">
                           {['😀','😂','😅','😊','😎','😍','🥳','😭','😤','🤔','🤯','🥺','😴','🤡','👍','👎','👏','🙌','🤝','✌️','🤙','💪','❤️','🔥','⭐','💯','🎉','🎶','💀','👀','🫡','🫠','😈','💩','🤖','👾','🐐','🦊','🐱','🐶','☕','🍕','🍺','🎮','💻','🛠️','⚡','✅','❌','⚠️','💬','📌','🚀','🌍','🌙','☀️','🌈','💎'].map(emoji => (
                             <button key={emoji} type="button"
@@ -3443,6 +3753,7 @@ export function TerminalForum() {
           { id: 'general', label: 'General', icon: <Sliders className="w-4 h-4" /> },
           { id: 'roles', label: 'Roles', icon: <Users className="w-4 h-4" /> },
           { id: 'soundboard', label: 'Soundboard', icon: <Music className="w-4 h-4" /> },
+          { id: 'emojis', label: 'Emojis', icon: <Smile className="w-4 h-4" /> },
         ];
         return (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
@@ -3504,21 +3815,10 @@ export function TerminalForum() {
                               )}
                             </div>
                             <div className="flex flex-col gap-1">
-                              <label className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-xs cursor-pointer transition-all font-bold text-center">
+                              <button onClick={openLogoPicker}
+                                className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-xs cursor-pointer transition-all font-bold text-center">
                                 Upload Logo
-                                <input type="file" accept="image/*" className="hidden" onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (!file) return;
-                                  if (file.size > 64 * 1024) { setStatus('Logo too large (max 64 KB)'); return; }
-                                  const reader = new FileReader();
-                                  reader.onload = () => {
-                                    const dataUri = reader.result as string;
-                                    window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: dataUri })}`);
-                                  };
-                                  reader.readAsDataURL(file);
-                                  e.target.value = '';
-                                }} />
-                              </label>
+                              </button>
                               {serverInfo.serverLogo && (
                                 <button onClick={() => window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: '' })}`)}
                                   className="px-3 py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded-lg text-xs transition-all font-bold">
@@ -3808,6 +4108,76 @@ export function TerminalForum() {
                     </div>
                   </div>
                 )}
+
+                {serverSettingsTab === 'emojis' && (
+                  <div className="space-y-6">
+                    {/* Existing Custom Emojis */}
+                    <div>
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Smile className="w-4 h-4" />
+                        CUSTOM EMOJIS ({Object.keys(customEmojis).length})
+                      </h3>
+                      {Object.keys(customEmojis).length > 0 ? (
+                        <div className="space-y-2">
+                          {Object.entries(customEmojis).map(([name, data]) => (
+                            <div key={name} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg px-4 py-3 flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <img src={`data:image/png;base64,${data}`} className="w-8 h-8 object-contain" alt={name} />
+                                <span className="text-sm text-green-500">:{name}:</span>
+                              </div>
+                              <button onClick={() => { if (confirm(`Delete emoji ":${name}:"?`)) window.electronAPI.sendChat(`CMD:DELETE_EMOJI:${name}`); }}
+                                className="p-1.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/20 transition-all" title="Delete">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-green-800 text-sm">No custom emojis yet</div>
+                      )}
+                    </div>
+
+                    {/* Upload Emoji */}
+                    <div className="pt-4 border-t border-green-900/30">
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Upload className="w-4 h-4" />
+                        UPLOAD EMOJI
+                      </h3>
+                      <div className="bg-[#0a0e0a] border border-green-900/40 rounded-lg p-4 space-y-3">
+                        <div>
+                          <label className="text-xs text-green-600 block mb-1">Emoji Name</label>
+                          <input type="text" id="srv-emoji-name" placeholder="e.g. pepe"
+                            className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
+                          <span className="text-[10px] text-green-800 mt-1 block">Use in chat as :name:</span>
+                        </div>
+                        <div>
+                          <label className="text-xs text-green-600 block mb-1">Image File</label>
+                          <input type="file" id="srv-emoji-file" accept="image/*"
+                            className="w-full text-sm text-green-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-green-900/30 file:text-green-400 file:font-bold file:cursor-pointer hover:file:bg-green-900/50 transition-all" />
+                          <span className="text-[10px] text-green-800 mt-1 block">Max 256 KB — PNG, GIF, WebP recommended</span>
+                        </div>
+                        <button onClick={() => {
+                            const emojiName = (document.getElementById('srv-emoji-name') as HTMLInputElement)?.value?.trim();
+                            const fileInput = document.getElementById('srv-emoji-file') as HTMLInputElement;
+                            const file = fileInput?.files?.[0];
+                            if (!emojiName || !file) return;
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                              const b64 = (reader.result as string).split(',')[1];
+                              if (!b64) return;
+                              window.electronAPI.sendChat(`CMD:UPLOAD_EMOJI:${emojiName}:${b64}`);
+                              (document.getElementById('srv-emoji-name') as HTMLInputElement).value = '';
+                              fileInput.value = '';
+                            };
+                            reader.readAsDataURL(file);
+                          }}
+                          className="w-full py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold text-sm">
+                          Upload Emoji
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -3914,21 +4284,42 @@ export function TerminalForum() {
       })()}
 
       {/* ── Message Context Menu ─────────────────────────────── */}
-      {msgContextMenu && (
-        <div
-          className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[160px] z-50"
-          style={{ left: Math.min(msgContextMenu.x, window.innerWidth - 180), top: Math.min(msgContextMenu.y, window.innerHeight - 60) }}
-          onClick={(e) => e.stopPropagation()}>
-          <button onClick={() => {
-              window.electronAPI.sendChat(`CMD:DELETE_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
-              setMsgContextMenu(null);
-            }}
-            className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
-            <Trash2 className="w-4 h-4" />
-            <span>Delete message</span>
-          </button>
-        </div>
-      )}
+      {msgContextMenu && (() => {
+        const isPinned = (pinnedMessages[msgContextMenu.room] || []).some(m => m.msgId === msgContextMenu.msgId);
+        const canDelete = msgContextMenu.sender === nickname || hasPermission('delete_messages');
+        const canPin = hasPermission('manage_rooms');
+        return (
+          <div
+            className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[180px] z-50"
+            style={{ left: Math.min(msgContextMenu.x, window.innerWidth - 200), top: Math.min(msgContextMenu.y, window.innerHeight - 100) }}
+            onClick={(e) => e.stopPropagation()}>
+            {canPin && (
+              <button onClick={() => {
+                  if (isPinned) window.electronAPI.sendChat(`CMD:UNPIN_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
+                  else window.electronAPI.sendChat(`CMD:PIN_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
+                  setMsgContextMenu(null);
+                }}
+                className="w-full px-4 py-2.5 rounded-lg text-green-500 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
+                <Pin className="w-4 h-4" />
+                <span>{isPinned ? 'Unpin message' : 'Pin message'}</span>
+              </button>
+            )}
+            {canDelete && (
+              <button onClick={() => {
+                  window.electronAPI.sendChat(`CMD:DELETE_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
+                  setMsgContextMenu(null);
+                }}
+                className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
+                <Trash2 className="w-4 h-4" />
+                <span>Delete message</span>
+              </button>
+            )}
+            {!canPin && !canDelete && (
+              <div className="px-4 py-2.5 text-green-800 text-sm">No actions available</div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ── Screen Share dialog overlay ────────────────────── */}
       {screenShareDialog && (
@@ -3978,7 +4369,11 @@ export function TerminalForum() {
               </div>
               {screenSources.filter(s => sourceTab === 'screen' ? s.isScreen : !s.isScreen).length === 0 && (
                 <div className="text-center text-green-700 py-8 text-sm">
-                  {screenSources.length === 0 ? 'Loading sources...' : sourceTab === 'screen' ? 'No screens found' : 'No windows found'}
+                  {!screenSourcesLoaded
+                    ? 'Loading sources...'
+                    : screenSources.length === 0
+                      ? <><Monitor className="w-8 h-8 mx-auto mb-2 opacity-40" /><div>Your OS will show a source picker</div><div className="text-xs text-green-800 mt-1">Click Start Sharing below</div></>
+                      : sourceTab === 'screen' ? 'No screens found' : 'No windows found'}
                 </div>
               )}
             </div>
@@ -4032,9 +4427,11 @@ export function TerminalForum() {
                   <span className="block text-xs text-green-800">
                     {platform === 'darwin'
                       ? 'Not supported on macOS'
-                      : sourceTab === 'window'
-                        ? 'Include audio from the selected window'
-                        : 'Include all system audio (entire screen)'}
+                      : platform === 'linux'
+                        ? 'Include audio via PipeWire (requires PipeWire)'
+                        : sourceTab === 'window'
+                          ? 'Include audio from the selected window'
+                          : 'Include all system audio (entire screen)'}
                   </span>
                 </div>
               </label>
@@ -4055,7 +4452,7 @@ export function TerminalForum() {
                 Cancel
               </button>
               <button onClick={() => startScreenShare()}
-                disabled={!selectedSource}
+                disabled={!selectedSource && !(screenSourcesLoaded && screenSources.length === 0)}
                 className="px-5 py-2 bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:text-green-800 text-green-400 rounded-lg transition-all font-bold flex items-center gap-2">
                 <Share2 className="w-4 h-4" />
                 Start Sharing
@@ -4184,6 +4581,62 @@ export function TerminalForum() {
                   Cancel
                 </button>
                 <button onClick={saveAvatar}
+                  className="flex-1 px-4 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg transition-all font-bold text-sm">
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Logo Editor Modal ────────────────────────────── */}
+      {logoEditor && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
+            <div className="bg-green-900/40 p-4 border-b border-green-900/50 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-green-400">CROP SERVER LOGO</h3>
+              <button onClick={() => setLogoEditor(null)} className="p-1 text-green-600 hover:text-green-400">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 flex flex-col items-center gap-4">
+              <div className="relative w-48 h-48 rounded-2xl overflow-hidden border-2 border-green-900/50 bg-[#0a0e0a]">
+                <canvas width={192} height={192}
+                  ref={el => {
+                    if (!el) return;
+                    const ctx = el.getContext('2d');
+                    if (!ctx) return;
+                    const { img, zoom, offsetX, offsetY } = logoEditor;
+                    ctx.clearRect(0, 0, 192, 192);
+                    const minDim = Math.min(img.width, img.height);
+                    const srcSize = minDim / zoom;
+                    const sx = (img.width - srcSize) / 2 - (offsetX / 192) * srcSize;
+                    const sy = (img.height - srcSize) / 2 - (offsetY / 192) * srcSize;
+                    ctx.drawImage(img, sx, sy, srcSize, srcSize, 0, 0, 192, 192);
+                  }}
+                  onMouseDown={e => {
+                    const startX = e.clientX, startY = e.clientY;
+                    const { offsetX: ox, offsetY: oy } = logoEditor;
+                    const move = (ev: MouseEvent) => setLogoEditor(prev => prev ? { ...prev, offsetX: ox + (ev.clientX - startX), offsetY: oy + (ev.clientY - startY) } : null);
+                    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+                    window.addEventListener('mousemove', move);
+                    window.addEventListener('mouseup', up);
+                  }}
+                  className="w-full h-full cursor-grab active:cursor-grabbing" />
+              </div>
+              <div className="w-full">
+                <label className="text-xs text-green-600 block mb-1">Zoom</label>
+                <input type="range" min="100" max="400" value={logoEditor.zoom * 100}
+                  onChange={e => setLogoEditor(prev => prev ? { ...prev, zoom: parseInt(e.target.value) / 100 } : null)}
+                  className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
+              </div>
+              <div className="flex gap-3 w-full">
+                <button onClick={() => setLogoEditor(null)}
+                  className="flex-1 px-4 py-2 text-green-700 hover:text-green-500 rounded-lg hover:bg-green-900/20 transition-all text-sm">
+                  Cancel
+                </button>
+                <button onClick={saveLogo}
                   className="flex-1 px-4 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg transition-all font-bold text-sm">
                   Save
                 </button>

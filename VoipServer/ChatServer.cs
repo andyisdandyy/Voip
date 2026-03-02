@@ -20,6 +20,7 @@ public class ChatServer
     private readonly RoleStore _roleStore;
     private readonly AvatarStore _avatarStore;
     private readonly SoundboardStore _soundboardStore;
+    private readonly EmojiStore _emojiStore;
     private readonly ServerConfig _serverConfig;
     private readonly Action<string>? _log;
 
@@ -46,7 +47,7 @@ public class ChatServer
     private const int MaxAuthAttempts = 5;
     private static readonly TimeSpan AuthLockoutDuration = TimeSpan.FromMinutes(2);
 
-    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, AvatarStore avatarStore, SoundboardStore soundboardStore, Action<string>? log = null)
+    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, AvatarStore avatarStore, SoundboardStore soundboardStore, EmojiStore emojiStore, Action<string>? log = null)
     {
         _serverConfig = serverConfig;
         var bindAddress = serverConfig.BindLocalhost ? IPAddress.Loopback : IPAddress.Any;
@@ -57,6 +58,7 @@ public class ChatServer
         _roleStore = roleStore;
         _avatarStore = avatarStore;
         _soundboardStore = soundboardStore;
+        _emojiStore = emojiStore;
         _log = log;
     }
 
@@ -229,6 +231,9 @@ public class ChatServer
             // Send soundboard list
             await SendSoundboardListAsync(writer).ConfigureAwait(false);
 
+            // Send custom emoji list
+            await SendEmojiListAsync(writer).ConfigureAwait(false);
+
             string? line;
             while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
             {
@@ -393,6 +398,34 @@ public class ChatServer
                     (_roleStore.HasPermission(name, "delete_messages") && _history.DeleteMessageAdmin(roomName, msgId)))
                     await BroadcastToTextRoomAsync(roomName, $"MSG_DELETED:{roomName}:{msgId}").ConfigureAwait(false);
             }
+        }
+        else if (cmd.StartsWith("PIN_MSG:"))
+        {
+            // PIN_MSG:<room>:<msgId>
+            var args = cmd.Substring("PIN_MSG:".Length).Split(':', 2);
+            if (args.Length >= 2 && _roleStore.HasPermission(name, "manage_rooms"))
+            {
+                var roomName = args[0];
+                var msgId = args[1];
+                if (_history.PinMessage(roomName, msgId))
+                    await BroadcastToTextRoomAsync(roomName, $"MSG_PINNED:{roomName}:{msgId}").ConfigureAwait(false);
+            }
+            else if (args.Length >= 2)
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("UNPIN_MSG:"))
+        {
+            // UNPIN_MSG:<room>:<msgId>
+            var args = cmd.Substring("UNPIN_MSG:".Length).Split(':', 2);
+            if (args.Length >= 2 && _roleStore.HasPermission(name, "manage_rooms"))
+            {
+                var roomName = args[0];
+                var msgId = args[1];
+                if (_history.UnpinMessage(roomName, msgId))
+                    await BroadcastToTextRoomAsync(roomName, $"MSG_UNPINNED:{roomName}:{msgId}").ConfigureAwait(false);
+            }
+            else if (args.Length >= 2)
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("ASSIGN_ROLE:"))
         {
@@ -626,6 +659,47 @@ public class ChatServer
                 else
                     await writer.WriteLineAsync("ERROR:Sound not found").ConfigureAwait(false);
             }
+        }
+        else if (cmd.StartsWith("UPLOAD_EMOJI:"))
+        {
+            // UPLOAD_EMOJI:<name>:<base64data>  (requires admin)
+            var payload = cmd.Substring("UPLOAD_EMOJI:".Length);
+            var idx = payload.IndexOf(':');
+            if (idx > 0 && _roleStore.HasPermission(name, "admin"))
+            {
+                var emojiName = payload.Substring(0, idx);
+                var base64Data = payload.Substring(idx + 1);
+                var estimatedBytes = base64Data.Length * 3 / 4;
+                if (estimatedBytes > 256 * 1024) // 256 KB max per emoji
+                {
+                    await writer.WriteLineAsync("ERROR:Emoji too large (max 256 KB)").ConfigureAwait(false);
+                }
+                else if (_emojiStore.AddEmoji(emojiName, base64Data))
+                {
+                    _log?.Invoke($"[Emoji] {name} uploaded emoji ':{emojiName}:' ({estimatedBytes / 1024}KB)");
+                    await BroadcastEmojiListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Could not upload emoji").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("DELETE_EMOJI:"))
+        {
+            var emojiName = cmd.Substring("DELETE_EMOJI:".Length);
+            if (_roleStore.HasPermission(name, "admin"))
+            {
+                if (_emojiStore.RemoveEmoji(emojiName))
+                {
+                    _log?.Invoke($"[Emoji] {name} deleted emoji ':{emojiName}:'");
+                    await BroadcastEmojiListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Emoji not found").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("CREATE_VOICE_ROOM:"))
         {
@@ -897,6 +971,13 @@ public class ChatServer
             var json = JsonSerializer.Serialize(history);
             await writer.WriteLineAsync($"HISTORY:{roomName}:{json}").ConfigureAwait(false);
         }
+
+        var pinned = _history.GetPinnedMessages(roomName);
+        if (pinned.Count > 0)
+        {
+            var pinsJson = JsonSerializer.Serialize(pinned);
+            await writer.WriteLineAsync($"PINS:{roomName}:{pinsJson}").ConfigureAwait(false);
+        }
     }
 
     private async Task SendServerInfoAsync(StreamWriter writer, TcpClient client)
@@ -1100,6 +1181,28 @@ public class ChatServer
         var names = _soundboardStore.GetNames();
         var json = JsonSerializer.Serialize(names);
         var message = $"SOUNDBOARD:{json}";
+        foreach (var (writer, _) in _clients.Values)
+        {
+            try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
+            catch { }
+        }
+    }
+
+    private async Task SendEmojiListAsync(StreamWriter writer)
+    {
+        var all = _emojiStore.GetAll();
+        if (all.Count > 0)
+        {
+            var json = JsonSerializer.Serialize(all);
+            await writer.WriteLineAsync($"EMOJIS:{json}").ConfigureAwait(false);
+        }
+    }
+
+    private async Task BroadcastEmojiListAsync()
+    {
+        var all = _emojiStore.GetAll();
+        var json = JsonSerializer.Serialize(all);
+        var message = $"EMOJIS:{json}";
         foreach (var (writer, _) in _clients.Values)
         {
             try { await writer.WriteLineAsync(message).ConfigureAwait(false); }

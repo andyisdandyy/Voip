@@ -24,6 +24,13 @@ if (process.platform === 'darwin') {
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
 
+// Linux: enable Wayland support via Ozone platform auto-detection.
+// Also enable PipeWire screen capture (used by Wayland compositors).
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer,PipeWireV4L2');
+}
+
 let mainWindow = null;
 let tcpSocket = null;
 let udpSocket = null;
@@ -38,6 +45,7 @@ let shareWithAudio = false;
 let shareIsWindow = false;
 let e2eeKey = null; // Derived AES-256 key buffer (32 bytes) or null
 let backgroundTcpSocket = null; // Parked TCP for voice preservation during server switch
+const popoutWindows = new Map(); // username → BrowserWindow
 
 // ── E2EE (End-to-End Encryption) ────────────────────────────
 // Uses AES-256-GCM with a PBKDF2-derived key. When enabled, audio
@@ -152,6 +160,14 @@ app.whenReady().then(async () => {
   session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
     try {
       const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+      // On Wayland, desktopCapturer returns empty — let the PipeWire portal handle it
+      if (sources.length === 0) {
+        callback({ video: true });
+        selectedShareSource = null;
+        shareWithAudio = false;
+        shareIsWindow = false;
+        return;
+      }
       let source;
       if (selectedShareSource) {
         source = sources.find(s => s.id === selectedShareSource) || sources[0];
@@ -159,9 +175,9 @@ app.whenReady().then(async () => {
         source = sources.find(s => s.id.startsWith('screen:')) || sources[0];
       }
       const opts = { video: source };
-      if (shareWithAudio && process.platform === 'win32') {
-        // Window source → use loopbackWithMute for per-app audio isolation
-        // Screen source → use loopback (system-wide, no isolation available)
+      if (shareWithAudio && (process.platform === 'win32' || process.platform === 'linux')) {
+        // Windows: loopback / loopbackWithMute for system / per-app audio
+        // Linux (PipeWire): same mechanism works via PipeWire portal
         opts.audio = shareIsWindow ? 'loopbackWithMute' : 'loopback';
       }
       callback(opts);
@@ -344,6 +360,47 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-app-version', () => app.getVersion());
+
+  // ── Video Pop-out ─────────────────────────────────────────
+  ipcMain.handle('popout:open', (_event, username) => {
+    if (popoutWindows.has(username)) {
+      const existing = popoutWindows.get(username);
+      if (!existing.isDestroyed()) { existing.focus(); return; }
+      popoutWindows.delete(username);
+    }
+    const win = new BrowserWindow({
+      width: 800,
+      height: 500,
+      minWidth: 320,
+      minHeight: 240,
+      frame: false,
+      backgroundColor: '#0a0e0a',
+      webPreferences: {
+        preload: path.join(__dirname, 'popout-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    win._popoutUsername = username;
+    win.loadFile(path.join(__dirname, 'popout-video.html'));
+    win.on('closed', () => {
+      popoutWindows.delete(username);
+      mainWindow?.webContents.send('popout:closed', username);
+    });
+    popoutWindows.set(username, win);
+    console.log(`[Popout] Opened for ${username}`);
+  });
+
+  ipcMain.on('popout:close', (_event, username) => {
+    const win = popoutWindows.get(username);
+    if (win && !win.isDestroyed()) win.close();
+    popoutWindows.delete(username);
+  });
+
+  ipcMain.handle('popout:get-info', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return { username: win?._popoutUsername || 'Video' };
+  });
 }
 
 // ── TCP Chat ────────────────────────────────────────────────
@@ -468,6 +525,10 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
             const raw = Buffer.from(line.substring(i2 + 1), 'base64');
             const encodedData = e2eeDecrypt(raw);
             mainWindow?.webContents.send('udp:video', senderName, encodedData, isKeyFrame, codec);
+            const popWin = popoutWindows.get(senderName);
+            if (popWin && !popWin.isDestroyed()) {
+              popWin.webContents.send('popout:video-frame', encodedData, isKeyFrame, codec);
+            }
             if (++_videoRecvCount % 50 === 1) console.log(`[Video/TCP] Recv #${_videoRecvCount} from '${senderName}' (${encodedData.length}B, ${isKeyFrame ? 'KEY' : 'delta'})`);
           }
           continue;
@@ -573,10 +634,18 @@ function killBackground() {
   }
 }
 
+function closeAllPopouts() {
+  for (const [, win] of popoutWindows) {
+    if (!win.isDestroyed()) win.close();
+  }
+  popoutWindows.clear();
+}
+
 function fullDisconnect() {
   disconnectChat();
   killBackground();
   stopVoice();
+  closeAllPopouts();
 }
 
 // ── Autoconnect (background mention listener) ───────────────

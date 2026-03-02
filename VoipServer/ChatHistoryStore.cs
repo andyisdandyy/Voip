@@ -27,6 +27,8 @@ public class ChatHistoryStore
 
     private readonly string _filePath;
     private readonly ConcurrentDictionary<string, List<ChatMessage>> _history = new();
+    private readonly ConcurrentDictionary<string, HashSet<string>> _pins = new();
+    private readonly string _pinsFilePath;
     private readonly object _saveLock = new();
     private const int MaxPerRoom = 200;
     private Timer? _saveTimer;
@@ -35,6 +37,7 @@ public class ChatHistoryStore
     public ChatHistoryStore(string? filePath = null)
     {
         _filePath = filePath ?? Path.Combine(AppContext.BaseDirectory, "chat_history.json");
+        _pinsFilePath = Path.Combine(Path.GetDirectoryName(_filePath)!, "pinned_messages.json");
         Load();
     }
 
@@ -88,16 +91,73 @@ public class ChatHistoryStore
         return new();
     }
 
+    // ── Pin support ─────────────────────────────────────────
+
+    public bool PinMessage(string room, string msgId)
+    {
+        var pins = _pins.GetOrAdd(room, _ => new HashSet<string>());
+        lock (pins)
+        {
+            if (!pins.Add(msgId)) return false;
+        }
+        ScheduleSave();
+        return true;
+    }
+
+    public bool UnpinMessage(string room, string msgId)
+    {
+        if (!_pins.TryGetValue(room, out var pins)) return false;
+        lock (pins)
+        {
+            if (!pins.Remove(msgId)) return false;
+        }
+        ScheduleSave();
+        return true;
+    }
+
+    public List<ChatMessage> GetPinnedMessages(string room)
+    {
+        if (!_pins.TryGetValue(room, out var pins)) return new();
+        HashSet<string> pinIds;
+        lock (pins) pinIds = new HashSet<string>(pins);
+        if (pinIds.Count == 0) return new();
+
+        if (!_history.TryGetValue(room, out var msgs)) return new();
+        lock (msgs)
+            return msgs.Where(m => pinIds.Contains(m.Id)).ToList();
+    }
+
+    public bool IsPinned(string room, string msgId)
+    {
+        if (!_pins.TryGetValue(room, out var pins)) return false;
+        lock (pins) return pins.Contains(msgId);
+    }
+
     private void Load()
     {
         try
         {
-            if (!File.Exists(_filePath)) return;
-            var json = File.ReadAllText(_filePath);
-            var data = JsonSerializer.Deserialize<Dictionary<string, List<ChatMessage>>>(json, _jsonOpts);
-            if (data != null)
-                foreach (var kv in data)
-                    _history[kv.Key] = kv.Value;
+            if (File.Exists(_filePath))
+            {
+                var json = File.ReadAllText(_filePath);
+                var data = JsonSerializer.Deserialize<Dictionary<string, List<ChatMessage>>>(json, _jsonOpts);
+                if (data != null)
+                    foreach (var kv in data)
+                        _history[kv.Key] = kv.Value;
+            }
+        }
+        catch { }
+
+        try
+        {
+            if (File.Exists(_pinsFilePath))
+            {
+                var json = File.ReadAllText(_pinsFilePath);
+                var data = JsonSerializer.Deserialize<Dictionary<string, HashSet<string>>>(json, _jsonOpts);
+                if (data != null)
+                    foreach (var kv in data)
+                        _pins[kv.Key] = kv.Value;
+            }
         }
         catch { }
     }
@@ -127,6 +187,19 @@ public class ChatHistoryStore
                 }
                 var json = JsonSerializer.Serialize(snapshot, _jsonOpts);
                 File.WriteAllText(_filePath, json);
+            }
+            catch { }
+
+            try
+            {
+                var pinSnapshot = new Dictionary<string, HashSet<string>>();
+                foreach (var kv in _pins)
+                {
+                    lock (kv.Value)
+                        pinSnapshot[kv.Key] = new HashSet<string>(kv.Value);
+                }
+                var pinsJson = JsonSerializer.Serialize(pinSnapshot, _jsonOpts);
+                File.WriteAllText(_pinsFilePath, pinsJson);
             }
             catch { }
         }

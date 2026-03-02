@@ -40,6 +40,11 @@ interface ElectronAPI {
   onUpdateAvailable: (callback: (version: string) => void) => () => void;
   onUpdateProgress: (callback: (percent: number) => void) => () => void;
   onUpdateDownloaded: (callback: (version: string) => void) => () => void;
+
+  // Video Pop-out
+  openPopout: (username: string) => Promise<void>;
+  closePopout: (username: string) => void;
+  onPopoutClosed: (callback: (username: string) => void) => () => void;
 }
 
 declare global {
