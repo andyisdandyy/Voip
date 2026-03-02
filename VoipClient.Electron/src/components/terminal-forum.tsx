@@ -3830,7 +3830,13 @@ export function TerminalForum() {
             </div>
 
             {/* Footer */}
-            <div className="p-6 border-t border-green-900/30 bg-[#0d120d]/40 flex justify-end gap-3">
+            <div className="p-6 border-t border-green-900/30 bg-[#0d120d]/40 flex items-center gap-3">
+              <button onClick={() => { window.electronAPI.checkForUpdates(); }}
+                className="px-4 py-2 rounded-lg bg-green-900/20 text-green-700 hover:bg-green-900/40 hover:text-green-400 transition-all text-xs flex items-center gap-1.5">
+                <Download className="w-3.5 h-3.5" />
+                Check for Updates
+              </button>
+              <div className="flex-1" />
               <button onClick={() => setShowSettings(false)}
                 className="px-6 py-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
                 Cancel

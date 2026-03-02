@@ -250,6 +250,11 @@ Uses `electron-updater` with GitHub Releases as the update provider. On startup
 (and every 30 minutes), the app checks for a newer release tag matching `client-v*`.
 Updates are downloaded in the background but **never forced** — the user sees a
 dismissible toast in the bottom-right corner and can choose to restart or defer.
+A manual "Check for Updates" button is also available in the settings modal footer.
+
+**Note:** `quitAndInstall()` works with NSIS (Windows), AppImage (Linux), and
+DMG/ZIP (macOS). For Windows portable builds, updates are detected and downloaded
+but cannot be auto-installed — the user must manually download the new `.exe`.
 
 | IPC Channel           | Direction      | Description                          |
 |-----------------------|----------------|--------------------------------------|
@@ -260,8 +265,8 @@ dismissible toast in the bottom-right corner and can choose to restart or defer.
 | `updater:progress`    | main → renderer| Download progress (0-100%)           |
 | `updater:downloaded`  | main → renderer| Update downloaded and ready          |
 
-Release workflow: `.github/workflows/release-client.yml` builds Windows (NSIS),
-macOS (DMG + ZIP), and Linux (AppImage + deb) artifacts and publishes them to the
+Release workflow: `.github/workflows/release-client.yml` builds Windows (portable),
+macOS (DMG + ZIP), and Linux (AppImage) artifacts and publishes them to the
 GitHub Release via `--publish always`.
 
 #### Video Pop-out
