@@ -62,18 +62,13 @@ public class RoleStore
 
     public RoleDefinition? GetRole(string roleName)
     {
-        lock (_lock)
-            return _data.Roles.FirstOrDefault(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
+        lock (_lock) return GetRoleUnsafe(roleName);
     }
 
     public List<string> GetUserRoleNames(string username)
     {
         lock (_lock)
-        {
-            if (_data.UserRoles.TryGetValue(username, out var roles))
-                return roles.ToList();
-            return new List<string>();
-        }
+            return _data.UserRoles.TryGetValue(username, out var roles) ? roles.ToList() : [];
     }
 
     public RoleDefinition? GetHighestRole(string username)
@@ -82,14 +77,9 @@ public class RoleStore
         {
             if (!_data.UserRoles.TryGetValue(username, out var roleNames) || roleNames.Count == 0)
                 return null;
-            RoleDefinition? highest = null;
-            foreach (var role in _data.Roles)
-            {
-                if (roleNames.Contains(role.Name, StringComparer.OrdinalIgnoreCase) &&
-                    (highest == null || role.Priority > highest.Priority))
-                    highest = role;
-            }
-            return highest;
+            return _data.Roles
+                .Where(r => roleNames.Contains(r.Name, StringComparer.OrdinalIgnoreCase))
+                .MaxBy(r => r.Priority);
         }
     }
 
@@ -116,11 +106,10 @@ public class RoleStore
         lock (_lock)
         {
             if (GetRoleUnsafe(roleName) == null) return false;
-            if (!_data.UserRoles.ContainsKey(username))
-                _data.UserRoles[username] = new List<string>();
-            if (_data.UserRoles[username].Contains(roleName, StringComparer.OrdinalIgnoreCase))
+            var roles = GetOrCreateUserRoles(username);
+            if (roles.Contains(roleName, StringComparer.OrdinalIgnoreCase))
                 return false;
-            _data.UserRoles[username].Add(roleName);
+            roles.Add(roleName);
             SaveUnsafe();
             return true;
         }
@@ -130,8 +119,8 @@ public class RoleStore
     {
         lock (_lock)
         {
-            if (!_data.UserRoles.ContainsKey(username)) return false;
-            var removed = _data.UserRoles[username].RemoveAll(r =>
+            if (!_data.UserRoles.TryGetValue(username, out var roles)) return false;
+            var removed = roles.RemoveAll(r =>
                 string.Equals(r, roleName, StringComparison.OrdinalIgnoreCase)) > 0;
             if (removed) SaveUnsafe();
             return removed;
@@ -180,21 +169,17 @@ public class RoleStore
     {
         lock (_lock)
         {
-            if (!_data.UserRoles.ContainsKey(username))
-                _data.UserRoles[username] = new List<string>();
+            var roles = GetOrCreateUserRoles(username);
 
             bool assignedAdmin = false;
-            if (isFirstUser && !_data.UserRoles.Values.Any(roles => roles.Contains("Admin", StringComparer.OrdinalIgnoreCase)))
+            if (isFirstUser && !_data.UserRoles.Values.Any(r => r.Contains("Admin", StringComparer.OrdinalIgnoreCase)))
             {
-                if (!_data.UserRoles[username].Contains("Admin", StringComparer.OrdinalIgnoreCase))
-                {
-                    _data.UserRoles[username].Add("Admin");
-                    assignedAdmin = true;
-                }
+                roles.Add("Admin");
+                assignedAdmin = true;
             }
 
-            if (!_data.UserRoles[username].Contains("Member", StringComparer.OrdinalIgnoreCase))
-                _data.UserRoles[username].Add("Member");
+            if (!roles.Contains("Member", StringComparer.OrdinalIgnoreCase))
+                roles.Add("Member");
 
             SaveUnsafe();
             return assignedAdmin;
@@ -205,6 +190,11 @@ public class RoleStore
 
     private RoleDefinition? GetRoleUnsafe(string roleName) =>
         _data.Roles.FirstOrDefault(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
+
+    private List<string> GetOrCreateUserRoles(string username) =>
+        _data.UserRoles.TryGetValue(username, out var roles)
+            ? roles
+            : _data.UserRoles[username] = [];
 
     // ── Persistence ──────────────────────────────────────────
 

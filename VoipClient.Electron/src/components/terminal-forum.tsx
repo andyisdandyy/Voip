@@ -16,7 +16,7 @@ interface UserInfo  { name: string; voiceRoom: string | null; online: boolean; s
 interface ChatMsg   { id: string; msgId: string; sender: string; body: string; timestamp: number }
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
-interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean }
+interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean; screenMuted: boolean }
 interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string }
 interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string }
 interface ServerContextMenu { serverId: string; x: number; y: number }
@@ -717,11 +717,11 @@ export function TerminalForum() {
   }, []);
 
   const getUserSetting = (name: string): UserSetting =>
-    perUserSettings[name] || { name, volume: 100, isMuted: false, soundboardMuted: false };
+    perUserSettings[name] || { name, volume: 100, isMuted: false, soundboardMuted: false, screenMuted: false };
 
   const updateUserSetting = (name: string, update: Partial<UserSetting>) => {
     setPerUserSettings(prev => {
-      const existing = prev[name] || { name, volume: 100, isMuted: false, soundboardMuted: false };
+      const existing = prev[name] || { name, volume: 100, isMuted: false, soundboardMuted: false, screenMuted: false };
       return { ...prev, [name]: { ...existing, ...update } };
     });
   };
@@ -1105,6 +1105,8 @@ export function TerminalForum() {
       window.electronAPI.onVideoReceived((senderName: string, encodedData: Uint8Array, isKeyFrame: boolean, codec: string) => {
         // Only decode video from streams the user has opted-in to watch
         if (!watchingStreamsRef.current.has(senderName)) return;
+        const us = perUserSettingsRef.current[senderName];
+        if (us?.screenMuted) return;
 
         // Wait for a keyframe before feeding delta frames to the decoder
         if (!isKeyFrame && !gotKeyframeRef.current[senderName]) return;
@@ -2852,10 +2854,15 @@ export function TerminalForum() {
                                       Join stream
                                     </button>
                                   </div>
+                                ) : (getUserSetting(u.name).screenMuted && (cameraUsers.has(u.name) || screenUsers.has(u.name))) ? (
+                                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-10">
+                                    <EyeOff className="w-6 h-6 text-red-400 mb-1" />
+                                    <span className="text-xs text-red-400">Stream muted</span>
+                                  </div>
                                 ) : null}
                                 <canvas id={`vc-${u.name}`}
                                   className="absolute inset-0 w-full h-full object-contain"
-                                  style={{ display: watchingStreams.has(u.name) && (cameraUsers.has(u.name) || screenUsers.has(u.name)) ? 'block' : 'none' }} />
+                                  style={{ display: watchingStreams.has(u.name) && !getUserSetting(u.name).screenMuted && (cameraUsers.has(u.name) || screenUsers.has(u.name)) ? 'block' : 'none' }} />
                               </>
                             )}
                           </div>
@@ -4359,6 +4366,13 @@ export function TerminalForum() {
                     setting.soundboardMuted ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-green-900/20 text-green-500 hover:bg-green-900/40'
                   }`}>
                   {setting.soundboardMuted ? <><VolumeX className="w-4 h-4" /><span className="text-sm">Unmute Soundboard</span></> : <><Music className="w-4 h-4" /><span className="text-sm">Mute Soundboard</span></>}
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); updateUserSetting(userContextMenu.userId, { screenMuted: !setting.screenMuted }); }}
+                  className={`w-full px-4 py-2.5 rounded-lg transition-all flex items-center gap-2 mb-2 ${
+                    setting.screenMuted ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-green-900/20 text-green-500 hover:bg-green-900/40'
+                  }`}>
+                  {setting.screenMuted ? <><EyeOff className="w-4 h-4" /><span className="text-sm">Unmute Screenshare</span></> : <><Eye className="w-4 h-4" /><span className="text-sm">Mute Screenshare</span></>}
                 </button>
               </>
             )}

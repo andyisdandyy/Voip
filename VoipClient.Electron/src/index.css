@@ -138,6 +138,11 @@ body {
 [data-theme="mono"] .fill-green-500                  { fill: #22c55e !important; }
 [data-theme="mono"] .text-green-500.fill-green-500   { color: #22c55e !important; }
 [data-theme="mono"] .bg-green-600                    { background-color: #16a34a !important; }
+[data-theme="mono"] .bg-green-600\/20                { background-color: rgba(22, 163, 74, 0.2) !important; }
+[data-theme="mono"] .bg-green-600\/30                { background-color: rgba(22, 163, 74, 0.3) !important; }
+[data-theme="mono"] .bg-green-600\/50                { background-color: rgba(22, 163, 74, 0.5) !important; }
+[data-theme="mono"] .bg-green-600\/20.text-green-400 { color: #4ade80 !important; }
+[data-theme="mono"] .bg-green-600\/30.text-green-400 { color: #4ade80 !important; }
 
 /* ── Scrollbar ───────────────────────────────────────────── */
 [data-theme="mono"] ::-webkit-scrollbar-thumb { background: #3a3a3a !important; }

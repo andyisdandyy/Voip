@@ -10,7 +10,6 @@
     "start": "electron .",
     "postinstall": "electron-builder install-app-deps",
     "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64",
-    "dist:win:portable": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64 -c.win.target=portable",
     "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
     "dist:mac:x64": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64",
     "dist:mac:arm64": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64",
@@ -65,7 +64,7 @@
     "win": {
       "target": [
         {
-          "target": "nsis",
+          "target": "portable",
           "arch": [
             "x64"
           ]
@@ -73,11 +72,8 @@
       ],
       "icon": "build-resources/icon.png"
     },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
     },
     "mac": {
       "target": [
@@ -112,16 +108,11 @@
           "arch": [
             "x64"
           ]
-        },
-        {
-          "target": "deb",
-          "arch": [
-            "x64"
-          ]
         }
       ],
       "icon": "build-resources/icon.png",
       "category": "Network",
+      "artifactName": "${productName}-${version}-portable.${ext}",
       "desktop": {
         "Name": "Voip",
         "Comment": "Secure VoIP Client",

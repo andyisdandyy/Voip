@@ -278,6 +278,9 @@ disconnect.
 | `popout:close`        | send → main    | Close a specific pop-out window      |
 | `popout:closed`       | main → renderer| Notifies renderer a pop-out closed   |
 | `popout:get-info`     | invoke (popout) | Pop-out window queries its username  |
+| `popout:minimize`     | send → main    | Minimize the sending pop-out window  |
+| `popout:maximize`     | send → main    | Toggle maximize on the pop-out window|
+| `popout:close-self`   | send → main    | Close the sending pop-out window     |
 | `popout:video-frame`  | main → popout  | Forward encoded video frame          |
 | `popout:feed-ended`   | main → popout  | Notifies pop-out that feed ended     |
 
@@ -297,7 +300,7 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | Video capture | 778–970 | Camera and screen share encoding |
 | Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload |
 | Connect screen | 1410+ | Server list, login dialogs |
-| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage) |
+| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage), per-user screenshare mute (right-click context menu) |
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:
@@ -455,7 +458,8 @@ npm run dev          # Vite dev server + Electron
 
 ### Build Client
 ```bash
-npm run dist:win     # Windows NSIS installer
+npm run dist:win     # Windows portable executable
+npm run dist:linux   # Linux portable AppImage
 npm run dist:mac     # macOS DMG (universal)
 ```
 

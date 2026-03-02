@@ -401,6 +401,18 @@ function setupIPC() {
     const win = BrowserWindow.fromWebContents(event.sender);
     return { username: win?._popoutUsername || 'Video' };
   });
+
+  ipcMain.on('popout:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
+  });
+  ipcMain.on('popout:maximize', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win?.isMaximized()) win.unmaximize(); else win?.maximize();
+  });
+  ipcMain.on('popout:close-self', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) win.close();
+  });
 }
 
 // ── TCP Chat ────────────────────────────────────────────────
