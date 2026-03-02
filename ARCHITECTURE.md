@@ -251,6 +251,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - E2EE key management
 - Window controls (minimize, maximize, close, fullscreen)
 - Autoconnect (start, stop, mention listener)
+- Auto-updater (version, check, install, progress/status listeners)
 
 ### AudioWorklet Processors
 - **`audio-capture-processor.js`**: Buffers Float32 samples into 960-sample frames (20 ms at 48 kHz), converts to Int16, and posts to main thread.

@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: VoipClient.Electron
-        run: npm ci
+        run: npm install
 
       - name: Build & publish (Windows)
         working-directory: VoipClient.Electron
@@ -42,13 +42,25 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Setup Python (for native module rebuilds)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install dependencies
         working-directory: VoipClient.Electron
-        run: npm ci
+        run: npm install
 
-      - name: Build & publish (macOS)
+      - name: Build & publish (macOS x64)
         working-directory: VoipClient.Electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run build && npx electron-builder --mac --universal --publish always
+        run: npm run build && npx electron-builder --mac --x64 --publish always
+
+      - name: Build & publish (macOS arm64)
+        working-directory: VoipClient.Electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac --arm64 --publish always
