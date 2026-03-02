@@ -23,6 +23,13 @@ jobs:
         working-directory: VoipClient.Electron
         run: npm install
 
+      - name: Sync version from tag
+        working-directory: VoipClient.Electron
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/client-v}"
+          npm version "$TAG" --no-git-tag-version
+
       - name: Build & publish (Windows)
         working-directory: VoipClient.Electron
         env:
@@ -50,6 +57,12 @@ jobs:
       - name: Install dependencies
         working-directory: VoipClient.Electron
         run: npm install
+
+      - name: Sync version from tag
+        working-directory: VoipClient.Electron
+        run: |
+          TAG="${GITHUB_REF#refs/tags/client-v}"
+          npm version "$TAG" --no-git-tag-version
 
       - name: Build Vite
         working-directory: VoipClient.Electron
@@ -90,6 +103,12 @@ jobs:
       - name: Install dependencies
         working-directory: VoipClient.Electron
         run: npm install
+
+      - name: Sync version from tag
+        working-directory: VoipClient.Electron
+        run: |
+          TAG="${GITHUB_REF#refs/tags/client-v}"
+          npm version "$TAG" --no-git-tag-version
 
       - name: Build & publish (Linux)
         working-directory: VoipClient.Electron
