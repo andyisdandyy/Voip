@@ -763,21 +763,28 @@ public class ChatServer
                     "MaxScreenBitrate", "DefaultBitrate", "MaxFileSizeKB", "MaxSoundSizeKB",
                 };
 
+                // Helper to safely parse an int and clamp to a range
+                static int ClampInt(JsonElement el, int min, int max)
+                {
+                    var v = el.TryGetInt64(out var l) ? (int)Math.Clamp(l, min, max) : el.GetInt32();
+                    return Math.Clamp(v, min, max);
+                }
+
                 foreach (var kv in updates)
                 {
                     if (!safeFields.Contains(kv.Key)) continue;
                     switch (kv.Key.ToLowerInvariant())
                     {
                         case "servername": _serverConfig.ServerName = kv.Value.GetString() ?? _serverConfig.ServerName; break;
-                        case "maxcamerawidth": _serverConfig.MaxCameraWidth = kv.Value.GetInt32(); break;
-                        case "maxcameraheight": _serverConfig.MaxCameraHeight = kv.Value.GetInt32(); break;
-                        case "maxscreenwidth": _serverConfig.MaxScreenWidth = kv.Value.GetInt32(); break;
-                        case "maxscreenheight": _serverConfig.MaxScreenHeight = kv.Value.GetInt32(); break;
-                        case "maxfps": _serverConfig.MaxFps = kv.Value.GetInt32(); break;
-                        case "maxscreenbitrate": _serverConfig.MaxScreenBitrate = kv.Value.GetInt32(); break;
-                        case "defaultbitrate": _serverConfig.DefaultBitrate = kv.Value.GetInt32(); break;
-                        case "maxfilesizekb": _serverConfig.MaxFileSizeKB = kv.Value.GetInt32(); break;
-                        case "maxsoundsizekb": _serverConfig.MaxSoundSizeKB = kv.Value.GetInt32(); break;
+                        case "maxcamerawidth": _serverConfig.MaxCameraWidth = ClampInt(kv.Value, 320, 3840); break;
+                        case "maxcameraheight": _serverConfig.MaxCameraHeight = ClampInt(kv.Value, 240, 2160); break;
+                        case "maxscreenwidth": _serverConfig.MaxScreenWidth = ClampInt(kv.Value, 320, 3840); break;
+                        case "maxscreenheight": _serverConfig.MaxScreenHeight = ClampInt(kv.Value, 240, 2160); break;
+                        case "maxfps": _serverConfig.MaxFps = ClampInt(kv.Value, 1, 120); break;
+                        case "maxscreenbitrate": _serverConfig.MaxScreenBitrate = ClampInt(kv.Value, 500, 100_000); break;
+                        case "defaultbitrate": _serverConfig.DefaultBitrate = ClampInt(kv.Value, 8000, 512_000); break;
+                        case "maxfilesizekb": _serverConfig.MaxFileSizeKB = ClampInt(kv.Value, 64, 102_400); break;
+                        case "maxsoundsizekb": _serverConfig.MaxSoundSizeKB = ClampInt(kv.Value, 64, 10_240); break;
                     }
                 }
 

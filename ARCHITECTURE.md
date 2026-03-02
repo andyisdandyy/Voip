@@ -109,7 +109,7 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `DELETE_TEXT_ROOM:<name>` | Delete a text room (requires `manage_rooms`) |
 | `REORDER_VOICE_ROOMS:<name1>,<name2>,...` | Reorder voice rooms (requires `manage_rooms`) |
 | `REORDER_TEXT_ROOMS:<name1>,<name2>,...` | Reorder text rooms (requires `manage_rooms`) |
-| `UPDATE_SERVER_CONFIG:<json>` | Update safe server settings (requires `admin`) — saves to disk and re-broadcasts `SERVER_INFO` |
+| `UPDATE_SERVER_CONFIG:<json>` | Update safe server settings (requires `admin`) — saves to disk and re-broadcasts `SERVER_INFO`. Values are parsed via `TryGetInt64` and clamped to safe ranges to prevent overflow. |
 
 #### Video Relay
 - Video frames are sent as `VIDEO:<flags>:<base64data>` over TCP

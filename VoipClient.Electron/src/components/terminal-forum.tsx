@@ -1442,7 +1442,7 @@ export function TerminalForum() {
     const avatar = user?.avatar;
     const px = size === 'sm' ? 'w-6 h-6' : size === 'md' ? 'w-8 h-8' : 'w-12 h-12';
     const dotPx = size === 'sm' ? 'w-2 h-2' : size === 'md' ? 'w-3 h-3' : 'w-3.5 h-3.5';
-    const dotPos = size === 'sm' ? 'bottom-0 right-0' : '-bottom-0.5 -right-0.5';
+    const dotPos = 'bottom-0 right-0';
     const textSz = size === 'sm' ? 'text-[10px]' : size === 'md' ? 'text-xs' : 'text-lg';
     const statusColor = user?.status === 'away' ? 'bg-yellow-500' : user?.status === 'online' ? 'bg-green-500' : 'bg-red-500';
     const dot = <span className={`absolute ${dotPos} ${dotPx} ${statusColor} rounded-full ring-2 ring-[#0a0e0a]`} />;
@@ -3284,7 +3284,7 @@ export function TerminalForum() {
             MaxScreenWidth: getNum('MaxScreenWidth', serverInfo.maxScreenWidth),
             MaxScreenHeight: getNum('MaxScreenHeight', serverInfo.maxScreenHeight),
             MaxFps: getNum('MaxFps', serverInfo.maxFps),
-            MaxScreenBitrate: getNum('MaxScreenBitrate', serverInfo.maxScreenBitrate),
+            MaxScreenBitrate: getNum('MaxScreenBitrate', Math.round(serverInfo.maxScreenBitrate / 1000)),
             DefaultBitrate: getNum('DefaultBitrate', serverInfo.defaultBitrate),
             MaxFileSizeKB: getNum('MaxFileSizeKB', serverInfo.maxFileSizeKB),
             MaxSoundSizeKB: getNum('MaxSoundSizeKB', serverInfo.maxSoundSizeKB),
@@ -3369,7 +3369,7 @@ export function TerminalForum() {
                       <div className="grid grid-cols-2 gap-3 pl-6">
                         <NumberField label="Max Width" value={serverInfo.maxScreenWidth} field="MaxScreenWidth" unit="px" min={320} max={3840} />
                         <NumberField label="Max Height" value={serverInfo.maxScreenHeight} field="MaxScreenHeight" unit="px" min={240} max={2160} />
-                        <NumberField label="Max Bitrate" value={serverInfo.maxScreenBitrate} field="MaxScreenBitrate" unit="kbps" min={500} max={50000} />
+                        <NumberField label="Max Bitrate" value={Math.round(serverInfo.maxScreenBitrate / 1000)} field="MaxScreenBitrate" unit="kbps" min={500} max={50000} />
                       </div>
                     </div>
 
