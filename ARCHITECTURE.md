@@ -209,7 +209,8 @@ connected server (to avoid same-username kick).
 #### Auto-Updater
 Uses `electron-updater` with GitHub Releases as the update provider. On startup
 (and every 30 minutes), the app checks for a newer release tag matching `client-v*`.
-Updates are downloaded in the background. IPC channels exposed to the renderer:
+Updates are downloaded in the background but **never forced** — the user sees a
+dismissible toast in the bottom-right corner and can choose to restart or defer.
 
 | IPC Channel           | Direction      | Description                          |
 |-----------------------|----------------|--------------------------------------|

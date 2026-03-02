@@ -169,6 +169,8 @@ export function TerminalForum() {
   });
   const [recordingKeybind, setRecordingKeybind] = useState<string | null>(null);
   const [serverMentions, setServerMentions] = useState<Record<string, number>>({});
+  const [updateReady, setUpdateReady] = useState<string | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -513,6 +515,15 @@ export function TerminalForum() {
     document.documentElement.style.fontSize = `${uiScale}%`;
   }, [uiScale]);
   useEffect(() => { window.electronAPI.getPlatform().then(p => setPlatform(p)); }, []);
+
+  // Auto-updater listener
+  useEffect(() => {
+    const unsub = window.electronAPI.onUpdateDownloaded((version) => {
+      setUpdateReady(version);
+      setUpdateDismissed(false);
+    });
+    return unsub;
+  }, []);
   useEffect(() => { try { localStorage.setItem('voip-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
@@ -4056,6 +4067,32 @@ export function TerminalForum() {
                 CREATE CHANNEL
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Update notification toast ── */}
+      {updateReady && !updateDismissed && (
+        <div className="fixed bottom-4 right-4 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-4 z-50 max-w-xs">
+          <div className="flex items-start gap-3">
+            <Download className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-green-400 font-bold">Update ready</p>
+              <p className="text-xs text-green-700 mt-1">Version {updateReady} has been downloaded.</p>
+              <div className="flex gap-2 mt-3">
+                <button onClick={() => window.electronAPI.installUpdate()}
+                  className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-xs transition-all font-bold">
+                  Restart now
+                </button>
+                <button onClick={() => setUpdateDismissed(true)}
+                  className="px-3 py-1.5 text-green-700 hover:text-green-500 rounded-lg text-xs transition-all">
+                  Later
+                </button>
+              </div>
+            </div>
+            <button onClick={() => setUpdateDismissed(true)} className="text-green-800 hover:text-green-500 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
           </div>
         </div>
       )}

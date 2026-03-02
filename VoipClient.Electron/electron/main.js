@@ -204,7 +204,7 @@ function setupAutoUpdater() {
   if (!app.isPackaged) return; // skip in dev
 
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = false;
 
   autoUpdater.on('checking-for-update', () => {
     console.log('[Updater] Checking for updates...');
