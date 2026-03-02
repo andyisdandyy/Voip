@@ -90,7 +90,8 @@ public class ServerConfig
             if (!File.Exists(path))
             {
                 config = CreateDefault();
-                try { File.WriteAllText(path, JsonSerializer.Serialize(config, _writeOpts)); } catch { }
+                try { File.WriteAllText(path, JsonSerializer.Serialize(config, _writeOpts)); }
+                catch (Exception ex) { Console.WriteLine($"WARNING: Could not write default {path}: {ex.Message}"); }
             }
             else
             {
@@ -110,9 +111,9 @@ public class ServerConfig
 
     public void Save()
     {
-        var path = _loadedPath ?? Path.Combine(AppContext.BaseDirectory, "server-config.json");
+        var path = _loadedPath ?? "server-config.json";
         try { File.WriteAllText(path, JsonSerializer.Serialize(this, _writeOpts)); }
-        catch { }
+        catch (Exception ex) { Console.WriteLine($"WARNING: Could not save {path}: {ex.Message}"); }
     }
 
     private static ServerConfig CreateDefault() => new();

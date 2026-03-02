@@ -38,7 +38,8 @@ public class RoomsConfig
             if (!File.Exists(path))
             {
                 config = CreateDefault();
-                try { File.WriteAllText(path, JsonSerializer.Serialize(config, _jsonOpts)); } catch { }
+                try { File.WriteAllText(path, JsonSerializer.Serialize(config, _jsonOpts)); }
+                catch (Exception ex) { Console.WriteLine($"WARNING: Could not write default {path}: {ex.Message}"); }
             }
             else
             {

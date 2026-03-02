@@ -5,10 +5,13 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Channels;
 
+// Resolve the directory of the running executable (reliable for single-file apps)
+var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? Environment.CurrentDirectory;
 Console.WriteLine("VoIP Server starting...");
+Console.WriteLine($"Data directory: {exeDir}");
 
-var serverConfig = ServerConfig.Load();
-var roomsConfig = RoomsConfig.Load();
+var serverConfig = ServerConfig.Load(Path.Combine(exeDir, "server-config.json"));
+var roomsConfig = RoomsConfig.Load(Path.Combine(exeDir, "rooms.json"));
 
 // Simple async file logger
 var logChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
@@ -16,8 +19,9 @@ _ = Task.Run(async () =>
 {
     try
     {
-        Directory.CreateDirectory("logs");
-        var path = Path.Combine("logs", "voipserver_debug.txt");
+        var logDir = Path.Combine(exeDir, "logs");
+        Directory.CreateDirectory(logDir);
+        var path = Path.Combine(logDir, "voipserver_debug.txt");
         using var sw = new StreamWriter(path, append: true) { AutoFlush = true };
         await foreach (var line in logChannel.Reader.ReadAllAsync())
             await sw.WriteLineAsync($"{DateTime.UtcNow:O} {line}");
@@ -35,11 +39,11 @@ void Log(string message)
 }
 
 var roomManager = new RoomManager(roomsConfig, Log);
-var chatHistory = new ChatHistoryStore();
-var userStore = new UserStore();
-var roleStore = new RoleStore();
-var avatarStore = new AvatarStore();
-var soundboardStore = new SoundboardStore();
+var chatHistory = new ChatHistoryStore(Path.Combine(exeDir, "chat_history.json"));
+var userStore = new UserStore(Path.Combine(exeDir, "users.json"));
+var roleStore = new RoleStore(Path.Combine(exeDir, "roles.json"));
+var avatarStore = new AvatarStore(Path.Combine(exeDir, "avatars.json"));
+var soundboardStore = new SoundboardStore(Path.Combine(exeDir, "soundboard.json"));
 
 Log("VoIP Server starting...");
 Log($"Server: '{serverConfig.ServerName}'");

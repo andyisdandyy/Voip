@@ -5,6 +5,10 @@
 #   ./update.sh              # update to latest
 #   ./update.sh v1.2.0       # update to specific tag
 #
+# For private repos, set GITHUB_TOKEN:
+#   export GITHUB_TOKEN=ghp_xxxx
+#   ./update.sh
+#
 # Prerequisites: curl, tar, jq  (apt install -y curl tar jq)
 
 set -euo pipefail
@@ -13,6 +17,20 @@ REPO="andyisdandyy/Voip"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASSET_NAME="VoipServer-linux-x64.tar.gz"
 TAG="${1:-}"
+
+# ── Build auth header if token is set ─────────────────────
+AUTH_HEADER=""
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    AUTH_HEADER="Authorization: token ${GITHUB_TOKEN}"
+fi
+
+curl_gh() {
+    if [ -n "$AUTH_HEADER" ]; then
+        curl -sL -H "$AUTH_HEADER" "$@"
+    else
+        curl -sL "$@"
+    fi
+}
 
 # ── Resolve download URL ─────────────────────────────────
 if [ -z "$TAG" ]; then
@@ -23,12 +41,29 @@ else
     API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
 fi
 
-RELEASE_JSON=$(curl -sL "$API_URL")
-DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r ".assets[] | select(.name == \"${ASSET_NAME}\") | .browser_download_url")
+RELEASE_JSON=$(curl_gh "$API_URL")
+
+# Check for API errors (404, auth issues, no releases)
+API_MESSAGE=$(echo "$RELEASE_JSON" | jq -r ".message // empty")
+if [ -n "$API_MESSAGE" ]; then
+    echo "ERROR: GitHub API returned: ${API_MESSAGE}"
+    if echo "$API_MESSAGE" | grep -qi "not found"; then
+        echo ""
+        echo "  Possible causes:"
+        echo "  - No releases exist yet (push a tag: git tag v0.1.0 && git push origin v0.1.0)"
+        echo "  - The repo is private — set GITHUB_TOKEN first:"
+        echo "    export GITHUB_TOKEN=ghp_your_token_here"
+    fi
+    exit 1
+fi
+
+DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r ".assets[]? | select(.name == \"${ASSET_NAME}\") | .browser_download_url")
 RELEASE_TAG=$(echo "$RELEASE_JSON" | jq -r ".tag_name")
 
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    echo "ERROR: Could not find ${ASSET_NAME} in release ${TAG:-latest}"
+    echo "ERROR: Release ${RELEASE_TAG:-${TAG:-latest}} exists but has no '${ASSET_NAME}' asset."
+    echo "  The GitHub Actions build may still be running. Check:"
+    echo "  https://github.com/${REPO}/actions"
     exit 1
 fi
 
@@ -48,7 +83,7 @@ fi
 # ── Download and extract ─────────────────────────────────
 TMP=$(mktemp -d)
 echo "Downloading..."
-curl -sL "$DOWNLOAD_URL" -o "${TMP}/${ASSET_NAME}"
+curl_gh -H "Accept: application/octet-stream" "$DOWNLOAD_URL" -o "${TMP}/${ASSET_NAME}"
 tar xzf "${TMP}/${ASSET_NAME}" -C "$TMP"
 
 # ── Swap binary ──────────────────────────────────────────

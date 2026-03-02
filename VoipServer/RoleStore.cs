@@ -209,7 +209,8 @@ public class RoleStore
             if (!File.Exists(_path))
             {
                 var def = CreateDefault();
-                try { File.WriteAllText(_path, JsonSerializer.Serialize(def, _jsonOpts)); } catch { }
+                try { File.WriteAllText(_path, JsonSerializer.Serialize(def, _jsonOpts)); }
+                catch (Exception ex) { Console.WriteLine($"WARNING: Could not write default {_path}: {ex.Message}"); }
                 return def;
             }
             var json = File.ReadAllText(_path);
