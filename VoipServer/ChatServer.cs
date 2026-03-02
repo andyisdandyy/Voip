@@ -30,6 +30,10 @@ public class ChatServer
     private readonly ConcurrentDictionary<string, byte> _cameraActive = new();
     private readonly ConcurrentDictionary<string, byte> _screenActive = new();
 
+    // ── User voice state (muted / deafened) ──────────────────
+    private readonly ConcurrentDictionary<string, byte> _userMuted = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _userDeafened = new(StringComparer.OrdinalIgnoreCase);
+
     // ── User presence status (online / away) ────────────────
     private readonly ConcurrentDictionary<string, string> _userStatus = new(StringComparer.OrdinalIgnoreCase);
 
@@ -253,6 +257,8 @@ public class ChatServer
                     try { await BroadcastToVoiceRoomAsync(name, $"SCREEN_OFF:{name}").ConfigureAwait(false); } catch { }
                 _rooms.RemoveUser(name);
                 _userStatus.TryRemove(name, out _);
+                _userMuted.TryRemove(name, out _);
+                _userDeafened.TryRemove(name, out _);
             }
 
             _log?.Invoke($"[Chat] '{name}' disconnected{(stillConnected ? " (reconnect, preserving rooms)" : "")}");
@@ -501,6 +507,20 @@ public class ChatServer
                 await BroadcastUserListAsync().ConfigureAwait(false);
             }
         }
+        else if (cmd.StartsWith("SET_MUTED:"))
+        {
+            var val = cmd.Substring("SET_MUTED:".Length).Trim();
+            if (val == "true") _userMuted[name] = 0;
+            else _userMuted.TryRemove(name, out _);
+            await BroadcastUserListAsync().ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("SET_DEAFENED:"))
+        {
+            var val = cmd.Substring("SET_DEAFENED:".Length).Trim();
+            if (val == "true") _userDeafened[name] = 0;
+            else _userDeafened.TryRemove(name, out _);
+            await BroadcastUserListAsync().ConfigureAwait(false);
+        }
         else if (cmd == "PING")
         {
             await writer.WriteLineAsync("PONG").ConfigureAwait(false);
@@ -722,6 +742,60 @@ public class ChatServer
             else
                 await writer.WriteLineAsync("ERROR:Invalid room order").ConfigureAwait(false);
         }
+        else if (cmd.StartsWith("UPDATE_SERVER_CONFIG:"))
+        {
+            if (!_roleStore.HasPermission(name, "admin"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            try
+            {
+                var json = cmd.Substring("UPDATE_SERVER_CONFIG:".Length);
+                var updates = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+                if (updates == null) { await writer.WriteLineAsync("ERROR:Invalid JSON").ConfigureAwait(false); return; }
+
+                // Only allow safe, non-sensitive fields to be updated
+                var safeFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "ServerName", "MaxCameraWidth", "MaxCameraHeight",
+                    "MaxScreenWidth", "MaxScreenHeight", "MaxFps",
+                    "MaxScreenBitrate", "DefaultBitrate", "MaxFileSizeKB", "MaxSoundSizeKB",
+                };
+
+                foreach (var kv in updates)
+                {
+                    if (!safeFields.Contains(kv.Key)) continue;
+                    switch (kv.Key.ToLowerInvariant())
+                    {
+                        case "servername": _serverConfig.ServerName = kv.Value.GetString() ?? _serverConfig.ServerName; break;
+                        case "maxcamerawidth": _serverConfig.MaxCameraWidth = kv.Value.GetInt32(); break;
+                        case "maxcameraheight": _serverConfig.MaxCameraHeight = kv.Value.GetInt32(); break;
+                        case "maxscreenwidth": _serverConfig.MaxScreenWidth = kv.Value.GetInt32(); break;
+                        case "maxscreenheight": _serverConfig.MaxScreenHeight = kv.Value.GetInt32(); break;
+                        case "maxfps": _serverConfig.MaxFps = kv.Value.GetInt32(); break;
+                        case "maxscreenbitrate": _serverConfig.MaxScreenBitrate = kv.Value.GetInt32(); break;
+                        case "defaultbitrate": _serverConfig.DefaultBitrate = kv.Value.GetInt32(); break;
+                        case "maxfilesizekb": _serverConfig.MaxFileSizeKB = kv.Value.GetInt32(); break;
+                        case "maxsoundsizekb": _serverConfig.MaxSoundSizeKB = kv.Value.GetInt32(); break;
+                    }
+                }
+
+                _serverConfig.Save();
+                _log?.Invoke($"[Config] {name} updated server config");
+
+                // Broadcast updated SERVER_INFO to all clients
+                foreach (var kv in _clients)
+                {
+                    try { await SendServerInfoAsync(kv.Value.writer, kv.Key).ConfigureAwait(false); }
+                    catch { }
+                }
+            }
+            catch
+            {
+                await writer.WriteLineAsync("ERROR:Failed to update config").ConfigureAwait(false);
+            }
+        }
     }
 
     private async Task HandleMessageAsync(StreamWriter writer, string name, string payload)
@@ -830,6 +904,8 @@ public class ChatServer
             ["MaxFps"] = _serverConfig.MaxFps,
             ["MaxScreenBitrate"] = _serverConfig.MaxScreenBitrate,
             ["MaxFileSizeKB"] = _serverConfig.MaxFileSizeKB,
+            ["MaxSoundSizeKB"] = _serverConfig.MaxSoundSizeKB,
+            ["DefaultBitrate"] = _serverConfig.DefaultBitrate,
             ["Encrypted"] = encrypted,
         };
         if (encKey != null)
@@ -918,6 +994,8 @@ public class ChatServer
                 Roles = _roleStore.GetUserRoleNames(c.name),
                 RoleColor = highest?.Color,
                 Avatar = _avatarStore.GetAvatar(c.name),
+                Muted = _userMuted.ContainsKey(c.name),
+                Deafened = _userDeafened.ContainsKey(c.name),
             });
         }
 
@@ -934,6 +1012,8 @@ public class ChatServer
                 Roles = _roleStore.GetUserRoleNames(name),
                 RoleColor = highest?.Color,
                 Avatar = _avatarStore.GetAvatar(name),
+                Muted = false,
+                Deafened = false,
             });
         }
 

@@ -8,6 +8,10 @@
 
 ```
 Voip/
+├── .github/
+│   └── workflows/
+│       └── release-server.yml   # GitHub Actions — builds & publishes releases on tag push
+│
 ├── VoipServer/              # .NET 10 console application (server)
 │   ├── Program.cs           # Entry point — starts TCP chat server + UDP voice loop
 │   ├── ChatServer.cs        # TCP client handler (auth, rooms, commands, video relay)
@@ -18,7 +22,9 @@ Voip/
 │   ├── RoleStore.cs         # Role definitions + user-role assignments (roles.json)
 │   ├── AvatarStore.cs       # Per-user avatar images as base64 (avatars.json)
 │   ├── ChatHistoryStore.cs  # Last 200 messages per text room (chat_history.json)
-│   └── SoundboardStore.cs   # Soundboard sound entries — name → base64 audio (soundboard.json)
+│   ├── SoundboardStore.cs   # Soundboard sound entries — name → base64 audio (soundboard.json)
+│   └── deploy/
+│       └── update.sh        # Server-side script — downloads latest GitHub Release binary
 │
 ├── VoipClient.Electron/     # Electron + React + Tailwind CSS (client)
 │   ├── electron/
@@ -85,6 +91,8 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `SET_AVATAR:<base64>` | Upload avatar (max ~32 KB) |
 | `REMOVE_AVATAR` | Remove avatar |
 | `SET_STATUS:<online\|away>` | Set user presence status (online or away) |
+| `SET_MUTED:<true\|false>` | Broadcast mute state to other users |
+| `SET_DEAFENED:<true\|false>` | Broadcast deafen state to other users |
 | `ASSIGN_ROLE:<user>:<role>` | Assign a role (requires `manage_roles`) |
 | `REMOVE_ROLE:<user>:<role>` | Remove a role (requires `manage_roles`) |
 | `CREATE_ROLE:<name>:<color>:<priority>:<perms>` | Create role |
@@ -101,6 +109,7 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `DELETE_TEXT_ROOM:<name>` | Delete a text room (requires `manage_rooms`) |
 | `REORDER_VOICE_ROOMS:<name1>,<name2>,...` | Reorder voice rooms (requires `manage_rooms`) |
 | `REORDER_TEXT_ROOMS:<name1>,<name2>,...` | Reorder text rooms (requires `manage_rooms`) |
+| `UPDATE_SERVER_CONFIG:<json>` | Update safe server settings (requires `admin`) — saves to disk and re-broadcasts `SERVER_INFO` |
 
 #### Video Relay
 - Video frames are sent as `VIDEO:<flags>:<base64data>` over TCP
@@ -158,7 +167,7 @@ cached in `_tlsCapable` so subsequent connections skip the probe.
 
 #### Audio Pipeline
 ```
-Mic → getUserMedia(48kHz, mono)
+Mic → getUserMedia(48kHz, mono, AEC/NS/AGC configurable)
     → AudioWorklet (capture-processor.js) — buffers 960 samples (20ms frames)
     → Int16 PCM → main process
     → Opus encode (opusscript) → E2EE encrypt → UDP send
@@ -203,7 +212,7 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | Video capture | 778–970 | Camera and screen share encoding |
 | Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload |
 | Connect screen | 1410+ | Server list, login dialogs |
-| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video |
+| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle) |
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:
@@ -243,7 +252,7 @@ Server → Client:
   SERVER_INFO:<json>
   (SERVER_INFO includes GiphyApiKey when configured — enables client GIF picker)
   ROOMS:<json>
-  USERS:<json>
+  USERS:<json>                                   (includes Muted/Deafened per user)
   ROLES:<json>
   JOINED_VOICE:<room>:<bitrate> | LEFT_VOICE
   JOINED_TEXT:<room> | LEFT_TEXT:<room>
@@ -302,6 +311,7 @@ Server → Client:
   "DefaultBitrate": 96000,          // Opus bitrate (bps)
   "MaxFileSizeKB": 2048,
   "MaxSoundSizeKB": 512,              // Max soundboard sound file size in KB
+  "DefaultBitrate": 96000,            // Opus bitrate (bps)
   "TenorApiKey": null,              // DEPRECATED — use GiphyApiKey
   "GiphyApiKey": null               // GIPHY API key (enables GIF picker)
 }
@@ -314,6 +324,25 @@ Server → Client:
   "TextRooms":  [{ "Name": "General", "Password": null }]
 }
 ```
+
+---
+
+## Deployment
+
+### Releasing a New Version
+Push a version tag — GitHub Actions builds a self-contained Linux binary and publishes it as a release:
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+### Updating the Server
+Copy `VoipServer/deploy/update.sh` next to the `VoipServer` binary on the Linux server, then:
+```bash
+./update.sh              # update to latest release
+./update.sh v1.2.0       # update to specific version
+```
+The script downloads the binary from GitHub Releases, swaps it in place, and prints a message to restart. JSON data files are untouched.
 
 ---
 

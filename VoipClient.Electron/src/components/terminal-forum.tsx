@@ -4,20 +4,20 @@ import {
   Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, Monitor,
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
   Plus, LogOut, Command, Wifi, WifiOff, Home, Paperclip, Download, FileText, Send, Smile, Moon, Image as ImageIcon,
-  Music, Upload, Play, Trash, ChevronUp, ChevronDown, Eye, EyeOff,
+  Music, Upload, Play, Trash, ChevronUp, ChevronDown, Eye, EyeOff, Shield, Sliders, Users, Check,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
 
 interface VoiceRoom { name: string; hasPassword: boolean; bitrate: number }
 interface TextRoom  { name: string; hasPassword: boolean }
-interface UserInfo  { name: string; voiceRoom: string | null; online: boolean; status: 'online' | 'away' | 'offline'; roles: string[]; roleColor: string | null; avatar: string | null }
+interface UserInfo  { name: string; voiceRoom: string | null; online: boolean; status: 'online' | 'away' | 'offline'; roles: string[]; roleColor: string | null; avatar: string | null; muted: boolean; deafened: boolean }
 interface ChatMsg   { id: string; msgId: string; sender: string; body: string; timestamp: number }
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
-interface UserSetting { name: string; volume: number; isMuted: boolean }
+interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean }
 interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean }
-interface ServerInfo { serverName: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; giphyApiKey?: string }
+interface ServerInfo { serverName: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string }
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
@@ -92,6 +92,8 @@ export function TerminalForum() {
   const [viewMode, setViewMode] = useState<'voice' | 'text'>('text');
   const [isCallFullscreen, setIsCallFullscreen] = useState(false);
   const [hideUiOverlay, setHideUiOverlay] = useState(false);
+  const [mouseActive, setMouseActive] = useState(true);
+  const mouseIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [notificationSounds, setNotificationSounds] = useState(() => {
     try { return localStorage.getItem('voip-notification-sounds') !== 'false'; }
     catch { return true; }
@@ -181,6 +183,9 @@ export function TerminalForum() {
   const nicknameRef    = useRef('');
   const selectedInputRef  = useRef('');
   const selectedOutputRef = useRef('');
+  const echoCancellationRef = useRef(localStorage.getItem('voip-echo-cancellation') !== 'false');
+  const noiseSuppressionRef = useRef(localStorage.getItem('voip-noise-suppression') !== 'false');
+  const autoGainControlRef = useRef(localStorage.getItem('voip-auto-gain') !== 'false');
   const analyserRef = useRef<AnalyserNode | null>(null);
   const micLevelIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -214,10 +219,15 @@ export function TerminalForum() {
 
   // Settings
   const [showSettings, setShowSettings] = useState(false);
+  const [showServerSettings, setShowServerSettings] = useState(false);
+  const [serverSettingsTab, setServerSettingsTab] = useState<'general' | 'roles' | 'soundboard'>('general');
   const [audioInputs, setAudioInputs]   = useState<MediaDeviceInfo[]>([]);
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedInput, setSelectedInput]   = useState('');
   const [selectedOutput, setSelectedOutput] = useState('');
+  const [echoCancellation, setEchoCancellation] = useState(() => { try { return localStorage.getItem('voip-echo-cancellation') !== 'false'; } catch { return true; } });
+  const [noiseSuppression, setNoiseSuppression] = useState(() => { try { return localStorage.getItem('voip-noise-suppression') !== 'false'; } catch { return true; } });
+  const [autoGainControl, setAutoGainControl] = useState(() => { try { return localStorage.getItem('voip-auto-gain') !== 'false'; } catch { return true; } });
   const [micLevel, setMicLevel] = useState(0);
   const [userContextMenu, setUserContextMenu] = useState<UserContextMenu | null>(null);
   const [perUserSettings, setPerUserSettings] = useState<Record<string, UserSetting>>({});
@@ -237,8 +247,13 @@ export function TerminalForum() {
   const [soundboardSounds, setSoundboardSounds] = useState<string[]>([]);
   const [soundboardMuted, setSoundboardMuted] = useState(false);
   const [showSoundboard, setShowSoundboard] = useState(false);
+  const [soundboardVolume, setSoundboardVolume] = useState(() => {
+    try { return parseInt(localStorage.getItem('voip-soundboard-volume') || '50'); }
+    catch { return 50; }
+  });
   const [soundboardUploadName, setSoundboardUploadName] = useState('');
   const soundboardMutedRef = useRef(false);
+  const soundboardVolumeRef = useRef(50);
   const soundboardFileRef = useRef<HTMLInputElement>(null);
 
   // Room management
@@ -482,9 +497,13 @@ export function TerminalForum() {
   }
 
   // Play sound on mute/deafen toggle
-  useEffect(() => { isMutedRef.current = isMuted; if (isConnected) playUiSound(isMuted ? 'mute' : 'unmute'); }, [isMuted]);
-  useEffect(() => { isDeafenedRef.current = isDeafened; if (isConnected) playUiSound(isDeafened ? 'deafen' : 'undeafen'); }, [isDeafened]);
+  useEffect(() => { isMutedRef.current = isMuted; if (isConnected) { playUiSound(isMuted ? 'mute' : 'unmute'); window.electronAPI.sendChat(`CMD:SET_MUTED:${isMuted}`); } }, [isMuted]);
+  useEffect(() => { isDeafenedRef.current = isDeafened; if (isConnected) { playUiSound(isDeafened ? 'deafen' : 'undeafen'); window.electronAPI.sendChat(`CMD:SET_DEAFENED:${isDeafened}`); } }, [isDeafened]);
   useEffect(() => { soundboardMutedRef.current = soundboardMuted; }, [soundboardMuted]);
+  useEffect(() => { soundboardVolumeRef.current = soundboardVolume; try { localStorage.setItem('voip-soundboard-volume', String(soundboardVolume)); } catch {} }, [soundboardVolume]);
+  useEffect(() => { echoCancellationRef.current = echoCancellation; try { localStorage.setItem('voip-echo-cancellation', String(echoCancellation)); } catch {} }, [echoCancellation]);
+  useEffect(() => { noiseSuppressionRef.current = noiseSuppression; try { localStorage.setItem('voip-noise-suppression', String(noiseSuppression)); } catch {} }, [noiseSuppression]);
+  useEffect(() => { autoGainControlRef.current = autoGainControl; try { localStorage.setItem('voip-auto-gain', String(autoGainControl)); } catch {} }, [autoGainControl]);
   useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
   useEffect(() => { connectedServerIdRef.current = connectedServerId; }, [connectedServerId]);
   useEffect(() => { currentVoiceRoomRef.current = currentVoiceRoom; }, [currentVoiceRoom]);
@@ -537,7 +556,7 @@ export function TerminalForum() {
     if (!showSettings && !hideUiOverlay) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (hideUiOverlay) { setHideUiOverlay(false); return; }
+        if (hideUiOverlay) { setHideUiOverlay(false); setMouseActive(true); if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current); return; }
         if (showSettings) setShowSettings(false);
       }
     };
@@ -563,11 +582,11 @@ export function TerminalForum() {
   }, []);
 
   const getUserSetting = (name: string): UserSetting =>
-    perUserSettings[name] || { name, volume: 100, isMuted: false };
+    perUserSettings[name] || { name, volume: 100, isMuted: false, soundboardMuted: false };
 
   const updateUserSetting = (name: string, update: Partial<UserSetting>) => {
     setPerUserSettings(prev => {
-      const existing = prev[name] || { name, volume: 100, isMuted: false };
+      const existing = prev[name] || { name, volume: 100, isMuted: false, soundboardMuted: false };
       return { ...prev, [name]: { ...existing, ...update } };
     });
   };
@@ -589,6 +608,8 @@ export function TerminalForum() {
           maxFps: d.MaxFps || 30,
           maxScreenBitrate: d.MaxScreenBitrate ? d.MaxScreenBitrate * 1000 : 20_000_000,
           maxFileSizeKB: d.MaxFileSizeKB || 2048,
+          maxSoundSizeKB: d.MaxSoundSizeKB || 512,
+          defaultBitrate: d.DefaultBitrate || 96000,
           giphyApiKey: d.GiphyApiKey || undefined,
         });
 
@@ -640,7 +661,7 @@ export function TerminalForum() {
     } else if (line.startsWith('USERS:')) {
       try {
         const d = JSON.parse(line.substring(6));
-        setOnlineUsers(d.map((u: any) => ({ name: u.Name, voiceRoom: u.VoiceRoom || null, online: u.Online !== false, status: (u.Status || (u.Online !== false ? 'online' : 'offline')) as 'online' | 'away' | 'offline', roles: u.Roles || [], roleColor: u.RoleColor || null, avatar: u.Avatar || null })));
+        setOnlineUsers(d.map((u: any) => ({ name: u.Name, voiceRoom: u.VoiceRoom || null, online: u.Online !== false, status: (u.Status || (u.Online !== false ? 'online' : 'offline')) as 'online' | 'away' | 'offline', roles: u.Roles || [], roleColor: u.RoleColor || null, avatar: u.Avatar || null, muted: !!u.Muted, deafened: !!u.Deafened })));
       } catch {}
     } else if (line.startsWith('ROLES:')) {
       try {
@@ -776,6 +797,9 @@ export function TerminalForum() {
       const i1 = line.indexOf(':', 16);
       const i2 = i1 >= 0 ? line.indexOf(':', i1 + 1) : -1;
       if (i1 >= 0 && i2 >= 0) {
+        const sender = line.substring(16, i1);
+        const userSetting = perUserSettingsRef.current[sender];
+        if (userSetting?.soundboardMuted) return;
         const base64Data = line.substring(i2 + 1);
         try {
           const binary = atob(base64Data);
@@ -785,7 +809,10 @@ export function TerminalForum() {
           audioCtx.decodeAudioData(bytes.buffer, (buffer) => {
             const source = audioCtx.createBufferSource();
             source.buffer = buffer;
-            source.connect(audioCtx.destination);
+            const gain = audioCtx.createGain();
+            gain.gain.value = soundboardVolumeRef.current / 100;
+            source.connect(gain);
+            gain.connect(audioCtx.destination);
             source.start();
           });
         } catch {}
@@ -939,7 +966,10 @@ export function TerminalForum() {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           deviceId: selectedInputRef.current ? { exact: selectedInputRef.current } : undefined,
-          sampleRate: 48000, channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+          sampleRate: 48000, channelCount: 1,
+          echoCancellation: echoCancellationRef.current,
+          noiseSuppression: noiseSuppressionRef.current,
+          autoGainControl: autoGainControlRef.current,
         },
       });
       streamRef.current = stream;
@@ -1411,13 +1441,14 @@ export function TerminalForum() {
     const user = onlineUsers.find(u => u.name === name);
     const avatar = user?.avatar;
     const px = size === 'sm' ? 'w-6 h-6' : size === 'md' ? 'w-8 h-8' : 'w-12 h-12';
-    const dotPx = size === 'sm' ? 'w-2.5 h-2.5' : size === 'md' ? 'w-3 h-3' : 'w-3.5 h-3.5';
+    const dotPx = size === 'sm' ? 'w-2 h-2' : size === 'md' ? 'w-3 h-3' : 'w-3.5 h-3.5';
+    const dotPos = size === 'sm' ? 'bottom-0 right-0' : '-bottom-0.5 -right-0.5';
     const textSz = size === 'sm' ? 'text-[10px]' : size === 'md' ? 'text-xs' : 'text-lg';
     const statusColor = user?.status === 'away' ? 'bg-yellow-500' : user?.status === 'online' ? 'bg-green-500' : 'bg-red-500';
-    const dot = <span className={`absolute -bottom-0.5 -right-0.5 ${dotPx} ${statusColor} rounded-full ring-2 ring-[#0a0e0a]`} />;
+    const dot = <span className={`absolute ${dotPos} ${dotPx} ${statusColor} rounded-full ring-2 ring-[#0a0e0a]`} />;
     if (avatar) {
       return (
-        <div className={`${px} relative flex-shrink-0`}>
+        <div className={`${px} relative flex-shrink-0 overflow-visible`}>
           <img src={`data:image/jpeg;base64,${avatar}`} className={`${px} rounded-full object-cover`} />
           {dot}
         </div>
@@ -1425,7 +1456,7 @@ export function TerminalForum() {
     }
     const color = user?.roleColor || '#22c55e';
     return (
-      <div className={`${px} relative flex-shrink-0`}>
+      <div className={`${px} relative flex-shrink-0 overflow-visible`}>
         <div className={`${px} rounded-full flex items-center justify-center ${textSz} font-bold text-white`}
           style={{ backgroundColor: color + '40', color }}>
           {name.charAt(0).toUpperCase()}
@@ -1445,7 +1476,7 @@ export function TerminalForum() {
   // ── Call duration timer
 
   useEffect(() => {
-    if (!currentVoiceRoom) { setCallDuration(0); setViewModeTracked('text'); setIsScreenSharing(false); setSelectedVideoFeed(null); setIsCallFullscreen(false); setHideUiOverlay(false); return; }
+    if (!currentVoiceRoom) { setCallDuration(0); setViewModeTracked('text'); setIsScreenSharing(false); setSelectedVideoFeed(null); setIsCallFullscreen(false); setHideUiOverlay(false); setMouseActive(true); return; }
     const iv = setInterval(() => setCallDuration(d => d + 1), 1000);
     return () => clearInterval(iv);
   }, [currentVoiceRoom]);
@@ -1695,6 +1726,8 @@ export function TerminalForum() {
 
   const leaveVoice = () => {
     setHideUiOverlay(false);
+    setMouseActive(true);
+    if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current);
     setIsCallFullscreen(false);
     window.electronAPI.sendChat('CMD:LEAVE_VOICE');
   };
@@ -2239,8 +2272,10 @@ export function TerminalForum() {
                       <div className="ml-6 mt-1 space-y-1">
                         {usersInChannel.map(u => (
                           <div key={u.name} className="flex items-center gap-2 px-2 py-1 text-xs text-green-600">
-                            <User className="w-3 h-3" />
-                            <span>{u.name}</span>
+                            <UserAvatar name={u.name} size="sm" />
+                            <span className="truncate" style={{ color: u.roleColor || undefined }}>{u.name}</span>
+                            {u.muted && <MicOff className="w-3 h-3 text-red-500 shrink-0" />}
+                            {u.deafened && <VolumeX className="w-3 h-3 text-red-500 shrink-0" />}
                           </div>
                         ))}
                       </div>
@@ -2251,12 +2286,48 @@ export function TerminalForum() {
             </div>
           </div>
 
+          {/* Soundboard popup */}
+          {showSoundboard && currentVoiceRoom && soundboardSounds.length > 0 && (
+            <div className="border-t border-green-900/30 bg-[#0d120d]/60 p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[10px] text-green-700 uppercase tracking-wider">Soundboard</span>
+                <div className="flex items-center gap-1 ml-auto">
+                  <button onClick={() => setSoundboardMuted(m => !m)}
+                    className={`p-1 rounded transition-all ${soundboardMuted ? 'text-red-500' : 'text-green-700 hover:text-green-400'}`}
+                    title={soundboardMuted ? 'Unmute all sounds' : 'Mute all sounds'}>
+                    {soundboardMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                  </button>
+                  <button onClick={() => setShowSoundboard(false)} className="p-1 text-green-800 hover:text-green-400 transition-colors">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 mb-2">
+                <Volume2 className="w-3 h-3 text-green-700 shrink-0" />
+                <input type="range" min="0" max="100" value={soundboardVolume}
+                  onChange={e => setSoundboardVolume(parseInt(e.target.value))}
+                  className="flex-1 h-1.5 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
+                <span className="text-[10px] text-green-700 w-7 text-right shrink-0">{soundboardVolume}%</span>
+              </div>
+              {soundboardMuted && (
+                <div className="text-[10px] text-red-500/70 mb-2">All sounds muted</div>
+              )}
+              <div className="grid grid-cols-2 gap-1 max-h-32 overflow-y-auto">
+                {soundboardSounds.map(name => (
+                  <button key={name} onClick={() => window.electronAPI.sendChat(`CMD:PLAY_SOUND:${name}`)}
+                    className="text-left px-2.5 py-1.5 rounded text-xs text-green-600 hover:bg-green-900/30 hover:text-green-400 transition-all truncate flex items-center gap-1.5">
+                    <Play className="w-3 h-3 shrink-0" />
+                    <span className="truncate">{name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* User controls at bottom */}
           <div className="p-4 border-t border-green-900/30 bg-[#0d120d]/40">
             <div className="flex items-center gap-3 mb-3">
-              <div className="w-8 h-8 rounded-full bg-green-900/40 flex items-center justify-center">
-                <User className="w-4 h-4 text-green-500" />
-              </div>
+              <UserAvatar name={nickname} size="md" />
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-green-500 truncate">{nickname}</div>
                 <div className={`text-xs ${isAway ? 'text-yellow-500' : 'text-green-700'}`}>{isAway ? 'away' : 'online'}</div>
@@ -2278,11 +2349,20 @@ export function TerminalForum() {
                 {isDeafened ? <VolumeX className="w-4 h-4" /> : <Headphones className="w-4 h-4" />}
               </button>
               {currentVoiceRoom && (
-                <button onClick={leaveVoice}
-                  className="p-2 rounded-lg bg-red-900/30 text-red-500 hover:bg-red-900/50 transition-all"
-                  title="Leave voice">
-                  <PhoneOff className="w-4 h-4" />
-                </button>
+                <>
+                  <button onClick={leaveVoice}
+                    className="p-2 rounded-lg bg-red-900/30 text-red-500 hover:bg-red-900/50 transition-all"
+                    title="Leave voice">
+                    <PhoneOff className="w-4 h-4" />
+                  </button>
+                  {soundboardSounds.length > 0 && (
+                    <button onClick={() => setShowSoundboard(s => !s)}
+                      className={`p-2 rounded-lg transition-all ${showSoundboard ? 'bg-green-900/40 text-green-400' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40'}`}
+                      title="Soundboard">
+                      <Music className="w-4 h-4" />
+                    </button>
+                  )}
+                </>
               )}
               <button onClick={() => {
                   const next = !isAway;
@@ -2298,6 +2378,13 @@ export function TerminalForum() {
                 title="Settings">
                 <Settings className="w-4 h-4" />
               </button>
+              {hasPermission('admin') && (
+                <button onClick={() => setShowServerSettings(true)}
+                  className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all"
+                  title="Server Settings">
+                  <Shield className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2306,7 +2393,20 @@ export function TerminalForum() {
         <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'bg-black' : 'bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10'}`}>
           {viewMode === 'voice' && currentVoiceRoom ? (
             /* ── Voice / Video call ─────────────────────── */
-            <div className="flex-1 flex flex-col relative group/call">
+            <div className={`flex-1 flex flex-col relative group/call ${hideUiOverlay && isCallFullscreen && !mouseActive ? 'cursor-none' : ''}`}
+              onMouseMove={() => {
+                if (hideUiOverlay && isCallFullscreen) {
+                  setMouseActive(true);
+                  if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current);
+                  mouseIdleTimerRef.current = setTimeout(() => setMouseActive(false), 3000);
+                }
+              }}
+              onMouseLeave={() => {
+                if (hideUiOverlay && isCallFullscreen) {
+                  if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current);
+                  setMouseActive(false);
+                }
+              }}>
               {isVideoMode ? (
                 /* ── Video Grid Mode ─────────────────────── */
                 <div className={`flex-1 flex flex-col ${hideUiOverlay && isCallFullscreen ? 'p-0' : 'p-4'}`}>
@@ -2361,7 +2461,7 @@ export function TerminalForum() {
                       );
                     })}
                   </div>
-                  <div className={`flex justify-center gap-3 pb-2 ${hideUiOverlay && isCallFullscreen ? 'absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur-sm py-4 opacity-0 group-hover/call:opacity-100 transition-opacity duration-300 z-10' : ''}`}>
+                  <div className={`flex justify-center gap-3 pb-2 ${hideUiOverlay && isCallFullscreen ? `absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur-sm py-4 transition-opacity duration-300 z-10 ${mouseActive ? 'opacity-100' : 'opacity-0 pointer-events-none'}` : ''}`}>
                     <button onClick={() => setIsMuted(!isMuted)}
                       className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         isMuted ? 'bg-red-900/60 text-red-400 hover:bg-red-900/80 shadow-red-900/50' : 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30'}`}
@@ -2391,13 +2491,27 @@ export function TerminalForum() {
                       title={isDeafened ? 'Undeafen' : 'Deafen'}>
                       {isDeafened ? <VolumeX className="w-6 h-6" /> : <Headphones className="w-6 h-6" />}
                     </button>
-                    <button onClick={() => { setIsCallFullscreen(f => { if (f) setHideUiOverlay(false); return !f; }); }}
+                    <button onClick={() => { setIsCallFullscreen(f => { if (f) { setHideUiOverlay(false); setMouseActive(true); if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current); } return !f; }); }}
                       className="w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30"
                       title={isCallFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
                       {isCallFullscreen ? <Minimize2 className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
                     </button>
                     {isCallFullscreen && (
-                      <button onClick={() => setHideUiOverlay(h => !h)}
+                      <button onClick={() => {
+                          setHideUiOverlay(h => {
+                            if (!h) {
+                              // Turning ON — start idle timer
+                              setMouseActive(true);
+                              if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current);
+                              mouseIdleTimerRef.current = setTimeout(() => setMouseActive(false), 3000);
+                            } else {
+                              // Turning OFF — clear timer, show everything
+                              setMouseActive(true);
+                              if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current);
+                            }
+                            return !h;
+                          });
+                        }}
                         className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg ${
                           hideUiOverlay ? 'bg-green-900/40 text-green-400 hover:bg-green-900/60 shadow-green-900/30' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30'}`}
                         title={hideUiOverlay ? 'Show UI' : 'Hide UI'}>
@@ -2420,18 +2534,43 @@ export function TerminalForum() {
                       usersInRoom.length <= 4 ? 'grid-cols-2' :
                       'grid-cols-3'
                     }`}>
-                      {usersInRoom.map(u => (
+                      {usersInRoom.map(u => {
+                        const isSelf = u.name === nickname;
+                        const userMuted = isSelf ? isMuted : u.muted;
+                        const userDeafened = isSelf ? isDeafened : u.deafened;
+                        return (
                         <div key={u.name} className="flex flex-col items-center">
-                          <div className="w-32 h-32 rounded-full bg-green-900/40 flex items-center justify-center ring-4 ring-green-900/50 shadow-lg shadow-green-900/50 mb-3">
-                            <User className="w-16 h-16 text-green-500" />
+                          <div className="w-32 h-32 rounded-full ring-4 ring-green-900/50 shadow-lg shadow-green-900/50 mb-3 relative overflow-visible">
+                            {u.avatar ? (
+                              <img src={`data:image/jpeg;base64,${u.avatar}`} className="w-32 h-32 rounded-full object-cover" />
+                            ) : (
+                              <div className="w-32 h-32 rounded-full bg-green-900/40 flex items-center justify-center">
+                                <span className="text-4xl font-bold" style={{ color: u.roleColor || '#22c55e' }}>{u.name.charAt(0).toUpperCase()}</span>
+                              </div>
+                            )}
+                            {(userMuted || userDeafened) && (
+                              <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 flex gap-1">
+                                {userMuted && (
+                                  <span className="bg-red-600 rounded-full p-1 ring-2 ring-[#0a0e0a]">
+                                    <MicOff className="w-3.5 h-3.5 text-white" />
+                                  </span>
+                                )}
+                                {userDeafened && (
+                                  <span className="bg-red-600 rounded-full p-1 ring-2 ring-[#0a0e0a]">
+                                    <VolumeX className="w-3.5 h-3.5 text-white" />
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
                           <h3 className="text-lg font-bold text-green-400 mb-1">{u.name}</h3>
                           <div className="flex items-center gap-2 text-xs text-green-700">
-                            <Mic className="w-3 h-3" />
-                            <span>{u.name === nickname && isMuted ? 'Muted' : 'Speaking'}</span>
+                            {userMuted ? <MicOff className="w-3 h-3 text-red-500" /> : userDeafened ? <VolumeX className="w-3 h-3 text-red-500" /> : <Mic className="w-3 h-3" />}
+                            <span className={userMuted ? 'text-red-500' : userDeafened ? 'text-red-500' : ''}>{userMuted ? 'Muted' : userDeafened ? 'Deafened' : 'Listening'}</span>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     <div className="text-center mb-8">
                       <p className="text-sm text-green-700">Connected to: {currentVoiceRoom}</p>
@@ -2471,7 +2610,7 @@ export function TerminalForum() {
                       title={isDeafened ? 'Undeafen' : 'Deafen'}>
                       {isDeafened ? <VolumeX className="w-7 h-7" /> : <Headphones className="w-7 h-7" />}
                     </button>
-                    <button onClick={() => { setIsCallFullscreen(f => { if (f) setHideUiOverlay(false); return !f; }); }}
+                    <button onClick={() => { setIsCallFullscreen(f => { if (f) { setHideUiOverlay(false); setMouseActive(true); if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current); } return !f; }); }}
                       className="w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 shadow-green-900/30"
                       title={isCallFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
                       {isCallFullscreen ? <Minimize2 className="w-7 h-7" /> : <Maximize className="w-7 h-7" />}
@@ -2874,6 +3013,39 @@ export function TerminalForum() {
                       <span className="text-xs text-green-800">Join a voice channel to test microphone</span>
                     )}
                   </div>
+                  <div className="pt-3 border-t border-green-900/20">
+                    <label className="text-xs text-green-600 block mb-2">Audio Processing</label>
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={echoCancellation}
+                          onChange={e => setEchoCancellation(e.target.checked)}
+                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                        <div>
+                          <span className="text-sm text-green-500">Echo Cancellation</span>
+                          <span className="text-[10px] text-green-800 block">Prevents speakers from feeding back into the mic</span>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={noiseSuppression}
+                          onChange={e => setNoiseSuppression(e.target.checked)}
+                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                        <div>
+                          <span className="text-sm text-green-500">Noise Suppression</span>
+                          <span className="text-[10px] text-green-800 block">Reduces background noise (fans, typing, etc.)</span>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={autoGainControl}
+                          onChange={e => setAutoGainControl(e.target.checked)}
+                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                        <div>
+                          <span className="text-sm text-green-500">Auto Gain Control</span>
+                          <span className="text-[10px] text-green-800 block">Automatically adjusts microphone volume</span>
+                        </div>
+                      </label>
+                    </div>
+                    <span className="text-[10px] text-green-800 mt-2 block">Changes apply on next voice join or via Apply below</span>
+                  </div>
                 </div>
               </div>
 
@@ -3074,6 +3246,390 @@ export function TerminalForum() {
         </div>
       )}
 
+      {/* ── Server Settings Modal (admin only) ─────────────────── */}
+      {showServerSettings && serverInfo && (() => {
+        const ALL_PERMS = ['admin', 'manage_roles', 'manage_rooms', 'kick_users', 'delete_messages'];
+        const PERM_LABELS: Record<string, string> = {
+          admin: 'Administrator — full access to everything',
+          manage_roles: 'Manage Roles — create, delete, assign roles',
+          manage_rooms: 'Manage Rooms — create, delete, reorder channels',
+          kick_users: 'Kick Users — remove users from the server',
+          delete_messages: 'Delete Messages — delete any user\'s messages',
+        };
+        const NumberField = ({ label, value, field, unit, min, max }: { label: string; value: number; field: string; unit?: string; min?: number; max?: number }) => (
+          <div>
+            <label className="text-xs text-green-600 block mb-1">{label}</label>
+            <div className="flex items-center gap-2">
+              <input type="number" defaultValue={value} min={min} max={max}
+                id={`srv-${field}`}
+                className="flex-1 bg-[#0a0e0a] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all text-sm" />
+              {unit && <span className="text-xs text-green-800 shrink-0">{unit}</span>}
+            </div>
+          </div>
+        );
+        const saveServerConfig = () => {
+          const getNum = (field: string, fallback: number) => {
+            const el = document.getElementById(`srv-${field}`) as HTMLInputElement;
+            const v = parseInt(el?.value);
+            return isNaN(v) ? fallback : v;
+          };
+          const getStr = (field: string, fallback: string) => {
+            const el = document.getElementById(`srv-${field}`) as HTMLInputElement;
+            return el?.value?.trim() || fallback;
+          };
+          const config: Record<string, any> = {
+            ServerName: getStr('ServerName', serverInfo.serverName),
+            MaxCameraWidth: getNum('MaxCameraWidth', serverInfo.maxCameraWidth),
+            MaxCameraHeight: getNum('MaxCameraHeight', serverInfo.maxCameraHeight),
+            MaxScreenWidth: getNum('MaxScreenWidth', serverInfo.maxScreenWidth),
+            MaxScreenHeight: getNum('MaxScreenHeight', serverInfo.maxScreenHeight),
+            MaxFps: getNum('MaxFps', serverInfo.maxFps),
+            MaxScreenBitrate: getNum('MaxScreenBitrate', serverInfo.maxScreenBitrate),
+            DefaultBitrate: getNum('DefaultBitrate', serverInfo.defaultBitrate),
+            MaxFileSizeKB: getNum('MaxFileSizeKB', serverInfo.maxFileSizeKB),
+            MaxSoundSizeKB: getNum('MaxSoundSizeKB', serverInfo.maxSoundSizeKB),
+          };
+          window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify(config)}`);
+          setShowServerSettings(false);
+        };
+        const tabs: { id: typeof serverSettingsTab; label: string; icon: React.ReactNode }[] = [
+          { id: 'general', label: 'General', icon: <Sliders className="w-4 h-4" /> },
+          { id: 'roles', label: 'Roles', icon: <Users className="w-4 h-4" /> },
+          { id: 'soundboard', label: 'Soundboard', icon: <Music className="w-4 h-4" /> },
+        ];
+        return (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setShowServerSettings(false)}>
+            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-3xl max-h-[90vh] flex flex-col"
+              onClick={e => e.stopPropagation()}>
+              {/* Header */}
+              <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-3">
+                  <Shield className="w-6 h-6 text-green-500" />
+                  <h2 className="text-xl font-bold text-green-400">SERVER SETTINGS</h2>
+                </div>
+                <button onClick={() => setShowServerSettings(false)}
+                  className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="flex border-b border-green-900/50 shrink-0">
+                {tabs.map(t => (
+                  <button key={t.id} onClick={() => setServerSettingsTab(t.id)}
+                    className={`flex items-center gap-2 px-6 py-3 text-sm transition-all border-b-2 ${
+                      serverSettingsTab === t.id
+                        ? 'border-green-500 text-green-400 bg-green-900/20'
+                        : 'border-transparent text-green-700 hover:text-green-500 hover:bg-green-900/10'
+                    }`}>
+                    {t.icon}
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Tab Content */}
+              <div className="flex-1 overflow-y-auto p-6">
+                {serverSettingsTab === 'general' && (
+                  <div className="space-y-6">
+                    {/* General */}
+                    <div>
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Terminal className="w-4 h-4" />
+                        GENERAL
+                      </h3>
+                      <div className="space-y-3 pl-6">
+                        <div>
+                          <label className="text-xs text-green-600 block mb-1">Server Name</label>
+                          <input type="text" defaultValue={serverInfo.serverName} id="srv-ServerName"
+                            className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all text-sm" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Camera Limits */}
+                    <div className="pt-4 border-t border-green-900/30">
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Video className="w-4 h-4" />
+                        CAMERA LIMITS
+                      </h3>
+                      <div className="grid grid-cols-2 gap-3 pl-6">
+                        <NumberField label="Max Width" value={serverInfo.maxCameraWidth} field="MaxCameraWidth" unit="px" min={320} max={3840} />
+                        <NumberField label="Max Height" value={serverInfo.maxCameraHeight} field="MaxCameraHeight" unit="px" min={240} max={2160} />
+                      </div>
+                    </div>
+
+                    {/* Screen Share Limits */}
+                    <div className="pt-4 border-t border-green-900/30">
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Monitor className="w-4 h-4" />
+                        SCREEN SHARE LIMITS
+                      </h3>
+                      <div className="grid grid-cols-2 gap-3 pl-6">
+                        <NumberField label="Max Width" value={serverInfo.maxScreenWidth} field="MaxScreenWidth" unit="px" min={320} max={3840} />
+                        <NumberField label="Max Height" value={serverInfo.maxScreenHeight} field="MaxScreenHeight" unit="px" min={240} max={2160} />
+                        <NumberField label="Max Bitrate" value={serverInfo.maxScreenBitrate} field="MaxScreenBitrate" unit="kbps" min={500} max={50000} />
+                      </div>
+                    </div>
+
+                    {/* Video & Audio */}
+                    <div className="pt-4 border-t border-green-900/30">
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Sliders className="w-4 h-4" />
+                        VIDEO & AUDIO
+                      </h3>
+                      <div className="grid grid-cols-2 gap-3 pl-6">
+                        <NumberField label="Max FPS" value={serverInfo.maxFps} field="MaxFps" unit="fps" min={1} max={120} />
+                        <NumberField label="Default Voice Bitrate" value={serverInfo.defaultBitrate} field="DefaultBitrate" unit="bps" min={8000} max={512000} />
+                      </div>
+                    </div>
+
+                    {/* File Limits */}
+                    <div className="pt-4 border-t border-green-900/30">
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <FileText className="w-4 h-4" />
+                        FILE LIMITS
+                      </h3>
+                      <div className="grid grid-cols-2 gap-3 pl-6">
+                        <NumberField label="Max File Size" value={serverInfo.maxFileSizeKB} field="MaxFileSizeKB" unit="KB" min={64} max={102400} />
+                        <NumberField label="Max Sound Size" value={serverInfo.maxSoundSizeKB} field="MaxSoundSizeKB" unit="KB" min={64} max={10240} />
+                      </div>
+                    </div>
+
+                    <p className="text-[10px] text-green-800 pt-2">Changes are applied immediately and persisted to <code className="text-green-700">server-config.json</code>.</p>
+
+                    <div className="flex justify-end pt-2">
+                      <button onClick={saveServerConfig}
+                        className="px-6 py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold">
+                        Save & Apply
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {serverSettingsTab === 'roles' && (
+                  <div className="space-y-6">
+                    {/* Existing Roles */}
+                    <div>
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Shield className="w-4 h-4" />
+                        ROLES
+                      </h3>
+                      <div className="space-y-3">
+                        {serverRoles.map(role => {
+                          const isProtected = role.name === 'Admin' || role.name === 'Member';
+                          return (
+                            <div key={role.name} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg p-4">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-3">
+                                  <span className="w-4 h-4 rounded-full shrink-0" style={{ backgroundColor: role.color }} />
+                                  <span className="text-sm font-bold" style={{ color: role.color }}>{role.name}</span>
+                                  <span className="text-[10px] text-green-800">Priority: {role.priority}</span>
+                                </div>
+                                {!isProtected && (
+                                  <button onClick={() => { if (confirm(`Delete role "${role.name}"? Users with this role will lose it.`)) window.electronAPI.sendChat(`CMD:DELETE_ROLE:${role.name}`); }}
+                                    className="p-1.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/20 transition-all" title="Delete role">
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {role.permissions.length > 0 ? role.permissions.map(p => (
+                                  <span key={p} className="text-[10px] px-2 py-0.5 rounded-full bg-green-900/30 text-green-500">{p}</span>
+                                )) : (
+                                  <span className="text-[10px] text-green-800">No permissions</span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Create New Role */}
+                    <div className="pt-4 border-t border-green-900/30">
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Plus className="w-4 h-4" />
+                        CREATE ROLE
+                      </h3>
+                      <div className="bg-[#0a0e0a] border border-green-900/40 rounded-lg p-4 space-y-4">
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="col-span-2">
+                            <label className="text-xs text-green-600 block mb-1">Name</label>
+                            <input type="text" id="new-role-name" placeholder="e.g. Moderator"
+                              className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
+                          </div>
+                          <div>
+                            <label className="text-xs text-green-600 block mb-1">Priority</label>
+                            <input type="number" id="new-role-priority" defaultValue={10} min={0} max={99}
+                              className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs text-green-600 block mb-1">Color</label>
+                          <div className="flex items-center gap-2">
+                            <input type="color" id="new-role-color" defaultValue="#22c55e"
+                              className="w-10 h-10 rounded-lg border border-green-900/50 bg-transparent cursor-pointer" />
+                            <input type="text" id="new-role-color-hex" defaultValue="#22c55e"
+                              onChange={e => { const el = document.getElementById('new-role-color') as HTMLInputElement; if (el && /^#[0-9a-fA-F]{6}$/.test(e.target.value)) el.value = e.target.value; }}
+                              className="flex-1 bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm font-mono" />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs text-green-600 block mb-2">Permissions</label>
+                          <div className="space-y-2">
+                            {ALL_PERMS.map(p => (
+                              <label key={p} className="flex items-start gap-3 cursor-pointer group/perm">
+                                <input type="checkbox" id={`new-role-perm-${p}`}
+                                  className="w-4 h-4 mt-0.5 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50 shrink-0" />
+                                <div>
+                                  <span className="text-sm text-green-500 group-hover/perm:text-green-400 transition-colors">{p}</span>
+                                  <span className="text-[10px] text-green-800 block">{PERM_LABELS[p]}</span>
+                                </div>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                        <button onClick={() => {
+                            const name = (document.getElementById('new-role-name') as HTMLInputElement)?.value?.trim();
+                            const color = (document.getElementById('new-role-color') as HTMLInputElement)?.value || '#22c55e';
+                            const priority = parseInt((document.getElementById('new-role-priority') as HTMLInputElement)?.value) || 10;
+                            const perms = ALL_PERMS.filter(p => (document.getElementById(`new-role-perm-${p}`) as HTMLInputElement)?.checked);
+                            if (!name) return;
+                            window.electronAPI.sendChat(`CMD:CREATE_ROLE:${name}:${color}:${priority}:${perms.join(',')}`);
+                            (document.getElementById('new-role-name') as HTMLInputElement).value = '';
+                            ALL_PERMS.forEach(p => { const el = document.getElementById(`new-role-perm-${p}`) as HTMLInputElement; if (el) el.checked = false; });
+                          }}
+                          className="w-full py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold text-sm">
+                          Create Role
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Assign Roles to Users */}
+                    <div className="pt-4 border-t border-green-900/30">
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <UserPlus className="w-4 h-4" />
+                        ASSIGN ROLES
+                      </h3>
+                      <div className="space-y-2 max-h-60 overflow-y-auto">
+                        {onlineUsers.filter(u => u.online).map(u => (
+                          <div key={u.name} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg px-4 py-3 flex items-center gap-3">
+                            <UserAvatar name={u.name} size="sm" />
+                            <span className="text-sm text-green-500 font-bold min-w-[80px]" style={{ color: u.roleColor || undefined }}>{u.name}</span>
+                            <div className="flex flex-wrap gap-1 flex-1">
+                              {serverRoles.map(role => {
+                                const has = u.roles.some(r => r.toLowerCase() === role.name.toLowerCase());
+                                const isProtected = role.name === 'Member';
+                                return (
+                                  <button key={role.name}
+                                    disabled={isProtected}
+                                    onClick={() => {
+                                      if (has) window.electronAPI.sendChat(`CMD:REMOVE_ROLE:${u.name}:${role.name}`);
+                                      else window.electronAPI.sendChat(`CMD:ASSIGN_ROLE:${u.name}:${role.name}`);
+                                    }}
+                                    className={`text-[10px] px-2 py-0.5 rounded-full transition-all ${
+                                      isProtected
+                                        ? 'bg-green-900/20 text-green-800 cursor-default'
+                                        : has
+                                          ? 'text-white hover:opacity-80'
+                                          : 'bg-green-900/20 text-green-700 hover:bg-green-900/40 hover:text-green-500'
+                                    }`}
+                                    style={has && !isProtected ? { backgroundColor: role.color + '40', color: role.color } : undefined}
+                                    title={has ? `Remove ${role.name}` : `Assign ${role.name}`}>
+                                    {has ? <span>✓ {role.name}</span> : role.name}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {serverSettingsTab === 'soundboard' && (
+                  <div className="space-y-6">
+                    {/* Existing Sounds */}
+                    <div>
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Music className="w-4 h-4" />
+                        SOUNDS ({soundboardSounds.length})
+                      </h3>
+                      {soundboardSounds.length > 0 ? (
+                        <div className="space-y-2">
+                          {soundboardSounds.map(name => (
+                            <div key={name} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg px-4 py-3 flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <Music className="w-4 h-4 text-green-600" />
+                                <span className="text-sm text-green-500">{name}</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button onClick={() => window.electronAPI.sendChat(`CMD:PLAY_SOUND:${name}`)}
+                                  className="p-1.5 rounded text-green-700 hover:text-green-400 hover:bg-green-900/30 transition-all" title="Preview">
+                                  <Play className="w-3.5 h-3.5" />
+                                </button>
+                                <button onClick={() => { if (confirm(`Delete sound "${name}"?`)) window.electronAPI.sendChat(`CMD:DELETE_SOUND:${name}`); }}
+                                  className="p-1.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/20 transition-all" title="Delete">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-green-800 text-sm">No sounds uploaded yet</div>
+                      )}
+                    </div>
+
+                    {/* Upload Sound */}
+                    <div className="pt-4 border-t border-green-900/30">
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <Upload className="w-4 h-4" />
+                        UPLOAD SOUND
+                      </h3>
+                      <div className="bg-[#0a0e0a] border border-green-900/40 rounded-lg p-4 space-y-3">
+                        <div>
+                          <label className="text-xs text-green-600 block mb-1">Sound Name</label>
+                          <input type="text" id="srv-sound-name" placeholder="e.g. airhorn"
+                            className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
+                        </div>
+                        <div>
+                          <label className="text-xs text-green-600 block mb-1">Audio File</label>
+                          <input type="file" id="srv-sound-file" accept="audio/*"
+                            className="w-full text-sm text-green-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-green-900/30 file:text-green-400 file:font-bold file:cursor-pointer hover:file:bg-green-900/50 transition-all" />
+                          <span className="text-[10px] text-green-800 mt-1 block">Max {serverInfo.maxSoundSizeKB} KB</span>
+                        </div>
+                        <button onClick={() => {
+                            const name = (document.getElementById('srv-sound-name') as HTMLInputElement)?.value?.trim();
+                            const fileInput = document.getElementById('srv-sound-file') as HTMLInputElement;
+                            const file = fileInput?.files?.[0];
+                            if (!name || !file) return;
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                              const b64 = (reader.result as string).split(',')[1];
+                              if (!b64) return;
+                              window.electronAPI.sendChat(`CMD:UPLOAD_SOUND:${name}:${b64}`);
+                              (document.getElementById('srv-sound-name') as HTMLInputElement).value = '';
+                              fileInput.value = '';
+                            };
+                            reader.readAsDataURL(file);
+                          }}
+                          className="w-full py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold text-sm">
+                          Upload Sound
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── User Context Menu ────────────────────────────────── */}
       {userContextMenu && (() => {
         const menuWidth = 280;
@@ -3120,6 +3676,13 @@ export function TerminalForum() {
                     setting.isMuted ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-green-900/20 text-green-500 hover:bg-green-900/40'
                   }`}>
                   {setting.isMuted ? <><MicOff className="w-4 h-4" /><span className="text-sm">Unmute User</span></> : <><Mic className="w-4 h-4" /><span className="text-sm">Mute User</span></>}
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); updateUserSetting(userContextMenu.userId, { soundboardMuted: !setting.soundboardMuted }); }}
+                  className={`w-full px-4 py-2.5 rounded-lg transition-all flex items-center gap-2 mb-2 ${
+                    setting.soundboardMuted ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-green-900/20 text-green-500 hover:bg-green-900/40'
+                  }`}>
+                  {setting.soundboardMuted ? <><VolumeX className="w-4 h-4" /><span className="text-sm">Unmute Soundboard</span></> : <><Music className="w-4 h-4" /><span className="text-sm">Mute Soundboard</span></>}
                 </button>
               </>
             )}

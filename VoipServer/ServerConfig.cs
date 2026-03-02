@@ -79,25 +79,40 @@ public class ServerConfig
         WriteIndented = true,
     };
 
+    private string? _loadedPath;
+
     public static ServerConfig Load(string? path = null)
     {
         path ??= Path.Combine(AppContext.BaseDirectory, "server-config.json");
         try
         {
+            ServerConfig config;
             if (!File.Exists(path))
             {
-                var def = CreateDefault();
-                // Write default config so the server owner can edit it
-                try { File.WriteAllText(path, JsonSerializer.Serialize(def, _writeOpts)); } catch { }
-                return def;
+                config = CreateDefault();
+                try { File.WriteAllText(path, JsonSerializer.Serialize(config, _writeOpts)); } catch { }
             }
-            var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<ServerConfig>(json, _jsonOpts) ?? CreateDefault();
+            else
+            {
+                var json = File.ReadAllText(path);
+                config = JsonSerializer.Deserialize<ServerConfig>(json, _jsonOpts) ?? CreateDefault();
+            }
+            config._loadedPath = path;
+            return config;
         }
         catch
         {
-            return CreateDefault();
+            var config = CreateDefault();
+            config._loadedPath = path;
+            return config;
         }
+    }
+
+    public void Save()
+    {
+        var path = _loadedPath ?? Path.Combine(AppContext.BaseDirectory, "server-config.json");
+        try { File.WriteAllText(path, JsonSerializer.Serialize(this, _writeOpts)); }
+        catch { }
     }
 
     private static ServerConfig CreateDefault() => new();
