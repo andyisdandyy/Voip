@@ -71,7 +71,7 @@
           ]
         }
       ],
-      "icon": "build-resources/icon.ico"
+      "icon": "build-resources/icon.png"
     },
     "nsis": {
       "oneClick": false,
@@ -96,7 +96,7 @@
           ]
         }
       ],
-      "icon": "build-resources/icon.icns",
+      "icon": "build-resources/icon.png",
       "category": "public.app-category.utilities",
       "entitlements": "build-resources/entitlements.mac.plist",
       "entitlementsInherit": "build-resources/entitlements.mac.plist",
@@ -120,7 +120,7 @@
           ]
         }
       ],
-      "icon": "build-resources",
+      "icon": "build-resources/icon.png",
       "category": "Network",
       "desktop": {
         "Name": "Voip",
