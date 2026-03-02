@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           TAG="${GITHUB_REF#refs/tags/client-v}"
-          npm version "$TAG" --no-git-tag-version
+          npm version "$TAG" --no-git-tag-version --allow-same-version
 
       - name: Build & publish (Windows)
         working-directory: VoipClient.Electron
@@ -62,7 +62,7 @@ jobs:
         working-directory: VoipClient.Electron
         run: |
           TAG="${GITHUB_REF#refs/tags/client-v}"
-          npm version "$TAG" --no-git-tag-version
+          npm version "$TAG" --no-git-tag-version --allow-same-version
 
       - name: Build Vite
         working-directory: VoipClient.Electron
@@ -108,7 +108,7 @@ jobs:
         working-directory: VoipClient.Electron
         run: |
           TAG="${GITHUB_REF#refs/tags/client-v}"
-          npm version "$TAG" --no-git-tag-version
+          npm version "$TAG" --no-git-tag-version --allow-same-version
 
       - name: Build & publish (Linux)
         working-directory: VoipClient.Electron
