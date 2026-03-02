@@ -1,0 +1,54 @@
+name: Release VoIP Client
+
+on:
+  push:
+    tags:
+      - 'client-v*'   # Push a tag like client-v1.1.0 to trigger a release
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: VoipClient.Electron
+        run: npm ci
+
+      - name: Build & publish (Windows)
+        working-directory: VoipClient.Electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run build && npx electron-builder --win --x64 --publish always
+
+  build-mac:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: VoipClient.Electron
+        run: npm ci
+
+      - name: Build & publish (macOS)
+        working-directory: VoipClient.Electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build && npx electron-builder --mac --universal --publish always

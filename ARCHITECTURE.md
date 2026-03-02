@@ -160,6 +160,16 @@ The client probes TLS first on every new host:port. If the TLS handshake fails w
 a protocol error (not a connection error), it falls back to plain TCP. The result is
 cached in `_tlsCapable` so subsequent connections skip the probe.
 
+Recognised TLS-failure signals: error codes `ECONNRESET`, `EPROTO`, any `ERR_SSL_*`
+prefix, and error messages containing `ssl`/`SSL`/`wrong version`/`alert`/`routines`.
+When falling back, all listeners are removed from the old TLS socket before destroying
+it to prevent its `close` event from racing with the new plain-TCP connection.
+
+Additionally, if a TLS handshake succeeds but the server closes the connection before
+sending any protocol data (`READY`/`SERVER_PASSWORD_REQUIRED`), the client assumes TLS
+was accepted by a middlebox (e.g. NGINX) while the actual VoIP server is plain TCP,
+and retries the connection without TLS.
+
 #### E2EE
 - Key derived via PBKDF2 (100k iterations, SHA-256, salt `voip-e2ee-v1`)
 - Audio payloads encrypted with AES-256-GCM (12-byte IV, 16-byte auth tag)
@@ -195,6 +205,24 @@ For each pinned server with `autoConnect` enabled, a lightweight background TCP
 connection is maintained solely to receive `MENTION:` notifications. These sockets
 auto-reconnect every 15 seconds on disconnect and are paused for the actively
 connected server (to avoid same-username kick).
+
+#### Auto-Updater
+Uses `electron-updater` with GitHub Releases as the update provider. On startup
+(and every 30 minutes), the app checks for a newer release tag matching `client-v*`.
+Updates are downloaded in the background. IPC channels exposed to the renderer:
+
+| IPC Channel           | Direction      | Description                          |
+|-----------------------|----------------|--------------------------------------|
+| `get-app-version`     | invoke → main  | Returns current `app.getVersion()`   |
+| `updater:check`       | send → main    | Manually trigger an update check     |
+| `updater:install`     | send → main    | Quit and install downloaded update   |
+| `updater:available`   | main → renderer| New version string available         |
+| `updater:progress`    | main → renderer| Download progress (0-100%)           |
+| `updater:downloaded`  | main → renderer| Update downloaded and ready          |
+
+Release workflow: `.github/workflows/release-client.yml` builds Windows (NSIS) and
+macOS (DMG + ZIP) artifacts and publishes them to the GitHub Release via
+`--publish always`.
 
 ### Renderer — `terminal-forum.tsx`
 

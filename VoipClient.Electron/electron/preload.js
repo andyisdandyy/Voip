@@ -91,4 +91,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('autoconnect:mention', handler);
     return () => ipcRenderer.removeListener('autoconnect:mention', handler);
   },
+
+  // ── Auto-Updater ──────────────────────────────────────────
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  checkForUpdates: () => ipcRenderer.send('updater:check'),
+  installUpdate: () => ipcRenderer.send('updater:install'),
+  onUpdateAvailable: (callback) => {
+    const handler = (_event, version) => callback(version);
+    ipcRenderer.on('updater:available', handler);
+    return () => ipcRenderer.removeListener('updater:available', handler);
+  },
+  onUpdateProgress: (callback) => {
+    const handler = (_event, percent) => callback(percent);
+    ipcRenderer.on('updater:progress', handler);
+    return () => ipcRenderer.removeListener('updater:progress', handler);
+  },
+  onUpdateDownloaded: (callback) => {
+    const handler = (_event, version) => callback(version);
+    ipcRenderer.on('updater:downloaded', handler);
+    return () => ipcRenderer.removeListener('updater:downloaded', handler);
+  },
 });

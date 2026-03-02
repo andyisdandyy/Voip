@@ -32,6 +32,14 @@ interface ElectronAPI {
   startAutoConnect: (serverId: string, host: string, port: number, username: string, password: string, serverPassword?: string) => void;
   stopAutoConnect: (serverId: string) => void;
   onMention: (callback: (serverId: string, room: string, sender: string, text: string) => void) => () => void;
+
+  // Auto-Updater
+  getAppVersion: () => Promise<string>;
+  checkForUpdates: () => void;
+  installUpdate: () => void;
+  onUpdateAvailable: (callback: (version: string) => void) => () => void;
+  onUpdateProgress: (callback: (percent: number) => void) => () => void;
+  onUpdateDownloaded: (callback: (version: string) => void) => () => void;
 }
 
 declare global {

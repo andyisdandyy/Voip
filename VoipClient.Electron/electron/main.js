@@ -4,6 +4,7 @@ const net = require('net');
 const tls = require('tls');
 const dgram = require('dgram');
 const nodeCrypto = require('crypto');
+const { autoUpdater } = require('electron-updater');
 
 // ══════════════════════════════════════════════════════════════
 //  Voip Electron Main Process
@@ -145,6 +146,7 @@ app.whenReady().then(async () => {
 
   createWindow();
   setupIPC();
+  setupAutoUpdater();
 
   // Allow getDisplayMedia() in renderer by providing a screen source
   session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
@@ -192,6 +194,50 @@ app.on('window-all-closed', () => {
   stopAllAutoConnect();
   if (process.platform !== 'darwin') app.quit();
 });
+
+// ── Auto-Updater ────────────────────────────────────────────
+// Uses electron-updater to check GitHub Releases for new versions.
+// Downloads updates in the background and notifies the renderer
+// so the UI can prompt the user to restart.
+
+function setupAutoUpdater() {
+  if (!app.isPackaged) return; // skip in dev
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[Updater] Checking for updates...');
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    console.log(`[Updater] Update available: ${info.version}`);
+    mainWindow?.webContents.send('updater:available', info.version);
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    console.log('[Updater] Up to date');
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    mainWindow?.webContents.send('updater:progress', Math.round(progress.percent));
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log(`[Updater] Update downloaded: ${info.version}`);
+    mainWindow?.webContents.send('updater:downloaded', info.version);
+  });
+
+  autoUpdater.on('error', (err) => {
+    console.error('[Updater] Error:', err.message);
+  });
+
+  // Check immediately, then every 30 minutes
+  autoUpdater.checkForUpdates().catch(() => {});
+  setInterval(() => {
+    autoUpdater.checkForUpdates().catch(() => {});
+  }, 30 * 60 * 1000);
+}
 
 // ── IPC Setup ───────────────────────────────────────────────
 
@@ -287,6 +333,17 @@ function setupIPC() {
   ipcMain.on('autoconnect:stop', (_event, serverId) => {
     stopAutoConnect(serverId);
   });
+
+  // ── Auto-Updater IPC ──────────────────────────────────────
+  ipcMain.on('updater:install', () => {
+    autoUpdater.quitAndInstall(false, true);
+  });
+
+  ipcMain.on('updater:check', () => {
+    if (app.isPackaged) autoUpdater.checkForUpdates().catch(() => {});
+  });
+
+  ipcMain.handle('get-app-version', () => app.getVersion());
 }
 
 // ── TCP Chat ────────────────────────────────────────────────
@@ -317,6 +374,7 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
     let buffer = '';
     let serverPwDone = false; // Phase 1 complete
     let settled = false;      // Promise already resolved/rejected
+    let tlsActive = false;    // True while connected via TLS (for close-fallback)
 
     const settle = (fn) => {
       if (settled) return;
@@ -330,10 +388,11 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
       settle(() => reject(new Error('Connection timeout')));
     }, 10000);
 
-    const onConnected = (usedTls) => {
+    const onConnected = (isTls) => {
+      tlsActive = isTls;
       tcpSocket.setNoDelay(true);
       tcpSocket.setKeepAlive(true, 30000);
-      console.log(`[TCP] Connected to ${host}:${port}${usedTls ? ' (TLS)' : ''}, waiting for server handshake`);
+      console.log(`[TCP] Connected to ${host}:${port}${isTls ? ' (TLS)' : ''}, waiting for server handshake`);
       // Don't send AUTH yet — wait for server's READY or SERVER_PASSWORD_REQUIRED
     };
 
@@ -433,6 +492,19 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
 
     tcpSocket.on('close', () => {
       console.log('[TCP] Disconnected');
+      // TLS connected but server closed before sending any data — the "TLS"
+      // may have been accepted by a middlebox/NGINX while the actual server
+      // is plain TCP.  Retry without TLS.
+      if (tlsActive && !serverPwDone && !settled) {
+        console.log('[TCP] TLS session closed before server handshake, retrying as plain TCP');
+        _tlsCapable.set(`${host}:${port}`, false);
+        tlsActive = false;
+        buffer = '';
+        tcpSocket = new net.Socket();
+        setupEvents();
+        tcpSocket.connect(port, host, () => onConnected(false));
+        return;
+      }
       if (!settled) {
         settle(() => reject(new Error('Connection closed before authentication')));
       }
@@ -463,12 +535,16 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
         // is unreachable — retrying plain TCP would just fail again.
         const isTlsError = !settled && (
           err.code === 'ECONNRESET' ||
-          (err.message && (err.message.includes('ssl') || err.message.includes('SSL') || err.message.includes('wrong version') || err.message.includes('alert')))
+          err.code === 'EPROTO' ||
+          (err.code && err.code.startsWith('ERR_SSL_')) ||
+          (err.message && (err.message.includes('ssl') || err.message.includes('SSL') || err.message.includes('wrong version') || err.message.includes('alert') || err.message.includes('routines')))
         );
         if (isTlsError) {
           console.log(`[TCP] TLS handshake failed (${err.code || err.message}), falling back to plain TCP`);
           _tlsCapable.set(key, false);
-          try { tcpSocket.destroy(); } catch {}
+          // Remove all listeners from the old TLS socket so its 'close' event
+          // doesn't race with the new connection and reject the promise.
+          try { tcpSocket.removeAllListeners(); tcpSocket.destroy(); } catch {}
           tcpSocket = new net.Socket();
           setupEvents();
           tcpSocket.connect(port, host, () => onConnected(false));
@@ -613,10 +689,15 @@ function startAutoConnect(serverId, host, port, username, password, serverPasswo
     });
     socket.once('error', (err) => {
       const msg = err.message || '';
-      if (!authed && (err.code === 'ECONNRESET' || msg.includes('ssl') || msg.includes('SSL') || msg.includes('wrong version'))) {
+      if (!authed && (
+        err.code === 'ECONNRESET' ||
+        err.code === 'EPROTO' ||
+        (err.code && err.code.startsWith('ERR_SSL_')) ||
+        msg.includes('ssl') || msg.includes('SSL') || msg.includes('wrong version') || msg.includes('routines')
+      )) {
         console.log(`[AutoConnect:${serverId}] TLS failed, falling back to plain TCP`);
         _tlsCapable.set(key, false);
-        try { socket.destroy(); } catch {}
+        try { socket.removeAllListeners(); socket.destroy(); } catch {}
         // Retry with plain TCP
         startAutoConnect(serverId, host, port, username, password, serverPassword);
         return;

@@ -17,6 +17,7 @@
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64 --mac --universal"
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "lucide-react": "^0.468.0",
     "opusscript": "^0.1.1",
     "react": "^19.0.0",
@@ -40,6 +41,11 @@
     "appId": "com.voip.app",
     "productName": "Voip",
     "copyright": "Copyright © 2025",
+    "publish": {
+      "provider": "github",
+      "owner": "andyisdandyy",
+      "repo": "Voip"
+    },
     "asar": true,
     "asarUnpack": [
       "node_modules/opusscript/**"
@@ -75,6 +81,13 @@
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64",
             "arm64"
