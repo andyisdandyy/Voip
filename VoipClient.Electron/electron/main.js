@@ -40,6 +40,7 @@ let OpusScript = null;
 let currentBitrate = 96000;
 let keepaliveInterval = null;
 let tcpPingInterval = null;
+let backgroundPingInterval = null;
 let selectedShareSource = null;
 let shareWithAudio = false;
 let shareIsWindow = false;
@@ -431,9 +432,19 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
       tcpSocket.removeAllListeners();
       tcpSocket.on('data', () => {}); // consume data silently
       tcpSocket.on('error', () => {});
-      tcpSocket.on('close', () => { backgroundTcpSocket = null; });
+      tcpSocket.on('close', () => {
+        backgroundTcpSocket = null;
+        if (backgroundPingInterval) { clearInterval(backgroundPingInterval); backgroundPingInterval = null; }
+      });
       if (backgroundTcpSocket) try { backgroundTcpSocket.destroy(); } catch {}
+      if (backgroundPingInterval) { clearInterval(backgroundPingInterval); backgroundPingInterval = null; }
       backgroundTcpSocket = tcpSocket;
+      // Keep the parked socket alive with pings so NAT/firewalls don't drop it
+      backgroundPingInterval = setInterval(() => {
+        if (backgroundTcpSocket && !backgroundTcpSocket.destroyed) {
+          backgroundTcpSocket.write('CMD:PING\n');
+        }
+      }, 60000);
       tcpSocket = null;
       console.log('[TCP] Parked connection (voice active)');
     } else {
@@ -639,6 +650,7 @@ function disconnectChat() {
 }
 
 function killBackground() {
+  if (backgroundPingInterval) { clearInterval(backgroundPingInterval); backgroundPingInterval = null; }
   if (backgroundTcpSocket) {
     try { backgroundTcpSocket.destroy(); } catch {}
     backgroundTcpSocket = null;

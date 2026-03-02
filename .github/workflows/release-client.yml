@@ -37,7 +37,7 @@ jobs:
         run: npm run build && npx electron-builder --win --x64 --publish always
 
   build-mac:
-    runs-on: macos-13
+    runs-on: macos-14
     permissions:
       contents: write
 

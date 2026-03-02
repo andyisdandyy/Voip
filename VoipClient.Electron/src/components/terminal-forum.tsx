@@ -89,6 +89,7 @@ export function TerminalForum() {
   const [serverInfo, setServerInfo]   = useState<ServerInfo | null>(null);
   const [connectedServerId, setConnectedServerId] = useState<string | null>(null);
   const [parkedVoiceServerId, setParkedVoiceServerId] = useState<string | null>(null);
+  const [connectingToServerId, setConnectingToServerId] = useState<string | null>(null);
   const [showHome, setShowHome] = useState(false);
 
   // Rooms (from server)
@@ -1176,9 +1177,9 @@ export function TerminalForum() {
 
   useEffect(() => {
     for (const server of pinnedServers) {
-      // Never autoconnect to the server we're fully connected to — same username would kick us
-      // Also never autoconnect to the server with a parked voice connection
-      if ((isConnected && server.id === connectedServerId) || server.id === parkedVoiceServerId) {
+      // Never autoconnect to the server we're fully connected to, actively connecting to,
+      // or have a parked voice connection on — same username would kick us
+      if ((isConnected && server.id === connectedServerId) || server.id === parkedVoiceServerId || server.id === connectingToServerId) {
         window.electronAPI.stopAutoConnect(server.id);
         continue;
       }
@@ -1189,7 +1190,7 @@ export function TerminalForum() {
         window.electronAPI.stopAutoConnect(server.id);
       }
     }
-  }, [pinnedServers, isConnected, connectedServerId, parkedVoiceServerId]);
+  }, [pinnedServers, isConnected, connectedServerId, parkedVoiceServerId, connectingToServerId]);
 
   // ── Audio lifecycle (tied to currentVoiceRoom) ────────────
 
@@ -1911,6 +1912,7 @@ export function TerminalForum() {
       if (currentVoiceRoom) {
         // Soft disconnect: reset chat state but keep voice alive.
         // connectChat in main.js will park the old TCP socket.
+        setConnectingToServerId(server.id);
         setParkedVoiceServerId(connectedServerId);
         stopVideoCapture();
         cleanupVideo();
@@ -1960,6 +1962,7 @@ export function TerminalForum() {
           setStatus(`Failed: ${msg}`);
         }
       }
+      setConnectingToServerId(null);
       setConnecting(false);
     } else {
       setLoginDialog(server.id);
@@ -2002,6 +2005,7 @@ export function TerminalForum() {
         setStatus(`Failed: ${msg}`);
       }
     }
+    setConnectingToServerId(null);
     setConnecting(false);
   };
 
@@ -3549,9 +3553,9 @@ export function TerminalForum() {
       {/* ── Settings Modal ─────────────────────────────────── */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-          onClick={() => setShowSettings(false)}>
+          onMouseDown={() => setShowSettings(false)}>
           <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
-            onClick={e => e.stopPropagation()}>
+            onMouseDown={e => e.stopPropagation()}>
             {/* Header */}
             <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between sticky top-0">
               <div className="flex items-center gap-3">
@@ -3911,9 +3915,9 @@ export function TerminalForum() {
         const tabs = allTabs.filter(t => !t.perm || hasPermission(t.perm));
         return (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-            onClick={() => setShowServerSettings(false)}>
+            onMouseDown={() => setShowServerSettings(false)}>
             <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-3xl max-h-[90vh] flex flex-col"
-              onClick={e => e.stopPropagation()}>
+              onMouseDown={e => e.stopPropagation()}>
               {/* Header */}
               <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-3">
