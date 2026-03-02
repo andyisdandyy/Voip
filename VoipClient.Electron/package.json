@@ -1,6 +1,6 @@
 {
   "name": "voip",
-  "version": "0.9.96",
+  "version": "0.9.97",
   "description": "Voip Client",
   "main": "electron/main.js",
   "author": "Voip",
