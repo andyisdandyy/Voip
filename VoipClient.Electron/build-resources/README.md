@@ -1,6 +1,6 @@
 # Build Resources
 
-Place your app icons here before running `npm run dist:win` or `npm run dist:mac`.
+Place your app icons here before running `npm run dist:win`, `npm run dist:mac`, or `npm run dist:linux`.
 
 ## Required files
 

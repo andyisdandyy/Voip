@@ -37,6 +37,10 @@ public class ChatServer
     // ── User presence status (online / away) ────────────────
     private readonly ConcurrentDictionary<string, string> _userStatus = new(StringComparer.OrdinalIgnoreCase);
 
+    // ── Soundboard cooldown per user ───────────────────────
+    private readonly ConcurrentDictionary<string, DateTime> _soundboardCooldown = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan SoundboardCooldownDuration = TimeSpan.FromSeconds(1);
+
     // ── Auth rate limiting per IP ───────────────────────────
     private readonly ConcurrentDictionary<string, (int attempts, DateTime resetAt)> _authRateLimit = new();
     private const int MaxAuthAttempts = 5;
@@ -596,8 +600,13 @@ public class ChatServer
             {
                 await writer.WriteLineAsync("ERROR:Not in a voice room").ConfigureAwait(false);
             }
+            else if (_soundboardCooldown.TryGetValue(name, out var lastPlay) && DateTime.UtcNow - lastPlay < SoundboardCooldownDuration)
+            {
+                await writer.WriteLineAsync("ERROR:Soundboard cooldown — wait a moment").ConfigureAwait(false);
+            }
             else
             {
+                _soundboardCooldown[name] = DateTime.UtcNow;
                 var base64Data = _soundboardStore.GetSound(soundName);
                 if (base64Data != null)
                 {
@@ -758,7 +767,7 @@ public class ChatServer
                 // Only allow safe, non-sensitive fields to be updated
                 var safeFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                 {
-                    "ServerName", "MaxCameraWidth", "MaxCameraHeight",
+                    "ServerName", "ServerLogo", "MaxCameraWidth", "MaxCameraHeight",
                     "MaxScreenWidth", "MaxScreenHeight", "MaxFps",
                     "MaxScreenBitrate", "DefaultBitrate", "MaxFileSizeKB", "MaxSoundSizeKB",
                 };
@@ -776,6 +785,12 @@ public class ChatServer
                     switch (kv.Key.ToLowerInvariant())
                     {
                         case "servername": _serverConfig.ServerName = kv.Value.GetString() ?? _serverConfig.ServerName; break;
+                        case "serverlogo":
+                            var logo = kv.Value.GetString();
+                            // Allow clearing (null/empty) or setting (max ~88KB base64 ≈ 64KB image)
+                            if (string.IsNullOrEmpty(logo)) _serverConfig.ServerLogo = null;
+                            else if (logo.Length <= 120_000) _serverConfig.ServerLogo = logo;
+                            break;
                         case "maxcamerawidth": _serverConfig.MaxCameraWidth = ClampInt(kv.Value, 320, 3840); break;
                         case "maxcameraheight": _serverConfig.MaxCameraHeight = ClampInt(kv.Value, 240, 2160); break;
                         case "maxscreenwidth": _serverConfig.MaxScreenWidth = ClampInt(kv.Value, 320, 3840); break;
@@ -901,6 +916,7 @@ public class ChatServer
         var info = new Dictionary<string, object?>
         {
             ["ServerName"] = _serverConfig.ServerName,
+            ["ServerLogo"] = _serverConfig.ServerLogo,
             ["HasPassword"] = !string.IsNullOrEmpty(_serverConfig.ServerPassword),
             ["VoiceHost"] = voiceHost,
             ["UdpPort"] = _serverConfig.PublicUdpPort is > 0 ? _serverConfig.PublicUdpPort.Value : _serverConfig.UdpPort,

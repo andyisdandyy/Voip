@@ -14,7 +14,9 @@
     "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
     "dist:mac:x64": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64",
     "dist:mac:arm64": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64",
-    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64 --mac --universal"
+    "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux --x64",
+    "dist:linux:arm64": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux --arm64",
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64 --mac --universal --linux --x64"
   },
   "dependencies": {
     "electron-updater": "^6.8.3",
@@ -101,6 +103,29 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Voip needs microphone access for voice calls.",
         "NSCameraUsageDescription": "Voip needs camera access for video calls."
+      }
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build-resources",
+      "category": "Network",
+      "desktop": {
+        "Name": "Voip",
+        "Comment": "Secure VoIP Client",
+        "Categories": "Network;Chat;AudioVideo;"
       }
     },
     "dmg": {

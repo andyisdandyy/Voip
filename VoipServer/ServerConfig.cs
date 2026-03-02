@@ -12,6 +12,9 @@ public class ServerConfig
     public string ServerName { get; set; } = "Voip Server";
     public string? ServerPassword { get; set; }
 
+    /// <summary>Server logo as a base64 data-URI (e.g. "data:image/png;base64,..."). Max ~64 KB.</summary>
+    public string? ServerLogo { get; set; }
+
     // ── Encryption ──────────────────────────────────────────
     /// <summary>
     /// When true, all clients must provide an E2EE passphrase to communicate.

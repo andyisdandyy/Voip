@@ -102,7 +102,7 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `DIAG` | Request server diagnostics |
 | `UPLOAD_SOUND:<name>:<base64>` | Upload a soundboard sound (requires `admin`) |
 | `DELETE_SOUND:<name>` | Delete a soundboard sound (requires `admin`) |
-| `PLAY_SOUND:<name>` | Play a soundboard sound to everyone in voice room |
+| `PLAY_SOUND:<name>` | Play a soundboard sound to everyone in voice room (1 s cooldown per user; client enforces one-at-a-time playback) |
 | `CREATE_VOICE_ROOM:<name>:<password>:<bitrate>` | Create a voice room (requires `manage_rooms`) |
 | `CREATE_TEXT_ROOM:<name>:<password>` | Create a text room (requires `manage_rooms`) |
 | `DELETE_VOICE_ROOM:<name>` | Delete a voice room (requires `manage_rooms`) |
@@ -193,6 +193,8 @@ UDP receive → E2EE decrypt → Opus decode → PCM
 Camera/Screen → getUserMedia/getDisplayMedia
     → canvas drawImage → VideoFrame
     → VideoEncoder (H.264 or VP8) → EncodedVideoChunk
+      Camera: always variable bitrate (VBR)
+      Screen share: constant (default) or variable bitrate (user toggle)
     → E2EE encrypt → base64 → TCP send
 
 TCP receive → base64 decode → E2EE decrypt
@@ -221,9 +223,9 @@ dismissible toast in the bottom-right corner and can choose to restart or defer.
 | `updater:progress`    | main → renderer| Download progress (0-100%)           |
 | `updater:downloaded`  | main → renderer| Update downloaded and ready          |
 
-Release workflow: `.github/workflows/release-client.yml` builds Windows (NSIS) and
-macOS (DMG + ZIP) artifacts and publishes them to the GitHub Release via
-`--publish always`.
+Release workflow: `.github/workflows/release-client.yml` builds Windows (NSIS),
+macOS (DMG + ZIP), and Linux (AppImage + deb) artifacts and publishes them to the
+GitHub Release via `--publish always`.
 
 ### Renderer — `terminal-forum.tsx`
 
@@ -241,7 +243,7 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | Video capture | 778–970 | Camera and screen share encoding |
 | Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload |
 | Connect screen | 1410+ | Server list, login dialogs |
-| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle) |
+| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage) |
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:

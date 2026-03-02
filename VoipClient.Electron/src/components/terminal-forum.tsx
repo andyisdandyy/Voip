@@ -5,6 +5,7 @@ import {
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
   Plus, LogOut, Command, Wifi, WifiOff, Home, Paperclip, Download, FileText, Send, Smile, Moon, Image as ImageIcon,
   Music, Upload, Play, Trash, ChevronUp, ChevronDown, Eye, EyeOff, Shield, Sliders, Users, Check,
+  PanelRightClose, PanelRightOpen,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
@@ -16,8 +17,8 @@ interface ChatMsg   { id: string; msgId: string; sender: string; body: string; t
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean }
-interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean }
-interface ServerInfo { serverName: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string }
+interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string }
+interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string }
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
@@ -137,6 +138,7 @@ export function TerminalForum() {
   const [screenShareResolution, setScreenShareResolution] = useState<VideoResolution>('1080p');
   const [screenShareFps, setScreenShareFps] = useState<VideoFps>(30);
   const [screenShareBitrate, setScreenShareBitrate] = useState(10000);
+  const [screenShareVbr, setScreenShareVbr] = useState(false);
   const [serverPasswordDialog, setServerPasswordDialog] = useState<{ address: string; username: string; password: string; isRegister: boolean; serverId?: string } | null>(null);
   const [serverPasswordInput, setServerPasswordInput] = useState('');
   const [screenSources, setScreenSources] = useState<Array<{id: string; name: string; thumbnail: string; appIcon: string | null; isScreen: boolean}>>([]);
@@ -257,12 +259,71 @@ export function TerminalForum() {
   const soundboardMutedRef = useRef(false);
   const soundboardVolumeRef = useRef(50);
   const soundboardFileRef = useRef<HTMLInputElement>(null);
+  const soundboardSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const soundboardGainRef = useRef<GainNode | null>(null);
+  const [playingSound, setPlayingSound] = useState<string | null>(null);
 
   // Room management
   const [createRoomDialog, setCreateRoomDialog] = useState<{ type: 'voice' | 'text' } | null>(null);
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomPassword, setNewRoomPassword] = useState('');
   const [newRoomBitrate, setNewRoomBitrate] = useState('96000');
+
+  // User list toggle
+  const [showUserList, setShowUserList] = useState(() => {
+    try { return localStorage.getItem('voip-show-user-list') !== 'false'; }
+    catch { return true; }
+  });
+
+  // Resizable sidebars
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(() => {
+    try { return parseInt(localStorage.getItem('voip-left-sidebar-width') || '256'); }
+    catch { return 256; }
+  });
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(() => {
+    try { return parseInt(localStorage.getItem('voip-right-sidebar-width') || '256'); }
+    catch { return 256; }
+  });
+  const resizingRef = useRef<'left' | 'right' | null>(null);
+  const resizeStartXRef = useRef(0);
+  const resizeStartWidthRef = useRef(0);
+
+  // Sidebar resize handlers
+  const startResize = useCallback((side: 'left' | 'right', e: React.MouseEvent) => {
+    e.preventDefault();
+    resizingRef.current = side;
+    resizeStartXRef.current = e.clientX;
+    resizeStartWidthRef.current = side === 'left' ? leftSidebarWidth : rightSidebarWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [leftSidebarWidth, rightSidebarWidth]);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const delta = e.clientX - resizeStartXRef.current;
+      const newWidth = Math.max(180, Math.min(450, resizeStartWidthRef.current + (resizingRef.current === 'left' ? delta : -delta)));
+      if (resizingRef.current === 'left') setLeftSidebarWidth(newWidth);
+      else setRightSidebarWidth(newWidth);
+    };
+    const onMouseUp = () => {
+      if (!resizingRef.current) return;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (resizingRef.current === 'left') {
+        localStorage.setItem('voip-left-sidebar-width', String(leftSidebarWidth));
+      } else {
+        localStorage.setItem('voip-right-sidebar-width', String(rightSidebarWidth));
+      }
+      resizingRef.current = null;
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [leftSidebarWidth, rightSidebarWidth]);
 
   async function deriveE2eeKey(passphrase: string): Promise<CryptoKey> {
     const enc = new TextEncoder();
@@ -502,7 +563,7 @@ export function TerminalForum() {
   useEffect(() => { isMutedRef.current = isMuted; if (isConnected) { playUiSound(isMuted ? 'mute' : 'unmute'); window.electronAPI.sendChat(`CMD:SET_MUTED:${isMuted}`); } }, [isMuted]);
   useEffect(() => { isDeafenedRef.current = isDeafened; if (isConnected) { playUiSound(isDeafened ? 'deafen' : 'undeafen'); window.electronAPI.sendChat(`CMD:SET_DEAFENED:${isDeafened}`); } }, [isDeafened]);
   useEffect(() => { soundboardMutedRef.current = soundboardMuted; }, [soundboardMuted]);
-  useEffect(() => { soundboardVolumeRef.current = soundboardVolume; try { localStorage.setItem('voip-soundboard-volume', String(soundboardVolume)); } catch {} }, [soundboardVolume]);
+  useEffect(() => { soundboardVolumeRef.current = soundboardVolume; if (soundboardGainRef.current) soundboardGainRef.current.gain.value = soundboardVolume / 100; try { localStorage.setItem('voip-soundboard-volume', String(soundboardVolume)); } catch {} }, [soundboardVolume]);
   useEffect(() => { echoCancellationRef.current = echoCancellation; try { localStorage.setItem('voip-echo-cancellation', String(echoCancellation)); } catch {} }, [echoCancellation]);
   useEffect(() => { noiseSuppressionRef.current = noiseSuppression; try { localStorage.setItem('voip-noise-suppression', String(noiseSuppression)); } catch {} }, [noiseSuppression]);
   useEffect(() => { autoGainControlRef.current = autoGainControl; try { localStorage.setItem('voip-auto-gain', String(autoGainControl)); } catch {} }, [autoGainControl]);
@@ -610,6 +671,7 @@ export function TerminalForum() {
         const d = JSON.parse(line.substring(12));
         setServerInfo({
           serverName: d.ServerName || '',
+          serverLogo: d.ServerLogo || undefined,
           voiceHost: d.VoiceHost || '',
           udpPort: d.UdpPort || 5000,
           maxCameraWidth: d.MaxCameraWidth || 1920,
@@ -623,6 +685,14 @@ export function TerminalForum() {
           defaultBitrate: d.DefaultBitrate || 96000,
           giphyApiKey: d.GiphyApiKey || undefined,
         });
+
+        // Update the pinned server's name and logo from the server's identity
+        const sid = connectedServerIdRef.current;
+        if (sid && d.ServerName) {
+          setPinnedServers(prev => prev.map(s =>
+            s.id === sid ? { ...s, name: d.ServerName, logo: d.ServerLogo || undefined } : s
+          ));
+        }
 
         // Auto-setup E2EE
         if (d.EncryptionKey) {
@@ -809,10 +879,17 @@ export function TerminalForum() {
       const i2 = i1 >= 0 ? line.indexOf(':', i1 + 1) : -1;
       if (i1 >= 0 && i2 >= 0) {
         const sender = line.substring(16, i1);
+        const soundName = line.substring(i1 + 1, i2);
         const userSetting = perUserSettingsRef.current[sender];
         if (userSetting?.soundboardMuted) return;
         const base64Data = line.substring(i2 + 1);
         try {
+          // Stop any currently playing soundboard sound
+          if (soundboardSourceRef.current) {
+            try { soundboardSourceRef.current.stop(); } catch {}
+            soundboardSourceRef.current = null;
+            soundboardGainRef.current = null;
+          }
           const binary = atob(base64Data);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -824,6 +901,16 @@ export function TerminalForum() {
             gain.gain.value = soundboardVolumeRef.current / 100;
             source.connect(gain);
             gain.connect(audioCtx.destination);
+            soundboardSourceRef.current = source;
+            soundboardGainRef.current = gain;
+            setPlayingSound(soundName);
+            source.onended = () => {
+              if (soundboardSourceRef.current === source) {
+                soundboardSourceRef.current = null;
+                soundboardGainRef.current = null;
+                setPlayingSound(null);
+              }
+            };
             source.start();
           });
         } catch {}
@@ -1062,7 +1149,7 @@ export function TerminalForum() {
     userPlaybackRef.current = {};
   }
 
-  async function createVideoEncoder(width: number, height: number, bitrate: number, framerate: number) {
+  async function createVideoEncoder(width: number, height: number, bitrate: number, framerate: number, bitrateMode: 'constant' | 'variable' = 'constant') {
     let codec = 'avc1.640028'; // H.264 High Profile Level 4.0
     let codecId = 'h264';
     try {
@@ -1082,10 +1169,11 @@ export function TerminalForum() {
     });
     encoder.configure({
       codec, width, height, bitrate, framerate,
+      bitrateMode,
       latencyMode: 'realtime',
       ...(codecId === 'h264' ? { avc: { format: 'annexb' } } : {}),
     });
-    console.log(`[Video] Encoder: ${codecId} ${width}x${height} @ ${bitrate / 1000}kbps`);
+    console.log(`[Video] Encoder: ${codecId} ${width}x${height} @ ${bitrate / 1000}kbps (${bitrateMode})`);
     return { encoder, codec: codecId };
   }
 
@@ -1107,7 +1195,7 @@ export function TerminalForum() {
       });
       cameraStreamRef.current = stream;
 
-      const { encoder: enc, codec: codecId } = await createVideoEncoder(capW, capH, bitrate, capFps);
+      const { encoder: enc, codec: codecId } = await createVideoEncoder(capW, capH, bitrate, capFps, 'variable');
       videoEncoderRef.current = enc;
       videoCodecRef.current = codecId;
 
@@ -1189,7 +1277,7 @@ export function TerminalForum() {
 
       const { encoder: enc, codec: codecId } = await createVideoEncoder(ew, eh,
         Math.min(screenShareBitrate * 1000, serverInfo?.maxScreenBitrate || 20_000_000),
-        capFps);
+        capFps, screenShareVbr ? 'variable' : 'constant');
       videoEncoderRef.current = enc;
       videoCodecRef.current = codecId;
 
@@ -1455,8 +1543,8 @@ export function TerminalForum() {
     const dotPx = size === 'sm' ? 'w-2 h-2' : size === 'md' ? 'w-3 h-3' : 'w-3.5 h-3.5';
     const dotPos = 'bottom-0 right-0';
     const textSz = size === 'sm' ? 'text-[10px]' : size === 'md' ? 'text-xs' : 'text-lg';
-    const statusColor = user?.status === 'away' ? 'bg-yellow-500' : user?.status === 'online' ? 'bg-green-500' : 'bg-red-500';
-    const dot = <span className={`absolute ${dotPos} ${dotPx} ${statusColor} rounded-full ring-2 ring-[#0a0e0a]`} />;
+    const dotColor = user?.status === 'away' ? '#eab308' : user?.status === 'online' ? '#22c55e' : '#ef4444';
+    const dot = <span className={`absolute ${dotPos} ${dotPx} rounded-full ring-2 ring-[#0a0e0a]`} style={{ backgroundColor: dotColor }} />;
     if (avatar) {
       return (
         <div className={`${px} relative flex-shrink-0 overflow-visible`}>
@@ -1664,10 +1752,10 @@ export function TerminalForum() {
   };
 
   const addPinnedServer = () => {
-    if (!newServerName.trim() || !newServerAddress.trim()) return;
+    if (!newServerAddress.trim()) return;
     setPinnedServers(prev => [...prev, {
       id: crypto.randomUUID(),
-      name: newServerName.trim(),
+      name: newServerName.trim() || newServerAddress.trim(),
       address: newServerAddress.trim(),
     }]);
     setAddServerDialog(false);
@@ -1836,9 +1924,13 @@ export function TerminalForum() {
                     disabled={connecting}
                     className="group flex flex-col items-center gap-2 transition-all disabled:opacity-50">
                     <div className="relative">
-                      <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-white text-xl font-bold shadow-lg transition-all group-hover:rounded-xl group-hover:shadow-xl group-hover:scale-105 ${isConnected && connectedServerId === server.id ? 'ring-2 ring-green-500 ring-offset-2 ring-offset-[#0a0e0a]' : ''}`}
-                        style={{ backgroundColor: getServerColor(server.name) }}>
-                        {server.name.charAt(0).toUpperCase()}
+                      <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-white text-xl font-bold shadow-lg transition-all group-hover:rounded-xl group-hover:shadow-xl group-hover:scale-105 overflow-hidden ${isConnected && connectedServerId === server.id ? 'ring-2 ring-green-500 ring-offset-2 ring-offset-[#0a0e0a]' : ''}`}
+                        style={{ backgroundColor: server.logo ? 'transparent' : getServerColor(server.name) }}>
+                        {server.logo ? (
+                          <img src={server.logo} alt={server.name} className="w-full h-full object-cover" />
+                        ) : (
+                          server.name.charAt(0).toUpperCase()
+                        )}
                       </div>
                       {mentions > 0 && (
                         <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shadow-lg animate-pulse">
@@ -1909,9 +2001,13 @@ export function TerminalForum() {
               <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
                 <div className="bg-green-900/40 p-6 border-b border-green-900/50">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold"
-                      style={{ backgroundColor: getServerColor(server.name) }}>
-                      {server.name.charAt(0).toUpperCase()}
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold overflow-hidden"
+                      style={{ backgroundColor: server.logo ? 'transparent' : getServerColor(server.name) }}>
+                      {server.logo ? (
+                        <img src={server.logo} alt={server.name} className="w-full h-full object-cover" />
+                      ) : (
+                        server.name.charAt(0).toUpperCase()
+                      )}
                     </div>
                     <div>
                       <h2 className="text-lg font-bold text-green-400">{server.name}</h2>
@@ -1972,20 +2068,20 @@ export function TerminalForum() {
               </div>
               <div className="p-6 space-y-4">
                 <div className="space-y-2">
-                  <label className="text-xs text-green-700 block">{'>'} SERVER NAME</label>
-                  <input type="text" value={newServerName} onChange={e => setNewServerName(e.target.value)}
-                    placeholder="My Server..."
-                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
-                    autoFocus />
-                </div>
-                <div className="space-y-2">
                   <label className="text-xs text-green-700 block">{'>'} ADDRESS</label>
                   <input type="text" value={newServerAddress} onChange={e => setNewServerAddress(e.target.value)}
                     placeholder="hostname:port"
-                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all"
+                    autoFocus />
                   <span className="text-[10px] text-green-800">Port 5001 is used by default if no port is specified</span>
                 </div>
-                <button onClick={addPinnedServer} disabled={!newServerName.trim() || !newServerAddress.trim()}
+                <div className="space-y-2">
+                  <label className="text-xs text-green-700 block">{'>'} CUSTOM NAME <span className="text-green-800">(optional — auto-fetched from server)</span></label>
+                  <input type="text" value={newServerName} onChange={e => setNewServerName(e.target.value)}
+                    placeholder="Leave empty to use server name"
+                    className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                </div>
+                <button onClick={addPinnedServer} disabled={!newServerAddress.trim()}
                   className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
                   <Plus className="w-5 h-5" />
                   ADD SERVER
@@ -2178,7 +2274,8 @@ export function TerminalForum() {
       <div className="flex-1 flex gap-4 overflow-hidden">
 
         {/* ── Left sidebar: rooms ─────────────────────────── */}
-        <div className={`w-64 bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10 flex flex-col ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}>
+        <div className={`bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10 flex flex-col shrink-0 ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}
+          style={{ width: leftSidebarWidth }}>
           <div className="flex-1 overflow-y-auto">
             {/* Text channels */}
             <div className="p-4 border-b border-green-900/30">
@@ -2316,7 +2413,11 @@ export function TerminalForum() {
               <div className="flex items-center gap-2 mb-2">
                 <Volume2 className="w-3 h-3 text-green-700 shrink-0" />
                 <input type="range" min="0" max="100" value={soundboardVolume}
-                  onChange={e => setSoundboardVolume(parseInt(e.target.value))}
+                  onChange={e => {
+                    const val = parseInt(e.target.value);
+                    setSoundboardVolume(val);
+                    if (soundboardGainRef.current) soundboardGainRef.current.gain.value = val / 100;
+                  }}
                   className="flex-1 h-1.5 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
                 <span className="text-[10px] text-green-700 w-7 text-right shrink-0">{soundboardVolume}%</span>
               </div>
@@ -2325,9 +2426,18 @@ export function TerminalForum() {
               )}
               <div className="grid grid-cols-2 gap-1 max-h-32 overflow-y-auto">
                 {soundboardSounds.map(name => (
-                  <button key={name} onClick={() => window.electronAPI.sendChat(`CMD:PLAY_SOUND:${name}`)}
-                    className="text-left px-2.5 py-1.5 rounded text-xs text-green-600 hover:bg-green-900/30 hover:text-green-400 transition-all truncate flex items-center gap-1.5">
-                    <Play className="w-3 h-3 shrink-0" />
+                  <button key={name} onClick={() => {
+                      if (playingSound === name) {
+                        if (soundboardSourceRef.current) { try { soundboardSourceRef.current.stop(); } catch {} soundboardSourceRef.current = null; soundboardGainRef.current = null; }
+                        setPlayingSound(null);
+                      } else {
+                        window.electronAPI.sendChat(`CMD:PLAY_SOUND:${name}`);
+                      }
+                    }}
+                    className={`text-left px-2.5 py-1.5 rounded text-xs transition-all truncate flex items-center gap-1.5 ${
+                      playingSound === name ? 'bg-green-900/40 text-green-400' : 'text-green-600 hover:bg-green-900/30 hover:text-green-400'
+                    }`}>
+                    {playingSound === name ? <Square className="w-3 h-3 shrink-0" /> : <Play className="w-3 h-3 shrink-0" />}
                     <span className="truncate">{name}</span>
                   </button>
                 ))}
@@ -2344,7 +2454,7 @@ export function TerminalForum() {
                 <div className={`text-xs ${isAway ? 'text-yellow-500' : 'text-green-700'}`}>{isAway ? 'away' : 'online'}</div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center flex-wrap gap-1">
               <button onClick={() => setIsMuted(!isMuted)}
                 className={`p-2 rounded-lg transition-all ${isMuted ? 'bg-red-900/40 text-red-500 hover:bg-red-900/60' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40'}`}
                 title={isMuted ? 'Unmute' : 'Mute'}>
@@ -2385,7 +2495,7 @@ export function TerminalForum() {
                 <Moon className="w-4 h-4" />
               </button>
               <button onClick={() => { setShowSettings(true); refreshDevices(); }}
-                className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all ml-auto"
+                className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all"
                 title="Settings">
                 <Settings className="w-4 h-4" />
               </button>
@@ -2396,9 +2506,23 @@ export function TerminalForum() {
                   <Shield className="w-4 h-4" />
                 </button>
               )}
+              <button onClick={() => { const next = !showUserList; setShowUserList(next); localStorage.setItem('voip-show-user-list', String(next)); }}
+                className={`p-2 rounded-lg transition-all ${showUserList ? 'bg-green-900/20 text-green-600 hover:bg-green-900/40' : 'bg-green-900/40 text-green-400 hover:bg-green-900/60'}`}
+                title={showUserList ? 'Hide user list' : 'Show user list'}>
+                {showUserList ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+              </button>
             </div>
           </div>
         </div>
+
+        {/* ── Left resize handle ──────────────────────────── */}
+        {!(isCallFullscreen && viewMode === 'voice' && currentVoiceRoom) && (
+          <div
+            className="w-1 shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-green-500/20 transition-colors rounded-full"
+            onMouseDown={(e) => startResize('left', e)}>
+            <div className="w-0.5 h-8 bg-green-900/40 group-hover:bg-green-500/60 rounded-full transition-colors" />
+          </div>
+        )}
 
         {/* ── Center panel ────────────────────────────────── */}
         <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'bg-black' : 'bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10'}`}>
@@ -2880,8 +3004,19 @@ export function TerminalForum() {
           )}
         </div>
 
+        {/* ── Right resize handle ─────────────────────────── */}
+        {showUserList && !(isCallFullscreen && viewMode === 'voice' && currentVoiceRoom) && (
+          <div
+            className="w-1 shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-green-500/20 transition-colors rounded-full"
+            onMouseDown={(e) => startResize('right', e)}>
+            <div className="w-0.5 h-8 bg-green-900/40 group-hover:bg-green-500/60 rounded-full transition-colors" />
+          </div>
+        )}
+
         {/* ── Right sidebar: users ─────────────────────── */}
-        <div className={`w-64 bg-[#0d120d]/60 backdrop-blur-sm rounded-lg overflow-y-auto shadow-lg shadow-green-900/10 ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}>
+        {showUserList && (
+        <div className={`bg-[#0d120d]/60 backdrop-blur-sm rounded-lg overflow-y-auto shadow-lg shadow-green-900/10 shrink-0 ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}
+          style={{ width: rightSidebarWidth }}>
           <div className="p-4 border-b border-green-900/30">
             <div className="text-xs text-green-700">ONLINE — {onlineUsersList.length}</div>
           </div>
@@ -2944,6 +3079,7 @@ export function TerminalForum() {
             </>
           )}
         </div>
+        )}
       </div>
 
       {/* ── Footer status bar ──────────────────────────────── */}
@@ -3356,6 +3492,43 @@ export function TerminalForum() {
                           <input type="text" defaultValue={serverInfo.serverName} id="srv-ServerName"
                             className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all text-sm" />
                         </div>
+                        <div>
+                          <label className="text-xs text-green-600 block mb-1">Server Logo</label>
+                          <div className="flex items-center gap-4">
+                            <div className="w-14 h-14 rounded-xl flex items-center justify-center overflow-hidden border border-green-900/50 shrink-0"
+                              style={{ backgroundColor: serverInfo.serverLogo ? 'transparent' : getServerColor(serverInfo.serverName) }}>
+                              {serverInfo.serverLogo ? (
+                                <img src={serverInfo.serverLogo} alt="Logo" className="w-full h-full object-cover" />
+                              ) : (
+                                <span className="text-white font-bold text-lg">{serverInfo.serverName.charAt(0).toUpperCase()}</span>
+                              )}
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-xs cursor-pointer transition-all font-bold text-center">
+                                Upload Logo
+                                <input type="file" accept="image/*" className="hidden" onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (!file) return;
+                                  if (file.size > 64 * 1024) { setStatus('Logo too large (max 64 KB)'); return; }
+                                  const reader = new FileReader();
+                                  reader.onload = () => {
+                                    const dataUri = reader.result as string;
+                                    window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: dataUri })}`);
+                                  };
+                                  reader.readAsDataURL(file);
+                                  e.target.value = '';
+                                }} />
+                              </label>
+                              {serverInfo.serverLogo && (
+                                <button onClick={() => window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: '' })}`)}
+                                  className="px-3 py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded-lg text-xs transition-all font-bold">
+                                  Remove
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-green-800 mt-1 block">Max 64 KB. Shown in the server list.</span>
+                        </div>
                       </div>
                     </div>
 
@@ -3760,8 +3933,8 @@ export function TerminalForum() {
       {/* ── Screen Share dialog overlay ────────────────────── */}
       {screenShareDialog && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-[#0d120d] border border-green-900/50 rounded-lg w-[640px] max-h-[80vh] shadow-2xl shadow-green-900/30 flex flex-col">
-            <div className="p-5 border-b border-green-900/30 flex items-center justify-between">
+          <div className="bg-[#0d120d] border border-green-900/50 rounded-lg w-[640px] max-h-[85vh] shadow-2xl shadow-green-900/30 flex flex-col">
+            <div className="p-5 border-b border-green-900/30 flex items-center justify-between shrink-0">
               <h3 className="text-green-400 font-bold flex items-center gap-2">
                 <Share2 className="w-5 h-5" />
                 Share Screen
@@ -3770,7 +3943,7 @@ export function TerminalForum() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex border-b border-green-900/30">
+            <div className="flex border-b border-green-900/30 shrink-0">
               <button onClick={() => setSourceTab('screen')}
                 className={`flex-1 py-3 text-sm font-bold transition-all ${sourceTab === 'screen' ? 'text-green-400 border-b-2 border-green-500 bg-green-900/20' : 'text-green-700 hover:text-green-500'}`}>
                 <Monitor className="w-4 h-4 inline mr-2" />
@@ -3782,7 +3955,8 @@ export function TerminalForum() {
                 Windows
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 min-h-[200px]">
+            <div className="flex-1 overflow-y-auto min-h-0">
+            <div className="p-4 min-h-[200px]">
               <div className="grid grid-cols-3 gap-3">
                 {screenSources
                   .filter(s => sourceTab === 'screen' ? s.isScreen : !s.isScreen)
@@ -3864,8 +4038,18 @@ export function TerminalForum() {
                   </span>
                 </div>
               </label>
+              <label className="flex items-center gap-3 cursor-pointer py-1 px-3 rounded-lg hover:bg-green-900/20 transition-all">
+                <input type="checkbox" checked={screenShareVbr}
+                  onChange={e => setScreenShareVbr(e.target.checked)}
+                  className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 accent-green-600" />
+                <div>
+                  <span className="text-sm text-green-500">Variable bitrate</span>
+                  <span className="block text-xs text-green-800">Lower bitrate on static scenes, higher on motion</span>
+                </div>
+              </label>
             </div>
-            <div className="flex justify-end gap-3 p-4 border-t border-green-900/30">
+            </div>
+            <div className="flex justify-end gap-3 p-4 border-t border-green-900/30 shrink-0">
               <button onClick={() => setScreenShareDialog(false)}
                 className="px-5 py-2 text-green-700 hover:text-green-500 transition-colors rounded-lg hover:bg-green-900/20">
                 Cancel
