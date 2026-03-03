@@ -11,9 +11,11 @@ interface ElectronAPI {
 
   startVoice: (host: string, port: number, username: string) => Promise<{ success: boolean }>;
   sendAudio: (pcmBuffer: ArrayBuffer) => void;
+  sendScreenAudio: (pcmBuffer: ArrayBuffer) => void;
   stopVoice: () => void;
   setBitrate: (bitrate: number) => void;
   onAudioReceived: (callback: (senderName: string, pcm: Uint8Array) => void) => () => void;
+  onScreenAudioReceived: (callback: (senderName: string, pcm: Uint8Array) => void) => () => void;
   onVoiceConnected: (callback: () => void) => () => void;
 
   sendVideo: (buffer: ArrayBuffer, isKeyFrame: boolean, codec: string) => void;

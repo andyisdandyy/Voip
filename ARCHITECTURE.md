@@ -176,7 +176,9 @@ Available permissions:
 - **WebCodecs API** (`VideoEncoder`/`VideoDecoder`) for H.264/VP8 video
 
 ### Platform Support
-- **Windows** — frameless window with custom titlebar buttons
+- **Windows** — frameless window with custom titlebar buttons; WGC (Windows Graphics
+  Capture) disabled via `--disable-features=WGCCapturerWin` to avoid `ProcessFrame failed`
+  errors — falls back to DXGI Desktop Duplication for more stable screen capture.
 - **macOS** — hidden titlebar with native traffic light buttons, media permission prompts
 - **Linux** — frameless window with custom titlebar buttons; Ozone auto-detection for
   Wayland support; PipeWire capturer enabled for screen sharing on Wayland compositors.
@@ -207,14 +209,31 @@ and retries the connection without TLS.
 
 #### Audio Pipeline
 ```
-Mic → getUserMedia(48kHz, mono, AEC/NS/AGC configurable)
-    → AudioWorklet (capture-processor.js) — buffers 960 samples (20ms frames)
-    → Int16 PCM → main process
-    → Opus encode (opusscript) → E2EE encrypt → UDP send
+Voice (mono, type byte 0x01):
+  Mic → getUserMedia(48kHz, mono, AEC/NS/AGC configurable)
+      → AudioWorklet (capture-processor.js) — buffers 960 mono frames
+        (channelCount: 1, channelCountMode: 'explicit')
+      → Int16 mono PCM (960 samples) → main process
+      → Opus encode (opusscript, 1 channel) → E2EE encrypt → UDP send [0x01]
 
-UDP receive → E2EE decrypt → Opus decode → PCM
-    → per-user AudioWorklet (playback-processor.js)
+Screen-share audio (stereo, type byte 0x02, when enabled):
+  getDisplayMedia({audio: true}) → audio track (stereo)
+      → AudioWorklet (audio-screen-capture-processor.js) — buffers 960 stereo frames
+        (channelCount: 2, channelCountMode: 'explicit')
+      → Interleaved Int16 stereo PCM (L0,R0,L1,R1,...) → main process
+      → Opus encode (opusscript, 2 channels) → E2EE encrypt → UDP send [0x02]
+
+Voice and screen audio are sent as independent streams so each
+receiving client can adjust their volumes separately.
+
+UDP receive voice [0x01] → E2EE decrypt → Opus decode (mono) → expand to stereo
+    → per-user AudioWorklet (playback-processor.js, outputChannelCount: [2])
     → per-user GainNode (volume/mute control)
+    → AudioContext.destination
+
+UDP receive screen audio [0x02] → E2EE decrypt → Opus decode (stereo) → PCM
+    → per-user AudioWorklet (playback-processor.js, outputChannelCount: [2])
+    → per-user GainNode (screenVolume control, independent from voice)
     → AudioContext.destination
 ```
 
@@ -301,11 +320,11 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | UI sound engine | 330–410 | `playUiSound()` — synthesized tones via Web Audio oscillators |
 | Server message handler | 420–610 | Parses all `SERVER_INFO`, `ROOMS`, `MSG`, `VIDEO`, etc. |
 | IPC subscriptions | 554–649 | Wires up audio/video receive callbacks |
-| Audio lifecycle | 679–776 | `startAudio()` / `stopAudio()` |
+| Audio lifecycle | 679–776 | `startAudio()` / `stopAudio()` — `cleanupVideo()` resets decoders, watching state, and pop-outs but preserves `cameraUsers`/`screenUsers` (server-authoritative state synced via `USERS` broadcasts) |
 | Video capture | 778–970 | Camera and screen share encoding |
 | Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload |
 | Connect screen | 1410+ | Server list, login dialogs |
-| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage), per-user screenshare mute (right-click context menu) |
+| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage), per-user screenshare mute (right-click context menu), right-click context menu on voice channel sidebar users and call UI tiles |
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:
@@ -320,8 +339,9 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Video pop-out (open, close, closed listener)
 
 ### AudioWorklet Processors
-- **`audio-capture-processor.js`**: Buffers Float32 samples into 960-sample frames (20 ms at 48 kHz), converts to Int16, and posts to main thread.
-- **`audio-playback-processor.js`**: Receives Int16 PCM buffers, converts to Float32, and plays them back through the output.
+- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Used for voice capture.
+- **`audio-screen-capture-processor.js`**: Buffers Float32 stereo samples into 960-frame stereo blocks (20 ms at 48 kHz), interleaves L/R channels into Int16 (1920 samples per message), and posts to main thread. Used for screen-share system audio.
+- **`audio-playback-processor.js`**: Receives interleaved stereo Int16 PCM buffers, de-interleaves to separate L/R Float32 arrays, and plays them back through the stereo output channels. Used by both voice and screen audio playback pipelines.
 
 ---
 
@@ -378,11 +398,13 @@ Client → Server:
   HELLO:<nonce>:<username>   (text, handshake)
   GOODBYE                     (text, disconnect)
   KEEPALIVE                   (text, every 10s)
-  [0x01][opus_data]           (audio frame, optionally E2EE encrypted)
+  [0x01][opus_data]           (voice frame, mono, optionally E2EE encrypted)
+  [0x02][opus_data]           (screen audio frame, stereo, optionally E2EE encrypted)
 
 Server → Client:
   WELCOME:<nonce>             (text, handshake response)
-  [nameLen:1][name:N][0x01][opus_data]   (tagged audio from another user)
+  [nameLen:1][name:N][0x01][opus_data]   (tagged voice audio from another user)
+  [nameLen:1][name:N][0x02][opus_data]   (tagged screen audio from another user)
 ```
 
 ---

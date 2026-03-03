@@ -16,7 +16,7 @@ interface UserInfo  { name: string; voiceRoom: string | null; online: boolean; s
 interface ChatMsg   { id: string; msgId: string; sender: string; body: string; timestamp: number }
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
-interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean; screenMuted: boolean }
+interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean; screenMuted: boolean; screenVolume: number }
 interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string }
 interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string }
 interface ServerContextMenu { serverId: string; x: number; y: number }
@@ -238,11 +238,13 @@ export function TerminalForum() {
   const gotKeyframeRef = useRef<Record<string, boolean>>({});
   const forceKeyframeRef = useRef(false);
   const systemAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const screenCaptureRef = useRef<AudioWorkletNode | null>(null);
   const connectedHostRef = useRef('');
   const connectedServerIdRef = useRef<string | null>(null);
   const currentVoiceRoomRef = useRef<string | null>(null);
   const keybindsRef = useRef<Record<string, KeyBind | null>>({});
   const userPlaybackRef = useRef<Record<string, { playback: AudioWorkletNode; gain: GainNode }>>({});
+  const userScreenPlaybackRef = useRef<Record<string, { playback: AudioWorkletNode; gain: GainNode }>>({});
   const perUserSettingsRef = useRef<Record<string, UserSetting>>({});
   const notificationSoundsRef = useRef(true);
   const notificationVolumeRef = useRef(50);
@@ -653,10 +655,15 @@ export function TerminalForum() {
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
     perUserSettingsRef.current = perUserSettings;
-    // Apply gain changes to active playback nodes
+    // Apply gain changes to active voice playback nodes
     for (const [name, pipeline] of Object.entries(userPlaybackRef.current)) {
       const s = perUserSettings[name] || { volume: 100, isMuted: false };
       pipeline.gain.gain.value = s.isMuted ? 0 : s.volume / 100;
+    }
+    // Apply gain changes to active screen audio playback nodes
+    for (const [name, pipeline] of Object.entries(userScreenPlaybackRef.current)) {
+      const s = perUserSettings[name] || { screenVolume: 100 };
+      pipeline.gain.gain.value = (s as UserSetting).screenVolume != null ? (s as UserSetting).screenVolume / 100 : 1;
     }
   }, [perUserSettings]);
 
@@ -718,11 +725,11 @@ export function TerminalForum() {
   }, []);
 
   const getUserSetting = (name: string): UserSetting =>
-    perUserSettings[name] || { name, volume: 100, isMuted: false, soundboardMuted: false, screenMuted: false };
+    perUserSettings[name] || { name, volume: 100, isMuted: false, soundboardMuted: false, screenMuted: false, screenVolume: 100 };
 
   const updateUserSetting = (name: string, update: Partial<UserSetting>) => {
     setPerUserSettings(prev => {
-      const existing = prev[name] || { name, volume: 100, isMuted: false, soundboardMuted: false, screenMuted: false };
+      const existing = prev[name] || { name, volume: 100, isMuted: false, soundboardMuted: false, screenMuted: false, screenVolume: 100 };
       return { ...prev, [name]: { ...existing, ...update } };
     });
   };
@@ -1079,16 +1086,20 @@ export function TerminalForum() {
         setE2eePrompt(false);
         e2eeKeyRef.current = null;
         window.electronAPI.setEncryptionKey(null);
+        setCameraUsers(new Set());
+        setScreenUsers(new Set());
         stopAudio();
       }),
       window.electronAPI.onAudioReceived((senderName, data) => {
         if (isDeafenedRef.current || !audioCtxRef.current) return;
-        // Get or create per-user playback pipeline
+        // Get or create per-user voice playback pipeline
         let pipeline = userPlaybackRef.current[senderName];
         if (!pipeline && audioCtxRef.current.state === 'running') {
           try {
             const ctx = audioCtxRef.current;
-            const playback = new AudioWorkletNode(ctx, 'playback-processor');
+            const playback = new AudioWorkletNode(ctx, 'playback-processor', {
+              outputChannelCount: [2],
+            });
             const gain = ctx.createGain();
             const s = perUserSettingsRef.current[senderName] || { volume: 100, isMuted: false };
             gain.gain.value = s.isMuted ? 0 : s.volume / 100;
@@ -1096,6 +1107,30 @@ export function TerminalForum() {
             gain.connect(ctx.destination);
             pipeline = { playback, gain };
             userPlaybackRef.current[senderName] = pipeline;
+          } catch { return; }
+        }
+        if (pipeline) {
+          const copy = new Uint8Array(data).buffer;
+          pipeline.playback.port.postMessage(copy, [copy]);
+        }
+      }),
+      window.electronAPI.onScreenAudioReceived((senderName, data) => {
+        if (isDeafenedRef.current || !audioCtxRef.current) return;
+        // Get or create per-user screen audio playback pipeline (independent volume)
+        let pipeline = userScreenPlaybackRef.current[senderName];
+        if (!pipeline && audioCtxRef.current.state === 'running') {
+          try {
+            const ctx = audioCtxRef.current;
+            const playback = new AudioWorkletNode(ctx, 'playback-processor', {
+              outputChannelCount: [2],
+            });
+            const gain = ctx.createGain();
+            const s = perUserSettingsRef.current[senderName] || { screenVolume: 100 };
+            gain.gain.value = (s as UserSetting).screenVolume != null ? (s as UserSetting).screenVolume / 100 : 1;
+            playback.connect(gain);
+            gain.connect(ctx.destination);
+            pipeline = { playback, gain };
+            userScreenPlaybackRef.current[senderName] = pipeline;
           } catch { return; }
         }
         if (pipeline) {
@@ -1229,9 +1264,10 @@ export function TerminalForum() {
 
       const base = import.meta.env.DEV ? '' : '.';
       await ctx.audioWorklet.addModule(`${base}/audio-capture-processor.js`);
+      await ctx.audioWorklet.addModule(`${base}/audio-screen-capture-processor.js`);
       await ctx.audioWorklet.addModule(`${base}/audio-playback-processor.js`);
 
-      // Capture mic → encode → send
+      // Capture mic → encode → send (mono)
       const source = ctx.createMediaStreamSource(stream);
 
       // Analyser for mic level indicator
@@ -1240,7 +1276,10 @@ export function TerminalForum() {
       source.connect(analyser);
       analyserRef.current = analyser;
 
-      const capture = new AudioWorkletNode(ctx, 'capture-processor');
+      const capture = new AudioWorkletNode(ctx, 'capture-processor', {
+        channelCount: 1,
+        channelCountMode: 'explicit',
+      });
       capture.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
         if (!isMutedRef.current) window.electronAPI.sendAudio(e.data);
       };
@@ -1287,11 +1326,17 @@ export function TerminalForum() {
     audioCtxRef.current = null;
     captureRef.current = null;
     playbackRef.current = null;
-    // Clean up per-user playback pipelines
+    screenCaptureRef.current = null;
+    // Clean up per-user voice playback pipelines
     for (const p of Object.values(userPlaybackRef.current)) {
       try { p.playback.disconnect(); p.gain.disconnect(); } catch {}
     }
     userPlaybackRef.current = {};
+    // Clean up per-user screen audio playback pipelines
+    for (const p of Object.values(userScreenPlaybackRef.current)) {
+      try { p.playback.disconnect(); p.gain.disconnect(); } catch {}
+    }
+    userScreenPlaybackRef.current = {};
   }
 
   async function createVideoEncoder(width: number, height: number, bitrate: number, framerate: number, bitrateMode: 'constant' | 'variable' = 'constant') {
@@ -1396,13 +1441,25 @@ export function TerminalForum() {
         audio: screenShareAudio,
       });
       cameraStreamRef.current = stream;
-      // Mix system audio into voice pipeline if available
+      // Send screen audio as a separate stereo stream (type 0x02)
       const audioTrack = stream.getAudioTracks()[0];
-      if (audioTrack && audioCtxRef.current && captureRef.current) {
+      if (audioTrack && audioCtxRef.current) {
         const audioStream = new MediaStream([audioTrack]);
         const systemSource = audioCtxRef.current.createMediaStreamSource(audioStream);
-        systemSource.connect(captureRef.current);
+        const screenCapture = new AudioWorkletNode(audioCtxRef.current, 'screen-capture-processor', {
+          channelCount: 2,
+          channelCountMode: 'explicit',
+        });
+        screenCapture.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+          window.electronAPI.sendScreenAudio(e.data);
+        };
+        systemSource.connect(screenCapture);
+        const silent = audioCtxRef.current.createGain();
+        silent.gain.value = 0;
+        screenCapture.connect(silent);
+        silent.connect(audioCtxRef.current.destination);
         systemAudioSourceRef.current = systemSource;
+        screenCaptureRef.current = screenCapture;
       }
       const videoEl = document.createElement('video');
       videoEl.srcObject = stream;
@@ -1474,6 +1531,10 @@ export function TerminalForum() {
       try { systemAudioSourceRef.current.disconnect(); } catch {}
       systemAudioSourceRef.current = null;
     }
+    if (screenCaptureRef.current) {
+      try { screenCaptureRef.current.disconnect(); } catch {}
+      screenCaptureRef.current = null;
+    }
     if (captureTypeRef.current === 'camera') window.electronAPI.sendChat('CMD:CAMERA_OFF');
     if (captureTypeRef.current === 'screen') window.electronAPI.sendChat('CMD:SCREEN_OFF');
     captureTypeRef.current = 'none';
@@ -1490,8 +1551,6 @@ export function TerminalForum() {
     videoTimeoutsRef.current = {};
     activeVideosRef.current.clear();
     setActiveVideos(new Set());
-    setCameraUsers(new Set());
-    setScreenUsers(new Set());
     setPoppedOut(new Set());
     watchingStreamsRef.current = new Set();
     setWatchingStreams(new Set());
@@ -2646,7 +2705,9 @@ export function TerminalForum() {
                     {usersInChannel.length > 0 && (
                       <div className="ml-6 mt-1 space-y-1">
                         {usersInChannel.map(u => (
-                          <div key={u.name} className="flex items-center gap-2 px-2 py-1 text-xs text-green-600">
+                          <div key={u.name}
+                            onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}
+                            className="flex items-center gap-2 px-2 py-1 text-xs text-green-600 cursor-pointer rounded hover:bg-green-900/20 transition-all">
                             <UserAvatar name={u.name} size="sm" />
                             <span className="truncate" style={{ color: u.roleColor || undefined }}>{u.name}</span>
                             {u.muted && <MicOff className="w-3 h-3 text-red-500 shrink-0" />}
@@ -4384,6 +4445,22 @@ export function TerminalForum() {
                   }`}>
                   {setting.screenMuted ? <><EyeOff className="w-4 h-4" /><span className="text-sm">Unmute Screenshare</span></> : <><Eye className="w-4 h-4" /><span className="text-sm">Mute Screenshare</span></>}
                 </button>
+                <div className="mb-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Volume2 className="w-4 h-4 text-green-500" />
+                    <span className="text-xs text-green-600">Stream Audio</span>
+                    <span className="ml-auto text-xs text-green-500">{setting.screenVolume}%</span>
+                  </div>
+                  <input type="range" min="0" max="200" value={setting.screenVolume}
+                    onClick={e => e.stopPropagation()}
+                    onChange={(e) => updateUserSetting(userContextMenu.userId, { screenVolume: parseInt(e.target.value) })}
+                    className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
+                  <div className="flex justify-between text-[10px] text-green-800 mt-1">
+                    <span>0%</span>
+                    <span className={setting.screenVolume > 100 ? 'text-yellow-600' : ''}>100%</span>
+                    <span className={setting.screenVolume > 100 ? 'text-red-600' : ''}>200%</span>
+                  </div>
+                </div>
               </>
             )}
             {/* Role management for admins */}

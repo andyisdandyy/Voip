@@ -24,6 +24,14 @@ if (process.platform === 'darwin') {
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
 
+// Windows: disable WGC (Windows Graphics Capture) to avoid
+// "ProcessFrame failed" errors (E_FAIL 0x80004005) that cause frame
+// drops during screen sharing. Falls back to DXGI Desktop Duplication
+// which is more stable across GPU drivers.
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-features', 'WGCCapturerWin');
+}
+
 // Linux: enable Wayland support via Ozone platform auto-detection.
 // Also enable PipeWire screen capture (used by Wayland compositors).
 if (process.platform === 'linux') {
@@ -36,6 +44,8 @@ let tcpSocket = null;
 let udpSocket = null;
 let encoder = null;
 let decoder = null;
+let screenEncoder = null;
+let screenDecoder = null;
 let OpusScript = null;
 let currentBitrate = 96000;
 let keepaliveInterval = null;
@@ -88,10 +98,13 @@ function e2eeDecrypt(data) {
 const autoConnectSockets = new Map(); // serverId → { socket, reconnectTimer }
 let _audioSendCount = 0;
 let _audioRecvCount = 0;
+let _screenAudioSendCount = 0;
+let _screenAudioRecvCount = 0;
 let _videoSendCount = 0;
 let _videoRecvCount = 0;
 // ── Packet type prefix for multiplexing audio over UDP ──────
 const AUDIO_TYPE_BYTE = Buffer.from([0x01]);
+const SCREEN_AUDIO_TYPE_BYTE = Buffer.from([0x02]);
 
 // ── Window
 
@@ -291,6 +304,10 @@ function setupIPC() {
     sendAudio(pcmArrayBuffer);
   });
 
+  ipcMain.on('udp:send-screen-audio', (_event, pcmArrayBuffer) => {
+    sendScreenAudio(pcmArrayBuffer);
+  });
+
   // Video over TCP (reliable delivery)
   ipcMain.on('tcp:send-video', (_event, encodedBuffer, isKeyFrame, codec) => {
     if (!tcpSocket || tcpSocket.destroyed) return;
@@ -309,6 +326,9 @@ function setupIPC() {
     currentBitrate = br;
     if (encoder) {
       try { encoder.setBitrate(br); } catch (e) { console.error('[Opus] setBitrate failed:', e); }
+    }
+    if (screenEncoder) {
+      try { screenEncoder.setBitrate(br); } catch (e) { console.error('[Opus] screen setBitrate failed:', e); }
     }
   });
 
@@ -824,18 +844,20 @@ function startVoice(host, port, username) {
     try {
       stopVoice();
 
-      // Initialize Opus codec
+      // Initialize Opus codecs — mono for voice, stereo for screen audio
       try {
         OpusScript = require('opusscript');
+        // Voice: mono (1 channel)
         encoder = new OpusScript(SAMPLE_RATE, 1, OpusScript.Application.VOIP);
         encoder.setBitrate(currentBitrate);
-        // Max complexity for best quality
         try { encoder.encoderCTL(4010, 10); } catch {}
-        // Enable in-band FEC for packet loss resilience
         try { encoder.encoderCTL(4012, 1); } catch {}
-        // Expect ~5% packet loss
         try { encoder.encoderCTL(4014, 5); } catch {}
         decoder = new OpusScript(SAMPLE_RATE, 1, OpusScript.Application.VOIP);
+        // Screen audio: stereo (2 channels)
+        screenEncoder = new OpusScript(SAMPLE_RATE, 2, OpusScript.Application.VOIP);
+        screenEncoder.setBitrate(currentBitrate);
+        screenDecoder = new OpusScript(SAMPLE_RATE, 2, OpusScript.Application.VOIP);
       } catch (err) {
         console.error('[Opus] Init failed:', err.message);
         reject(new Error('Opus initialization failed — run: npm install opusscript'));
@@ -879,14 +901,30 @@ function startVoice(host, port, username) {
         const payload = msg.slice(2 + nameLen);
 
         if (typeByte === 0x01) {
-          // Audio — decrypt if E2EE, then opus decode
+          // Voice — mono decode, expand to stereo for playback
           try {
             const decrypted = e2eeDecrypt(payload);
-            const pcm = decoder.decode(decrypted);
-            mainWindow?.webContents.send('udp:audio', senderName, Buffer.from(pcm));
+            const mono = decoder.decode(decrypted);
+            const monoView = new Int16Array(mono.buffer, mono.byteOffset, mono.byteLength / 2);
+            const stereo = new Int16Array(monoView.length * 2);
+            for (let i = 0; i < monoView.length; i++) {
+              stereo[i * 2] = monoView[i];
+              stereo[i * 2 + 1] = monoView[i];
+            }
+            mainWindow?.webContents.send('udp:audio', senderName, Buffer.from(stereo.buffer));
             if (++_audioRecvCount % 250 === 1) console.log(`[Audio] Recv #${_audioRecvCount} from '${senderName}' (${payload.length}B wire)`);
           } catch (err) {
-            console.error('[UDP] Decode error:', err.message);
+            console.error('[UDP] Voice decode error:', err.message);
+          }
+        } else if (typeByte === 0x02) {
+          // Screen audio — stereo decode
+          try {
+            const decrypted = e2eeDecrypt(payload);
+            const pcm = screenDecoder.decode(decrypted);
+            mainWindow?.webContents.send('udp:screen-audio', senderName, Buffer.from(pcm));
+            if (++_screenAudioRecvCount % 250 === 1) console.log(`[ScreenAudio] Recv #${_screenAudioRecvCount} from '${senderName}' (${payload.length}B wire)`);
+          } catch (err) {
+            console.error('[UDP] Screen audio decode error:', err.message);
           }
         }
       });
@@ -923,7 +961,7 @@ function sendAudio(pcmArrayBuffer) {
   try {
     const pcm = Buffer.from(pcmArrayBuffer);
     if (pcm.length !== FRAME_SIZE * 2) {
-      if (_audioSendCount === 0) console.warn(`[Audio] Unexpected PCM size: ${pcm.length} (expected ${FRAME_SIZE * 2})`);
+      if (_audioSendCount === 0) console.warn(`[Audio] Unexpected mono PCM size: ${pcm.length} (expected ${FRAME_SIZE * 2})`);
       return;
     }
     const encoded = encoder.encode(pcm, FRAME_SIZE);
@@ -935,6 +973,27 @@ function sendAudio(pcmArrayBuffer) {
     }
   } catch (err) {
     console.error('[Audio] Encode/send error:', err.message);
+  }
+}
+
+function sendScreenAudio(pcmArrayBuffer) {
+  if (!udpSocket || !screenEncoder) return;
+
+  try {
+    const pcm = Buffer.from(pcmArrayBuffer);
+    if (pcm.length !== FRAME_SIZE * 4) {
+      if (_screenAudioSendCount === 0) console.warn(`[ScreenAudio] Unexpected stereo PCM size: ${pcm.length} (expected ${FRAME_SIZE * 4})`);
+      return;
+    }
+    const encoded = screenEncoder.encode(pcm, FRAME_SIZE);
+    if (encoded && encoded.length > 0) {
+      const payload = e2eeEncrypt(Buffer.from(encoded));
+      const packet = Buffer.concat([SCREEN_AUDIO_TYPE_BYTE, payload]);
+      udpSocket.send(packet, 0, packet.length, udpSocket._voipPort, udpSocket._voipHost);
+      if (++_screenAudioSendCount % 250 === 1) console.log(`[ScreenAudio] Sent packet #${_screenAudioSendCount} (${encoded.length}B opus, ${payload.length}B wire)`);
+    }
+  } catch (err) {
+    console.error('[ScreenAudio] Encode/send error:', err.message);
   }
 }
 
@@ -953,4 +1012,6 @@ function stopVoice() {
   }
   if (encoder) { try { encoder.delete(); } catch {} encoder = null; }
   if (decoder) { try { decoder.delete(); } catch {} decoder = null; }
+  if (screenEncoder) { try { screenEncoder.delete(); } catch {} screenEncoder = null; }
+  if (screenDecoder) { try { screenDecoder.delete(); } catch {} screenDecoder = null; }
 }

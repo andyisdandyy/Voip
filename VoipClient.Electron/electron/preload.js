@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendAudio: (pcmBuffer) =>
     ipcRenderer.send('udp:send-audio', pcmBuffer),
 
+  sendScreenAudio: (pcmBuffer) =>
+    ipcRenderer.send('udp:send-screen-audio', pcmBuffer),
+
   stopVoice: () =>
     ipcRenderer.send('udp:stop'),
 
@@ -49,6 +52,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, senderName, pcm) => callback(senderName, pcm);
     ipcRenderer.on('udp:audio', handler);
     return () => ipcRenderer.removeListener('udp:audio', handler);
+  },
+
+  onScreenAudioReceived: (callback) => {
+    const handler = (_event, senderName, pcm) => callback(senderName, pcm);
+    ipcRenderer.on('udp:screen-audio', handler);
+    return () => ipcRenderer.removeListener('udp:screen-audio', handler);
   },
 
   onVoiceConnected: (callback) => {

@@ -163,8 +163,8 @@ while (true)
     var handled = false;
     if (result.Buffer is { Length: > 0 })
     {
-        // Fast-path: audio packets start with 0x01 — skip string parsing entirely
-        if (result.Buffer[0] == 0x01)
+        // Fast-path: audio packets start with 0x01 (voice) or 0x02 (screen audio) — skip string parsing entirely
+        if (result.Buffer[0] == 0x01 || result.Buffer[0] == 0x02)
         {
             if (clients.TryGetValue(sender, out var audioClient))
             {
