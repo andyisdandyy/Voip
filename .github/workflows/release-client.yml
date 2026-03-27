@@ -83,6 +83,12 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --mac --x64 --publish always
 
+      - name: Cleanup mounted DMG volumes
+        run: |
+          hdiutil info | grep '/Volumes/Voip' | awk '{print $1}' | while read dev; do
+            hdiutil detach "$dev" -force || true
+          done
+
       - name: Publish (macOS arm64)
         working-directory: VoipClient.Electron
         env:
