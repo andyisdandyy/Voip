@@ -261,9 +261,15 @@ public class ChatServer
             if (!stillConnected)
             {
                 if (_cameraActive.TryRemove(name, out _))
+                {
+                    _rooms.ClearStreamWatchers(name);
                     try { await BroadcastToVoiceRoomAsync(name, $"CAMERA_OFF:{name}").ConfigureAwait(false); } catch { }
+                }
                 if (_screenActive.TryRemove(name, out _))
+                {
+                    _rooms.ClearStreamWatchers(name);
                     try { await BroadcastToVoiceRoomAsync(name, $"SCREEN_OFF:{name}").ConfigureAwait(false); } catch { }
+                }
                 _rooms.RemoveUser(name);
                 _userStatus.TryRemove(name, out _);
                 _userMuted.TryRemove(name, out _);
@@ -296,37 +302,19 @@ public class ChatServer
                 await writer.WriteLineAsync($"JOINED_VOICE:{roomName}:{bitrate}").ConfigureAwait(false);
 
                 // Tell the joining user about active cameras/screens in this room
-                var activeStreamers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var camUser in _cameraActive.Keys)
                 {
                     if (camUser != name && _rooms.GetVoiceRoom(camUser) == roomName)
-                    {
                         await writer.WriteLineAsync($"CAMERA_ON:{camUser}").ConfigureAwait(false);
-                        activeStreamers.Add(camUser);
-                    }
                 }
                 foreach (var scrUser in _screenActive.Keys)
                 {
                     if (scrUser != name && _rooms.GetVoiceRoom(scrUser) == roomName)
-                    {
                         await writer.WriteLineAsync($"SCREEN_ON:{scrUser}").ConfigureAwait(false);
-                        activeStreamers.Add(scrUser);
-                    }
                 }
 
-                // Ask active streamers to send a keyframe so the new joiner can decode immediately
-                if (activeStreamers.Count > 0)
-                {
-                    foreach (var kv in _clients)
-                    {
-                        if (activeStreamers.Contains(kv.Value.name))
-                        {
-                            try { await kv.Value.writer.WriteLineAsync("REQUEST_KEYFRAME").ConfigureAwait(false); }
-                            catch { }
-                        }
-                    }
-                }
-
+                // Keyframe requests are now sent when the user opts-in via WATCH_STREAM
+                _rooms.RemoveAllStreamWatching(name);
                 await BroadcastUserListAsync().ConfigureAwait(false);
             }
             else
@@ -337,9 +325,16 @@ public class ChatServer
         else if (cmd == "LEAVE_VOICE")
         {
             if (_cameraActive.TryRemove(name, out _))
+            {
+                _rooms.ClearStreamWatchers(name);
                 await BroadcastToVoiceRoomAsync(name, $"CAMERA_OFF:{name}").ConfigureAwait(false);
+            }
             if (_screenActive.TryRemove(name, out _))
+            {
+                _rooms.ClearStreamWatchers(name);
                 await BroadcastToVoiceRoomAsync(name, $"SCREEN_OFF:{name}").ConfigureAwait(false);
+            }
+            _rooms.RemoveAllStreamWatching(name);
             _rooms.LeaveVoiceRoom(name);
             await writer.WriteLineAsync("LEFT_VOICE").ConfigureAwait(false);
             await BroadcastUserListAsync().ConfigureAwait(false);
@@ -375,6 +370,7 @@ public class ChatServer
         else if (cmd == "CAMERA_OFF")
         {
             _cameraActive.TryRemove(name, out _);
+            _rooms.ClearStreamWatchers(name);
             await BroadcastToVoiceRoomAsync(name, $"CAMERA_OFF:{name}").ConfigureAwait(false);
             await BroadcastUserListAsync().ConfigureAwait(false);
         }
@@ -387,8 +383,29 @@ public class ChatServer
         else if (cmd == "SCREEN_OFF")
         {
             _screenActive.TryRemove(name, out _);
+            _rooms.ClearStreamWatchers(name);
             await BroadcastToVoiceRoomAsync(name, $"SCREEN_OFF:{name}").ConfigureAwait(false);
             await BroadcastUserListAsync().ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("WATCH_STREAM:"))
+        {
+            var streamer = cmd.Substring("WATCH_STREAM:".Length);
+            _rooms.WatchStream(name, streamer);
+            // Ask the streamer to send a keyframe so the new watcher can decode immediately
+            foreach (var kv in _clients)
+            {
+                if (string.Equals(kv.Value.name, streamer, StringComparison.OrdinalIgnoreCase))
+                {
+                    try { await kv.Value.writer.WriteLineAsync("REQUEST_KEYFRAME").ConfigureAwait(false); }
+                    catch { }
+                    break;
+                }
+            }
+        }
+        else if (cmd.StartsWith("UNWATCH_STREAM:"))
+        {
+            var streamer = cmd.Substring("UNWATCH_STREAM:".Length);
+            _rooms.UnwatchStream(name, streamer);
         }
         else if (cmd.StartsWith("DELETE_MSG:"))
         {
@@ -1224,13 +1241,15 @@ public class ChatServer
         if (senderRoom == null) return;
 
         // rawLine = "VIDEO:<flags>:<base64data>"
-        // Relay as "VIDEO:<sender>:<flags>:<base64data>" to voice room peers
+        // Relay as "VIDEO:<sender>:<flags>:<base64data>" to watching peers only
         var outLine = string.Concat("VIDEO:", senderName, ":", rawLine.AsSpan(6));
 
         foreach (var kv in _clients)
         {
             var (writer, clientName) = kv.Value;
-            if (clientName != senderName && _rooms.GetVoiceRoom(clientName) == senderRoom)
+            if (clientName != senderName
+                && _rooms.GetVoiceRoom(clientName) == senderRoom
+                && _rooms.IsWatchingStream(clientName, senderName))
             {
                 try { await writer.WriteLineAsync(outLine).ConfigureAwait(false); }
                 catch { }

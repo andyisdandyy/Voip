@@ -23,6 +23,14 @@ jobs:
         working-directory: VoipClient.Electron
         run: npm install
 
+      - name: Install native addon dependencies
+        working-directory: VoipClient.Electron/native/audio-loopback
+        run: npm install
+
+      - name: Build native addon
+        working-directory: VoipClient.Electron
+        run: npm run rebuild-native
+
       - name: Sync version from tag
         working-directory: VoipClient.Electron
         shell: bash

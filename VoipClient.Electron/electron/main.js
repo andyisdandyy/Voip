@@ -4,7 +4,18 @@ const net = require('net');
 const tls = require('tls');
 const dgram = require('dgram');
 const nodeCrypto = require('crypto');
+const { StringDecoder } = require('string_decoder');
 const { autoUpdater } = require('electron-updater');
+
+// ── Native WASAPI loopback (Windows 10 2004+) ───────────────
+// Window share → INCLUDE mode: captures only the shared app's audio.
+// Screen share → EXCLUDE mode: captures all system audio except Electron.
+let audioLoopback;
+try {
+  audioLoopback = require('../native/audio-loopback');
+} catch {
+  audioLoopback = { startCapture: () => {}, stopCapture: () => {}, isSupported: () => false, getWindowPid: () => 0, drainQueue: () => [] };
+}
 
 // ══════════════════════════════════════════════════════════════
 //  Voip Electron Main Process
@@ -29,7 +40,7 @@ if (process.platform === 'darwin') {
 // drops during screen sharing. Falls back to DXGI Desktop Duplication
 // which is more stable across GPU drivers.
 if (process.platform === 'win32') {
-  app.commandLine.appendSwitch('disable-features', 'WGCCapturerWin');
+  app.commandLine.appendSwitch('disable-features', 'WGCCapturerWin,AllowWgcScreenCapturer,AllowWgcWindowCapturer,AllowWgcDesktopCapturer');
 }
 
 // Linux: enable Wayland support via Ozone platform auto-detection.
@@ -42,10 +53,8 @@ if (process.platform === 'linux') {
 let mainWindow = null;
 let tcpSocket = null;
 let udpSocket = null;
-let encoder = null;
-let decoder = null;
-let screenEncoder = null;
-let screenDecoder = null;
+let voiceCodec = null;   // OpusScript mono — encode+decode voice
+let screenCodec = null;  // OpusScript stereo — encode+decode screen audio
 let OpusScript = null;
 let currentBitrate = 96000;
 let keepaliveInterval = null;
@@ -102,6 +111,10 @@ let _screenAudioSendCount = 0;
 let _screenAudioRecvCount = 0;
 let _videoSendCount = 0;
 let _videoRecvCount = 0;
+let loopbackActive = false; // True when native WASAPI loopback capture is running
+// Ring buffer for accumulating WASAPI samples into 960-frame Opus blocks
+let loopbackRingBuf = null;  // Int16Array, stereo interleaved
+let loopbackRingPos = 0;
 // ── Packet type prefix for multiplexing audio over UDP ──────
 const AUDIO_TYPE_BYTE = Buffer.from([0x01]);
 const SCREEN_AUDIO_TYPE_BYTE = Buffer.from([0x02]);
@@ -190,9 +203,10 @@ app.whenReady().then(async () => {
       }
       const opts = { video: source };
       if (shareWithAudio && (process.platform === 'win32' || process.platform === 'linux')) {
-        // Windows: loopback / loopbackWithMute for system / per-app audio
-        // Linux (PipeWire): same mechanism works via PipeWire portal
-        opts.audio = shareIsWindow ? 'loopbackWithMute' : 'loopback';
+        // Chromium loopback fallback — used when native WASAPI loopback is
+        // unavailable or disabled.  When native loopback is active, shareWithAudio
+        // is set to false by the renderer so this path is skipped.
+        opts.audio = 'loopback';
       }
       callback(opts);
       selectedShareSource = null;
@@ -324,11 +338,11 @@ function setupIPC() {
 
   ipcMain.on('udp:set-bitrate', (_event, br) => {
     currentBitrate = br;
-    if (encoder) {
-      try { encoder.setBitrate(br); } catch (e) { console.error('[Opus] setBitrate failed:', e); }
+    if (voiceCodec) {
+      try { voiceCodec.setBitrate(br); } catch (e) { console.error('[Opus] setBitrate failed:', e); }
     }
-    if (screenEncoder) {
-      try { screenEncoder.setBitrate(br); } catch (e) { console.error('[Opus] screen setBitrate failed:', e); }
+    if (screenCodec) {
+      try { screenCodec.setBitrate(br); } catch (e) { console.error('[Opus] screen setBitrate failed:', e); }
     }
   });
 
@@ -359,6 +373,100 @@ function setupIPC() {
     // Track whether the source is a window (not a screen) for per-app audio
     shareIsWindow = sourceId ? !sourceId.startsWith('screen:') : false;
     return true;
+  });
+
+  // ── Native WASAPI loopback (process-excluded) ─────────────
+  ipcMain.handle('loopback:supported', () => {
+    try { return audioLoopback.isSupported(); } catch { return false; }
+  });
+
+  ipcMain.handle('loopback:start', (_event, sourceId) => {
+    if (loopbackActive) return { success: true };
+    try {
+      // Determine target PID from the source ID:
+      //   "window:12345:0" → INCLUDE mode (capture only that app's audio)
+      //   "screen:..." or null → EXCLUDE mode (capture all except Electron)
+      let targetPid = 0;
+      if (sourceId && !sourceId.startsWith('screen:')) {
+        // Extract HWND from desktopCapturer source ID "window:<hwnd>:<index>"
+        const parts = sourceId.split(':');
+        if (parts.length >= 2) {
+          const hwnd = parseInt(parts[1], 10);
+          if (hwnd > 0) {
+            targetPid = audioLoopback.getWindowPid(hwnd);
+            if (targetPid > 0) {
+              console.log(`[Loopback] Window source ${sourceId} → PID ${targetPid} (INCLUDE mode)`);
+            } else {
+              console.warn(`[Loopback] Could not resolve PID for HWND ${hwnd}, falling back to EXCLUDE mode`);
+              targetPid = 0;
+            }
+          }
+        }
+      }
+
+      // Allocate ring buffer for 960 stereo frames (20 ms at 48 kHz)
+      loopbackRingBuf = new Int16Array(FRAME_SIZE * 2);
+      loopbackRingPos = 0;
+
+      // The native addon signals "data ready" via the TSFN callback.
+      // We drain the lock-free queue and process each audio packet.
+      function processPacket(pcmData, info) {
+        if (!loopbackActive) return;
+        const channels = info.channels;
+        const frames = info.frames;
+
+        const aligned = new ArrayBuffer(pcmData.byteLength);
+        new Uint8Array(aligned).set(pcmData);
+
+        const isFloat = (info.bitsPerSample === 32);
+        const src = isFloat ? new Float32Array(aligned) : new Int16Array(aligned);
+
+        for (let i = 0; i < frames; i++) {
+          let l, r;
+          if (isFloat) {
+            const base = i * channels;
+            l = Math.max(-32768, Math.min(32767, Math.round(src[base] * 32767)));
+            r = channels >= 2
+              ? Math.max(-32768, Math.min(32767, Math.round(src[base + 1] * 32767)))
+              : l;
+          } else {
+            const base = i * channels;
+            l = src[base];
+            r = channels >= 2 ? src[base + 1] : l;
+          }
+
+          loopbackRingBuf[loopbackRingPos * 2] = l;
+          loopbackRingBuf[loopbackRingPos * 2 + 1] = r;
+          loopbackRingPos++;
+
+          if (loopbackRingPos >= FRAME_SIZE) {
+            sendScreenAudio(Buffer.from(loopbackRingBuf.buffer));
+            loopbackRingBuf = new Int16Array(FRAME_SIZE * 2);
+            loopbackRingPos = 0;
+          }
+        }
+      }
+
+      const fmt = audioLoopback.startCapture(() => {
+        // TSFN "data ready" signal — drain the native queue
+        const packets = audioLoopback.drainQueue();
+        if (!packets) return;
+        for (const pkt of packets) {
+          processPacket(pkt.data, pkt.info);
+        }
+      }, targetPid);
+      loopbackActive = true;
+      const mode = targetPid > 0 ? 'INCLUDE' : 'EXCLUDE';
+      console.log(`[Loopback] Started (${mode}) — ${fmt.sampleRate}Hz, ${fmt.channels}ch, ${fmt.bitsPerSample}bit`);
+      return { success: true, sampleRate: fmt.sampleRate, channels: fmt.channels };
+    } catch (err) {
+      console.error('[Loopback] Start failed:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.on('loopback:stop', () => {
+    stopLoopback();
   });
 
   // ── Autoconnect (background mention listener) ──────────────
@@ -472,6 +580,7 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
     }
 
     let buffer = '';
+    let utf8Decoder = new StringDecoder('utf8');
     let serverPwDone = false; // Phase 1 complete
     let settled = false;      // Promise already resolved/rejected
     let tlsActive = false;    // True while connected via TLS (for close-fallback)
@@ -498,7 +607,7 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
 
     const setupEvents = () => {
       tcpSocket.on('data', (data) => {
-      buffer += data.toString('utf8');
+      buffer += utf8Decoder.write(data);
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
       for (const rawLine of lines) {
@@ -604,6 +713,7 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
         _tlsCapable.set(`${host}:${port}`, false);
         tlsActive = false;
         buffer = '';
+        utf8Decoder = new StringDecoder('utf8');
         tcpSocket = new net.Socket();
         setupEvents();
         tcpSocket.connect(port, host, () => onConnected(false));
@@ -649,6 +759,8 @@ function connectChat(host, port, username, password, isRegister, serverPassword)
           // Remove all listeners from the old TLS socket so its 'close' event
           // doesn't race with the new connection and reject the promise.
           try { tcpSocket.removeAllListeners(); tcpSocket.destroy(); } catch {}
+          buffer = '';
+          utf8Decoder = new StringDecoder('utf8');
           tcpSocket = new net.Socket();
           setupEvents();
           tcpSocket.connect(port, host, () => onConnected(false));
@@ -685,10 +797,21 @@ function closeAllPopouts() {
   popoutWindows.clear();
 }
 
+function stopLoopback() {
+  if (loopbackActive) {
+    try { audioLoopback.stopCapture(); } catch {}
+    loopbackActive = false;
+    loopbackRingBuf = null;
+    loopbackRingPos = 0;
+    console.log('[Loopback] Stopped');
+  }
+}
+
 function fullDisconnect() {
   disconnectChat();
   killBackground();
   stopVoice();
+  stopLoopback();
   closeAllPopouts();
 }
 
@@ -844,20 +967,19 @@ function startVoice(host, port, username) {
     try {
       stopVoice();
 
-      // Initialize Opus codecs — mono for voice, stereo for screen audio
+      // Initialize Opus codecs — each instance has both encoder and decoder.
+      // Use only 2 instances to stay within the shared WASM memory budget.
       try {
         OpusScript = require('opusscript');
-        // Voice: mono (1 channel)
-        encoder = new OpusScript(SAMPLE_RATE, 1, OpusScript.Application.VOIP);
-        encoder.setBitrate(currentBitrate);
-        try { encoder.encoderCTL(4010, 10); } catch {}
-        try { encoder.encoderCTL(4012, 1); } catch {}
-        try { encoder.encoderCTL(4014, 5); } catch {}
-        decoder = new OpusScript(SAMPLE_RATE, 1, OpusScript.Application.VOIP);
-        // Screen audio: stereo (2 channels)
-        screenEncoder = new OpusScript(SAMPLE_RATE, 2, OpusScript.Application.VOIP);
-        screenEncoder.setBitrate(currentBitrate);
-        screenDecoder = new OpusScript(SAMPLE_RATE, 2, OpusScript.Application.VOIP);
+        // Voice: mono (1 channel) — encode outgoing mic, decode incoming voice
+        voiceCodec = new OpusScript(SAMPLE_RATE, 1, OpusScript.Application.VOIP);
+        voiceCodec.setBitrate(currentBitrate);
+        try { voiceCodec.encoderCTL(4010, 10); } catch {}
+        try { voiceCodec.encoderCTL(4012, 1); } catch {}
+        try { voiceCodec.encoderCTL(4014, 5); } catch {}
+        // Screen audio: stereo (2 channels) — encode outgoing screen audio, decode incoming
+        screenCodec = new OpusScript(SAMPLE_RATE, 2, OpusScript.Application.VOIP);
+        screenCodec.setBitrate(currentBitrate);
       } catch (err) {
         console.error('[Opus] Init failed:', err.message);
         reject(new Error('Opus initialization failed — run: npm install opusscript'));
@@ -904,15 +1026,18 @@ function startVoice(host, port, username) {
           // Voice — mono decode, expand to stereo for playback
           try {
             const decrypted = e2eeDecrypt(payload);
-            const mono = decoder.decode(decrypted);
-            const monoView = new Int16Array(mono.buffer, mono.byteOffset, mono.byteLength / 2);
+            const mono = voiceCodec.decode(decrypted);
+            // Copy to aligned ArrayBuffer for safe Int16Array view
+            const aligned = new ArrayBuffer(mono.length);
+            new Uint8Array(aligned).set(mono);
+            const monoView = new Int16Array(aligned);
             const stereo = new Int16Array(monoView.length * 2);
             for (let i = 0; i < monoView.length; i++) {
               stereo[i * 2] = monoView[i];
               stereo[i * 2 + 1] = monoView[i];
             }
             mainWindow?.webContents.send('udp:audio', senderName, Buffer.from(stereo.buffer));
-            if (++_audioRecvCount % 250 === 1) console.log(`[Audio] Recv #${_audioRecvCount} from '${senderName}' (${payload.length}B wire)`);
+            if (++_audioRecvCount % 250 === 1 || _audioRecvCount === 1) console.log(`[Audio] Recv #${_audioRecvCount} from '${senderName}' (${payload.length}B wire → ${stereo.buffer.byteLength}B stereo)`);
           } catch (err) {
             console.error('[UDP] Voice decode error:', err.message);
           }
@@ -920,9 +1045,9 @@ function startVoice(host, port, username) {
           // Screen audio — stereo decode
           try {
             const decrypted = e2eeDecrypt(payload);
-            const pcm = screenDecoder.decode(decrypted);
+            const pcm = screenCodec.decode(decrypted);
             mainWindow?.webContents.send('udp:screen-audio', senderName, Buffer.from(pcm));
-            if (++_screenAudioRecvCount % 250 === 1) console.log(`[ScreenAudio] Recv #${_screenAudioRecvCount} from '${senderName}' (${payload.length}B wire)`);
+            if (++_screenAudioRecvCount % 250 === 1 || _screenAudioRecvCount === 1) console.log(`[ScreenAudio] Recv #${_screenAudioRecvCount} from '${senderName}' (${payload.length}B wire → ${pcm.length}B stereo)`);
           } catch (err) {
             console.error('[UDP] Screen audio decode error:', err.message);
           }
@@ -956,7 +1081,7 @@ function startVoice(host, port, username) {
 }
 
 function sendAudio(pcmArrayBuffer) {
-  if (!udpSocket || !encoder) return;
+  if (!udpSocket || !voiceCodec) return;
 
   try {
     const pcm = Buffer.from(pcmArrayBuffer);
@@ -964,7 +1089,7 @@ function sendAudio(pcmArrayBuffer) {
       if (_audioSendCount === 0) console.warn(`[Audio] Unexpected mono PCM size: ${pcm.length} (expected ${FRAME_SIZE * 2})`);
       return;
     }
-    const encoded = encoder.encode(pcm, FRAME_SIZE);
+    const encoded = voiceCodec.encode(pcm, FRAME_SIZE);
     if (encoded && encoded.length > 0) {
       const payload = e2eeEncrypt(Buffer.from(encoded));
       const packet = Buffer.concat([AUDIO_TYPE_BYTE, payload]);
@@ -977,7 +1102,7 @@ function sendAudio(pcmArrayBuffer) {
 }
 
 function sendScreenAudio(pcmArrayBuffer) {
-  if (!udpSocket || !screenEncoder) return;
+  if (!udpSocket || !screenCodec) return;
 
   try {
     const pcm = Buffer.from(pcmArrayBuffer);
@@ -985,7 +1110,7 @@ function sendScreenAudio(pcmArrayBuffer) {
       if (_screenAudioSendCount === 0) console.warn(`[ScreenAudio] Unexpected stereo PCM size: ${pcm.length} (expected ${FRAME_SIZE * 4})`);
       return;
     }
-    const encoded = screenEncoder.encode(pcm, FRAME_SIZE);
+    const encoded = screenCodec.encode(pcm, FRAME_SIZE);
     if (encoded && encoded.length > 0) {
       const payload = e2eeEncrypt(Buffer.from(encoded));
       const packet = Buffer.concat([SCREEN_AUDIO_TYPE_BYTE, payload]);
@@ -1010,8 +1135,6 @@ function stopVoice() {
     try { udpSocket.close(); } catch {}
     udpSocket = null;
   }
-  if (encoder) { try { encoder.delete(); } catch {} encoder = null; }
-  if (decoder) { try { decoder.delete(); } catch {} decoder = null; }
-  if (screenEncoder) { try { screenEncoder.delete(); } catch {} screenEncoder = null; }
-  if (screenDecoder) { try { screenDecoder.delete(); } catch {} screenDecoder = null; }
+  if (voiceCodec) { try { voiceCodec.delete(); } catch {} voiceCodec = null; }
+  if (screenCodec) { try { screenCodec.delete(); } catch {} screenCodec = null; }
 }

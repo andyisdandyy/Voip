@@ -8,6 +8,7 @@
     "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
     "start": "electron .",
+    "rebuild-native": "node scripts/rebuild-native.js",
     "postinstall": "electron-builder install-app-deps",
     "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64",
     "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
@@ -33,6 +34,7 @@
     "cross-env": "^7.0.3",
     "electron": "^35.0.0",
     "electron-builder": "^25.1.8",
+    "node-gyp": "^12.2.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
@@ -49,12 +51,15 @@
     },
     "asar": true,
     "asarUnpack": [
-      "node_modules/opusscript/**"
+      "node_modules/opusscript/**",
+      "native/audio-loopback/**"
     ],
     "files": [
       "dist/**/*",
       "electron/**/*",
       "public/**/*",
+      "native/audio-loopback/index.js",
+      "native/audio-loopback/build/Release/*.node",
       "package.json"
     ],
     "directories": {

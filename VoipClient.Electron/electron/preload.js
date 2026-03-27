@@ -79,6 +79,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   setShareSource: (sourceId, withAudio) => ipcRenderer.invoke('set-share-source', sourceId, withAudio),
 
+  // ── Native WASAPI Loopback (process-targeted) ──────────────
+  // Audio data is fed directly into the Opus encoder in the main process
+  // (no renderer round-trip). The renderer only controls start/stop.
+  // Pass the desktopCapturer sourceId so the addon can target a specific
+  // process (INCLUDE mode for windows, EXCLUDE-self for screens).
+  loopbackSupported: () => ipcRenderer.invoke('loopback:supported'),
+  startLoopback: (sourceId) => ipcRenderer.invoke('loopback:start', sourceId),
+  stopLoopback: () => ipcRenderer.send('loopback:stop'),
+
   // ── E2EE ───────────────────────────────────────────────────
   setEncryptionKey: (passphrase) =>
     ipcRenderer.send('e2ee:set-key', passphrase),

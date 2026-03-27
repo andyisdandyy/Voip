@@ -1,0 +1,14 @@
+{
+  "name": "audio-loopback",
+  "version": "1.0.0",
+  "description": "WASAPI process loopback capture — excludes self (Windows 10 2004+)",
+  "main": "index.js",
+  "private": true,
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "scripts": {
+    "install": "node-gyp rebuild || exit 0"
+  },
+  "gypfile": true
+}

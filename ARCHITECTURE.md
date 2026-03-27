@@ -43,7 +43,17 @@ Voip/
 │   │       └── electron.d.ts      # TypeScript declarations for the electronAPI bridge
 │   ├── public/
 │   │   ├── audio-capture-processor.js   # AudioWorklet — mic PCM capture (48 kHz, mono)
+│   │   ├── audio-screen-capture-processor.js  # AudioWorklet — screen audio PCM capture (48 kHz, stereo)
 │   │   └── audio-playback-processor.js  # AudioWorklet — per-user PCM playback
+│   ├── native/
+│   │   └── audio-loopback/          # N-API C++ addon — WASAPI process-excluded loopback
+│   │       ├── binding.gyp          # node-gyp build configuration
+│   │       ├── package.json         # Addon dependencies (node-addon-api)
+│   │       ├── index.js             # JS wrapper with safe stubs for non-Windows
+│   │       └── src/
+│   │           └── loopback.cpp     # ActivateAudioInterfaceAsync + EXCLUDE_TARGET_PROCESS_TREE
+│   ├── scripts/
+│   │   └── rebuild-native.js       # Rebuilds native addons against Electron headers
 │   └── package.json
 │
 └── ARCHITECTURE.md           # This file
@@ -90,6 +100,8 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `LEAVE_TEXT:<room>` | Leave a text room |
 | `CAMERA_ON` / `CAMERA_OFF` | Toggle camera state broadcast |
 | `SCREEN_ON` / `SCREEN_OFF` | Toggle screen share state broadcast |
+| `WATCH_STREAM:<username>` | Opt-in to receive video frames and screen audio from a streamer |
+| `UNWATCH_STREAM:<username>` | Opt-out of receiving a streamer's video/screen audio |
 | `DELETE_MSG:<room>:<id>` | Delete own message (or any with permission) |
 | `SET_AVATAR:<base64>` | Upload avatar (max ~32 KB) |
 | `REMOVE_AVATAR` | Remove avatar |
@@ -120,8 +132,13 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 
 #### Video Relay
 - Video frames are sent as `VIDEO:<flags>:<base64data>` over TCP
-- The server prepends the sender's name and relays to all voice room peers
+- The server prepends the sender's name and relays only to voice room peers who have
+  opted-in via `WATCH_STREAM` (tracked in `RoomManager._streamWatchers`)
 - Flags byte: bit 0 = keyframe, bit 1 = VP8 (vs H.264)
+- Screen audio (UDP type `0x02`) is similarly relayed only to watchers; voice audio
+  (`0x01`) is still broadcast to all room members
+- Watcher state is cleared automatically on `CAMERA_OFF`, `SCREEN_OFF`, `LEAVE_VOICE`,
+  and disconnect
 
 ### Persistence Layer
 | Store | File | Purpose |
@@ -177,8 +194,9 @@ Available permissions:
 
 ### Platform Support
 - **Windows** — frameless window with custom titlebar buttons; WGC (Windows Graphics
-  Capture) disabled via `--disable-features=WGCCapturerWin` to avoid `ProcessFrame failed`
-  errors — falls back to DXGI Desktop Duplication for more stable screen capture.
+  Capture) disabled via `--disable-features=WGCCapturerWin,AllowWgcScreenCapturer,AllowWgcWindowCapturer,AllowWgcDesktopCapturer`
+  to avoid `ProcessFrame failed` errors — falls back to DXGI Desktop Duplication for
+  more stable screen capture.
 - **macOS** — hidden titlebar with native traffic light buttons, media permission prompts
 - **Linux** — frameless window with custom titlebar buttons; Ozone auto-detection for
   Wayland support; PipeWire capturer enabled for screen sharing on Wayland compositors.
@@ -186,6 +204,12 @@ Available permissions:
   handles source selection. Screen share audio is supported via PipeWire.
 
 ### Main Process — `electron/main.js`
+
+#### TCP Message Framing
+Incoming TCP data is accumulated in a string buffer and split on `\n`. A Node.js
+`StringDecoder('utf8')` is used instead of raw `Buffer.toString('utf8')` to correctly
+handle multi-byte UTF-8 characters that may be split across TCP packet boundaries.
+The decoder is reset whenever the socket is replaced (TLS fallback).
 
 #### TLS Negotiation
 The client probes TLS first on every new host:port. If the TLS handshake fails with
@@ -217,7 +241,20 @@ Voice (mono, type byte 0x01):
       → Opus encode (opusscript, 1 channel) → E2EE encrypt → UDP send [0x01]
 
 Screen-share audio (stereo, type byte 0x02, when enabled):
-  getDisplayMedia({audio: true}) → audio track (stereo)
+  On Windows 10 2004+ (build 19041+), a native N-API C++ addon
+  (`native/audio-loopback`) uses ActivateAudioInterfaceAsync for
+  process-targeted audio capture:
+    • Window share → INCLUDE mode: captures ONLY the shared app's
+      audio (PID resolved from the HWND in the desktopCapturer source ID).
+    • Screen share → EXCLUDE mode: captures all system audio EXCEPT
+      the Electron process tree.
+  The native capture runs entirely in the main process — WASAPI samples
+  are converted to Int16 stereo, buffered into 960-frame blocks, and
+  fed directly into the Opus encoder (no renderer round-trip).
+
+  Falls back to Chromium's built-in loopback (`getDisplayMedia({audio:true})`)
+  on older Windows, macOS, Linux, or if the native module is unavailable:
+      getDisplayMedia({audio: true}) → audio track (stereo)
       → AudioWorklet (audio-screen-capture-processor.js) — buffers 960 stereo frames
         (channelCount: 2, channelCountMode: 'explicit')
       → Interleaved Int16 stereo PCM (L0,R0,L1,R1,...) → main process
@@ -232,6 +269,8 @@ UDP receive voice [0x01] → E2EE decrypt → Opus decode (mono) → expand to s
     → AudioContext.destination
 
 UDP receive screen audio [0x02] → E2EE decrypt → Opus decode (stereo) → PCM
+    → watchingStreams gate (viewer must opt-in via "Join stream" button;
+       server also filters — only relays to opted-in watchers)
     → per-user AudioWorklet (playback-processor.js, outputChannelCount: [2])
     → per-user GainNode (screenVolume control, independent from voice)
     → AudioContext.destination
@@ -332,6 +371,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - UDP voice (start, stop, send audio, audio received listener)
 - Video (send, receive)
 - Screen sharing (source picker, share config)
+- Native WASAPI loopback (start, stop, supported check)
 - E2EE key management
 - Window controls (minimize, maximize, close, fullscreen)
 - Autoconnect (start, stop, mention listener)
@@ -342,6 +382,52 @@ Exposes a typed `window.electronAPI` object with methods for:
 - **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Used for voice capture.
 - **`audio-screen-capture-processor.js`**: Buffers Float32 stereo samples into 960-frame stereo blocks (20 ms at 48 kHz), interleaves L/R channels into Int16 (1920 samples per message), and posts to main thread. Used for screen-share system audio.
 - **`audio-playback-processor.js`**: Receives interleaved stereo Int16 PCM buffers, de-interleaves to separate L/R Float32 arrays, and plays them back through the stereo output channels. Used by both voice and screen audio playback pipelines.
+
+### Native Audio Loopback — `native/audio-loopback/`
+N-API C++ addon that captures system audio using the Windows 10 2004+
+`ActivateAudioInterfaceAsync` process-loopback API — the same mechanism OBS uses.
+
+**Two modes (selected automatically by source type):**
+- **Window share** → `INCLUDE_TARGET_PROCESS_TREE` — captures **only** the shared
+  app's audio (e.g. Brave). The HWND is extracted from the `desktopCapturer` source ID
+  (`window:<hwnd>:<idx>`), converted to a PID via `GetWindowThreadProcessId`, and
+  passed to the activation params.
+- **Screen share** → `EXCLUDE_TARGET_PROCESS_TREE` — captures **all** system audio
+  except the Electron process tree (voice/soundboard won't leak into the capture).
+
+**How it works:**
+1. `ActivateAudioInterfaceAsync` is called with the virtual device ID `VAD\Process_Loopback`
+   and activation params targeting either the shared app's PID (include) or
+   `GetCurrentProcessId()` (exclude).  The completion handler uses WRL `RuntimeClass`
+   with `FtmBase` (agile / Free-Threaded Marshaler) so it can be called from any COM apartment.
+2. The completion handler stores the raw `IUnknown`.  A dedicated MTA worker thread then
+   performs `QueryInterface` for `IAudioClient`, calls `GetMixFormat` (falls back to
+   48 kHz/float32/stereo if the OS returns `E_NOTIMPL`), `Initialize` with
+   `AUDCLNT_STREAMFLAGS_LOOPBACK`, `GetService(IAudioCaptureClient)`, and `Start`.
+3. The same MTA thread enters the capture loop, boosted via MMCSS
+   `AvSetMmThreadCharacteristicsW("Audio")`.  It polls `GetNextPacketSize` / `GetBuffer`,
+   copies each audio packet into an `AudioPacket` struct, and pushes it into a
+   mutex-protected queue on the `CaptureState`.
+4. After each push, a bare `Napi::ThreadSafeFunction::NonBlockingCall()` signals the JS
+   thread that data is ready.
+5. The JS-side callback calls `drainQueue()` which swaps out all pending packets and
+   returns them as `{data: Uint8Array, info: {sampleRate, channels, frames, bitsPerSample}}[]`.
+   Data is copied into V8-managed `ArrayBuffer`s (Electron disallows external buffers).
+6. In the main process callback, samples are converted from WASAPI's native format (float32
+   multi-channel) to interleaved Int16 stereo, accumulated in a ring buffer, and fed into
+   `sendScreenAudio()` in 960-frame blocks — no renderer round-trip required.
+
+**Platform handling:**
+- On Windows 10 2004+ with the native module built, `isSupported()` returns `true`.
+- On older Windows, macOS, or Linux, `isSupported()` returns `false` and the renderer
+  falls back to Chromium's built-in `getDisplayMedia({audio: 'loopback'})`.
+- Non-Windows builds compile a no-op stub so `require()` always succeeds.
+
+| IPC Channel          | Direction      | Description                                    |
+|----------------------|----------------|------------------------------------------------|
+| `loopback:supported` | invoke → main  | Returns `true` if process loopback is available |
+| `loopback:start`     | invoke → main  | Starts native capture for a source ID; window sources use INCLUDE mode (app-only), screen sources use EXCLUDE mode (all-minus-self); returns `{ success, sampleRate, channels }` |
+| `loopback:stop`      | send → main    | Stops native capture and frees resources       |
 
 ---
 

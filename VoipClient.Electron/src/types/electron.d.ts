@@ -23,6 +23,15 @@ interface ElectronAPI {
 
   getScreenSources: () => Promise<Array<{ id: string; name: string; thumbnail: string; appIcon: string | null; isScreen: boolean }>>;
   setShareSource: (sourceId: string, withAudio: boolean) => Promise<boolean>;
+
+  // Native WASAPI loopback (process-targeted)
+  // Audio is encoded directly in the main process — renderer only controls start/stop.
+  // sourceId: desktopCapturer source ID — window sources use INCLUDE mode (only that app),
+  //           screen sources or omitted use EXCLUDE mode (all system audio except Electron).
+  loopbackSupported: () => Promise<boolean>;
+  startLoopback: (sourceId?: string | null) => Promise<{ success: boolean; sampleRate?: number; channels?: number; error?: string }>;
+  stopLoopback: () => void;
+
   setEncryptionKey: (passphrase: string | null) => void;
 
   minimizeWindow: () => void;

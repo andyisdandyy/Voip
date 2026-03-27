@@ -98,6 +98,16 @@ _ = Task.Run(async () =>
             continue;
         }
 
+        // Check if this is screen audio (0x02) — only relay to watchers
+        bool isScreenAudio = buffer.Length > 0 && buffer[0] == 0x02;
+        HashSet<string>? watchers = null;
+        if (isScreenAudio)
+        {
+            var watcherList = roomManager.GetStreamWatchers(senderUsername);
+            if (watcherList.Count == 0) continue; // No watchers — skip entirely
+            watchers = new HashSet<string>(watcherList, StringComparer.OrdinalIgnoreCase);
+        }
+
         // Build tagged packet: [nameLen:1][name:N][opus data]
         var nameBytes = nameBytesCache.GetOrAdd(senderUsername, static n => Encoding.UTF8.GetBytes(n));
         var tagged = new byte[1 + nameBytes.Length + buffer.Length];
@@ -114,6 +124,10 @@ _ = Task.Run(async () =>
             var targetRoom = roomManager.GetVoiceRoom(kvp.Value.username);
             if (targetRoom == senderRoom)
             {
+                // For screen audio, only send to users watching this stream
+                if (isScreenAudio && watchers != null && !watchers.Contains(kvp.Value.username))
+                    continue;
+
                 try { await udp.SendAsync(tagged, tagged.Length, target).ConfigureAwait(false); }
                 catch { }
             }

@@ -239,6 +239,7 @@ export function TerminalForum() {
   const forceKeyframeRef = useRef(false);
   const systemAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const screenCaptureRef = useRef<AudioWorkletNode | null>(null);
+  const nativeLoopbackRef = useRef(false);
   const connectedHostRef = useRef('');
   const connectedServerIdRef = useRef<string | null>(null);
   const currentVoiceRoomRef = useRef<string | null>(null);
@@ -973,7 +974,10 @@ export function TerminalForum() {
       if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
       delete decoderTsRef.current[user];
       delete gotKeyframeRef.current[user];
-      watchingStreamsRef.current.delete(user);
+      if (watchingStreamsRef.current.has(user)) {
+        watchingStreamsRef.current.delete(user);
+        window.electronAPI.sendChat(`CMD:UNWATCH_STREAM:${user}`);
+      }
       setWatchingStreams(new Set(watchingStreamsRef.current));
       window.electronAPI.closePopout(user);
       setPoppedOut(prev => { const s = new Set(prev); s.delete(user); return s; });
@@ -989,8 +993,14 @@ export function TerminalForum() {
       if (videoDecodersRef.current[user]) { try { videoDecodersRef.current[user].close(); } catch {} delete videoDecodersRef.current[user]; }
       delete decoderTsRef.current[user];
       delete gotKeyframeRef.current[user];
-      watchingStreamsRef.current.delete(user);
+      if (watchingStreamsRef.current.has(user)) {
+        watchingStreamsRef.current.delete(user);
+        window.electronAPI.sendChat(`CMD:UNWATCH_STREAM:${user}`);
+      }
       setWatchingStreams(new Set(watchingStreamsRef.current));
+      // Clean up screen audio playback pipeline for this user
+      const screenPipeline = userScreenPlaybackRef.current[user];
+      if (screenPipeline) { try { screenPipeline.playback.disconnect(); screenPipeline.gain.disconnect(); } catch {} delete userScreenPlaybackRef.current[user]; }
       window.electronAPI.closePopout(user);
       setPoppedOut(prev => { const s = new Set(prev); s.delete(user); return s; });
     } else if (line.startsWith('MENTION:')) {
@@ -1035,8 +1045,14 @@ export function TerminalForum() {
           const binary = atob(base64Data);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const audioCtx = audioCtxRef.current || new AudioContext({ sampleRate: 48000 });
-          audioCtx.decodeAudioData(bytes.buffer, (buffer) => {
+          let audioCtx = audioCtxRef.current;
+          if (!audioCtx || audioCtx.state === 'closed') {
+            audioCtx = new AudioContext({ sampleRate: 48000 });
+          }
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(() => {});
+          }
+          audioCtx.decodeAudioData(bytes.buffer).then((buffer) => {
             const source = audioCtx.createBufferSource();
             source.buffer = buffer;
             const gain = audioCtx.createGain();
@@ -1054,8 +1070,12 @@ export function TerminalForum() {
               }
             };
             source.start();
+          }).catch((err) => {
+            console.error('[Soundboard] decodeAudioData failed:', err);
           });
-        } catch {}
+        } catch (err) {
+          console.error('[Soundboard] Play failed:', err);
+        }
       }
     }
   }, []);
@@ -1116,6 +1136,8 @@ export function TerminalForum() {
       }),
       window.electronAPI.onScreenAudioReceived((senderName, data) => {
         if (isDeafenedRef.current || !audioCtxRef.current) return;
+        // Only play screen audio from streams the user has opted-in to watch
+        if (!watchingStreamsRef.current.has(senderName)) return;
         // Get or create per-user screen audio playback pipeline (independent volume)
         let pipeline = userScreenPlaybackRef.current[senderName];
         if (!pipeline && audioCtxRef.current.state === 'running') {
@@ -1433,33 +1455,57 @@ export function TerminalForum() {
     const maxH = serverInfo ? Math.min(res.height, serverInfo.maxScreenHeight) : res.height;
     const capFps = serverInfo ? Math.min(fps, serverInfo.maxFps) : fps;
     try {
+      // Check if native process-targeted loopback is available (Windows 10 2004+).
+      // If so, use it instead of Chromium's built-in loopback — it captures only the
+      // target app's audio (window shares) or all audio except Electron (screen shares).
+      let useNativeLoopback = false;
+      if (screenShareAudio && sourceId) {
+        try {
+          const supported = await window.electronAPI.loopbackSupported();
+          if (supported) {
+            const loopResult = await window.electronAPI.startLoopback(sourceId);
+            if (loopResult.success) {
+              useNativeLoopback = true;
+              nativeLoopbackRef.current = true;
+            } else {
+              console.warn('[ScreenShare] Native loopback failed, using Chromium fallback:', loopResult.error);
+            }
+          }
+        } catch {}
+      }
+
       if (sourceId) {
-        await window.electronAPI.setShareSource(sourceId, screenShareAudio);
+        // When using native loopback, don't request Chromium loopback audio —
+        // the native addon handles audio capture directly in the main process.
+        await window.electronAPI.setShareSource(sourceId, useNativeLoopback ? false : screenShareAudio);
       }
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: capFps, max: capFps } },
-        audio: screenShareAudio,
+        audio: useNativeLoopback ? false : screenShareAudio,
       });
       cameraStreamRef.current = stream;
-      // Send screen audio as a separate stereo stream (type 0x02)
-      const audioTrack = stream.getAudioTracks()[0];
-      if (audioTrack && audioCtxRef.current) {
-        const audioStream = new MediaStream([audioTrack]);
-        const systemSource = audioCtxRef.current.createMediaStreamSource(audioStream);
-        const screenCapture = new AudioWorkletNode(audioCtxRef.current, 'screen-capture-processor', {
-          channelCount: 2,
-          channelCountMode: 'explicit',
-        });
-        screenCapture.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-          window.electronAPI.sendScreenAudio(e.data);
-        };
-        systemSource.connect(screenCapture);
-        const silent = audioCtxRef.current.createGain();
-        silent.gain.value = 0;
-        screenCapture.connect(silent);
-        silent.connect(audioCtxRef.current.destination);
-        systemAudioSourceRef.current = systemSource;
-        screenCaptureRef.current = screenCapture;
+
+      // Chromium loopback path — used when native loopback is unavailable or failed
+      if (!useNativeLoopback) {
+        const audioTrack = stream.getAudioTracks()[0];
+        if (audioTrack && audioCtxRef.current) {
+          const audioStream = new MediaStream([audioTrack]);
+          const systemSource = audioCtxRef.current.createMediaStreamSource(audioStream);
+          const screenCapture = new AudioWorkletNode(audioCtxRef.current, 'screen-capture-processor', {
+            channelCount: 2,
+            channelCountMode: 'explicit',
+          });
+          screenCapture.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+            window.electronAPI.sendScreenAudio(e.data);
+          };
+          systemSource.connect(screenCapture);
+          const silent = audioCtxRef.current.createGain();
+          silent.gain.value = 0;
+          screenCapture.connect(silent);
+          silent.connect(audioCtxRef.current.destination);
+          systemAudioSourceRef.current = systemSource;
+          screenCaptureRef.current = screenCapture;
+        }
       }
       const videoEl = document.createElement('video');
       videoEl.srcObject = stream;
@@ -1507,6 +1553,12 @@ export function TerminalForum() {
       setIsScreenSharing(true);
       window.electronAPI.sendChat('CMD:SCREEN_ON');
     } catch (err) {
+      // Clean up native loopback if it was started but getDisplayMedia failed
+      // (e.g. user cancelled the picker dialog)
+      if (nativeLoopbackRef.current) {
+        window.electronAPI.stopLoopback();
+        nativeLoopbackRef.current = false;
+      }
       console.error('[ScreenShare] Failed:', err);
     }
   }
@@ -1534,6 +1586,10 @@ export function TerminalForum() {
     if (screenCaptureRef.current) {
       try { screenCaptureRef.current.disconnect(); } catch {}
       screenCaptureRef.current = null;
+    }
+    if (nativeLoopbackRef.current) {
+      window.electronAPI.stopLoopback();
+      nativeLoopbackRef.current = false;
     }
     if (captureTypeRef.current === 'camera') window.electronAPI.sendChat('CMD:CAMERA_OFF');
     if (captureTypeRef.current === 'screen') window.electronAPI.sendChat('CMD:SCREEN_OFF');
@@ -2913,6 +2969,7 @@ export function TerminalForum() {
                                         e.stopPropagation();
                                         watchingStreamsRef.current.add(u.name);
                                         setWatchingStreams(new Set(watchingStreamsRef.current));
+                                        window.electronAPI.sendChat(`CMD:WATCH_STREAM:${u.name}`);
                                       }}
                                       className="px-4 py-2 rounded-lg bg-green-600/30 text-green-400 hover:bg-green-600/50 transition-all text-sm font-bold flex items-center gap-2">
                                       <Play className="w-4 h-4" />
@@ -3075,6 +3132,7 @@ export function TerminalForum() {
                             <button onClick={() => {
                                 watchingStreamsRef.current.add(u.name);
                                 setWatchingStreams(new Set(watchingStreamsRef.current));
+                                window.electronAPI.sendChat(`CMD:WATCH_STREAM:${u.name}`);
                                 setViewModeTracked('voice');
                               }}
                               className="mt-2 px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 hover:bg-green-600/30 transition-all text-xs font-bold flex items-center gap-1.5">
@@ -3166,7 +3224,7 @@ export function TerminalForum() {
                         if (unwatched.length === 0) return null;
                         return (
                           <button onClick={() => {
-                              unwatched.forEach(u => watchingStreamsRef.current.add(u));
+                              unwatched.forEach(u => { watchingStreamsRef.current.add(u); window.electronAPI.sendChat(`CMD:WATCH_STREAM:${u}`); });
                               setWatchingStreams(new Set(watchingStreamsRef.current));
                               setViewModeTracked('voice');
                             }}
@@ -3839,10 +3897,10 @@ export function TerminalForum() {
                     <input type="range" min="75" max="150" step="5" value={uiScale}
                       onChange={e => setUiScale(parseInt(e.target.value))}
                       className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
-                    <div className="flex justify-between text-[10px] text-green-800 mt-1">
-                      <span>75%</span>
-                      <span>100%</span>
-                      <span>150%</span>
+                    <div className="relative text-[10px] text-green-800 mt-1 h-4">
+                      <span className="absolute left-0">75%</span>
+                      <span className="absolute" style={{ left: '33.3%', transform: 'translateX(-50%)' }}>100%</span>
+                      <span className="absolute right-0">150%</span>
                     </div>
                   </div>
                   <label className="flex items-center gap-3 cursor-pointer">
