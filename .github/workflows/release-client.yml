@@ -44,7 +44,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run build && npx electron-builder --win --x64 --publish always
 
-  build-mac:
+  build-mac-x64:
     runs-on: macos-14
     permissions:
       contents: write
@@ -72,33 +72,47 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/client-v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
 
-      - name: Build Vite
-        working-directory: VoipClient.Electron
-        run: npm run build
-
-      - name: Publish (macOS x64)
+      - name: Build & publish (macOS x64)
         working-directory: VoipClient.Electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --mac --x64 --publish always
+        run: npm run build && npx electron-builder --mac --x64 --publish always
 
-      - name: Cleanup mounted DMG volumes
+  build-mac-arm64:
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python (for native module rebuilds)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: VoipClient.Electron
+        run: npm install
+
+      - name: Sync version from tag
+        working-directory: VoipClient.Electron
         run: |
-          hdiutil info | grep '/Volumes/Echo' | awk '{print $1}' | while read dev; do
-            hdiutil detach "$dev" -force || true
-          done
-          sleep 5
-          if [ -d "/Volumes/Echo" ]; then
-            sudo rm -rf /Volumes/Echo
-          fi
+          TAG="${GITHUB_REF#refs/tags/client-v}"
+          npm version "$TAG" --no-git-tag-version --allow-same-version
 
-      - name: Publish (macOS arm64)
+      - name: Build & publish (macOS arm64)
         working-directory: VoipClient.Electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --mac --arm64 --publish always
+        run: npm run build && npx electron-builder --mac --arm64 --publish always
 
   build-linux:
     runs-on: ubuntu-latest
