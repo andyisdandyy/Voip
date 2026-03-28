@@ -714,7 +714,7 @@ npm run dist:mac     # macOS DMG (universal)
 | `release-server.yml` | `v*` | Publishes a self-contained `linux-x64` server binary |
 | `release-client.yml` | `client-v*` | Publishes Windows (x64), macOS (x64 + arm64), and Linux (x64) Electron installers |
 
-**macOS builds:** The client workflow uses two separate jobs (`build-mac-x64` and `build-mac-arm64`) that each run on their own `macos-14` VM. This avoids the `/Volumes/Echo` DMG mount collision that occurred when both arches were built sequentially in a single job, and also allows both builds to run in parallel.
+**macOS builds:** The client workflow uses two separate jobs (`build-mac-x64` and `build-mac-arm64`) that each run on their own `macos-14` VM. The `mac.target` config in `package.json` lists only the target formats (`dmg`, `zip`) without hardcoded `arch` arrays, so the architecture is controlled entirely by the CLI `--x64`/`--arm64` flags in the workflow. This ensures each job builds only its intended architecture and avoids cross-arch `hdiutil` failures when creating DMGs on Apple Silicon runners.
 
 **GitHub Release publishing:** The electron-builder `publish` config in `package.json` sets `"releaseType": "release"` so that CI publishes assets to an existing (non-draft) GitHub Release. This avoids conflicts when multiple jobs (Windows, macOS x64, macOS arm64, Linux) publish to the same tag.
 
