@@ -714,7 +714,9 @@ npm run dist:mac     # macOS DMG (universal)
 | `release-server.yml` | `v*` | Publishes a self-contained `linux-x64` server binary |
 | `release-client.yml` | `client-v*` | Publishes Windows (x64), macOS (x64 + arm64), and Linux (x64) Electron installers |
 
-**macOS DMG note:** The client workflow builds x64 and arm64 DMGs sequentially in the same job. A `Cleanup mounted DMG volumes` step (`hdiutil detach -force`) runs between the two builds to prevent the arm64 build from failing due to leftover `/Volumes/Echo` mount points from the x64 DMG creation.
+**macOS DMG note:** The client workflow builds x64 and arm64 DMGs sequentially in the same job. A `Cleanup mounted DMG volumes` step runs between the two builds: it force-detaches any mounted Echo volumes via `hdiutil detach`, waits 5 seconds for macOS to fully release the mount, then removes any stale `/Volumes/Echo` directory with `sudo rm -rf`.
+
+**GitHub Release publishing:** The electron-builder `publish` config in `package.json` sets `"releaseType": "release"` so that CI publishes assets to an existing (non-draft) GitHub Release. This avoids conflicts when multiple jobs (Windows, macOS, Linux) publish to the same tag.
 
 ---
 

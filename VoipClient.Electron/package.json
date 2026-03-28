@@ -47,7 +47,8 @@
     "publish": {
       "provider": "github",
       "owner": "andyisdandyy",
-      "repo": "Voip"
+      "repo": "Voip",
+      "releaseType": "release"
     },
     "asar": true,
     "asarUnpack": [

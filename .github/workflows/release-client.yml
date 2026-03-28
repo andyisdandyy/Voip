@@ -88,6 +88,10 @@ jobs:
           hdiutil info | grep '/Volumes/Echo' | awk '{print $1}' | while read dev; do
             hdiutil detach "$dev" -force || true
           done
+          sleep 5
+          if [ -d "/Volumes/Echo" ]; then
+            sudo rm -rf /Volumes/Echo
+          fi
 
       - name: Publish (macOS arm64)
         working-directory: VoipClient.Electron
