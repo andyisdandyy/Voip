@@ -977,7 +977,8 @@ export function TerminalForum() {
         // report a private/local IP via LocalEndPoint that is unreachable.
         const voiceHost = connectedHostRef.current || d.VoiceHost || '';
         const udpPort = d.UdpPort || 5000;
-        if (voiceHost && udpPort && !currentVoiceRoomRef.current) {
+        // Only auto-start UDP if no voice session is active on ANY server
+        if (voiceHost && udpPort && !currentVoiceRoomRef.current && !voiceServerIdRef.current) {
           console.log(`[Voice] Connecting UDP to ${voiceHost}:${udpPort} (server said: ${d.VoiceHost})`);
           window.electronAPI.startVoice(voiceHost, udpPort, nicknameRef.current, connectedServerIdRef.current || '').catch(err => {
             console.error('[Voice] Auto-start failed:', err);
@@ -2250,11 +2251,23 @@ export function TerminalForum() {
       const cached = serverStatesRef.current[server.id];
       if (cached) restoreServerSnapshot(cached);
       else resetServerState();
+      connectedServerIdRef.current = server.id;
       setConnectedServerId(server.id);
       setIsConnected(true);
       setShowHome(false);
       setStatus('Connected');
       addToOpenTabs(server.id);
+      // Restore E2EE key for this server and re-decrypt cached messages
+      if (cached?.e2eeActive) {
+        try {
+          const stored = JSON.parse(localStorage.getItem('voip-e2ee-keys') || '{}');
+          const passphrase = stored[server.id];
+          if (passphrase) activateE2ee(passphrase);
+          else { e2eeKeyRef.current = null; setE2eeActive(false); }
+        } catch { e2eeKeyRef.current = null; setE2eeActive(false); }
+      } else {
+        e2eeKeyRef.current = null;
+      }
       return;
     }
     // Connect to a new server (keep other connections alive)
@@ -2272,6 +2285,9 @@ export function TerminalForum() {
       setNickname(server.username);
       nicknameRef.current = server.username;
       connectedHostRef.current = host;
+      // Set ref BEFORE await so incoming messages are recognized as active server
+      const prevServerId = connectedServerIdRef.current;
+      connectedServerIdRef.current = server.id;
       try {
         await window.electronAPI.connectChat(server.id, host, port, server.username, server.password, false, server.serverPassword);
         setServerIp(host);
@@ -2283,6 +2299,7 @@ export function TerminalForum() {
         addToOpenTabs(server.id);
         setConnectedServerIds(prev => new Set(prev).add(server.id));
       } catch (err: any) {
+        connectedServerIdRef.current = prevServerId;
         const msg = err?.message || '';
         if (msg.includes('SERVER_PASSWORD_REQUIRED') || msg.includes('SERVER_PASSWORD_FAIL')) {
           setServerPasswordDialog({ address: server.address, username: server.username, password: server.password, isRegister: false, serverId: server.id });
@@ -2310,6 +2327,9 @@ export function TerminalForum() {
     setConnecting(true);
     setStatus(isRegister ? 'Registering...' : 'Logging in...');
     const { host, port } = parseAddress(server.address);
+    // Set ref BEFORE await so incoming messages are recognized as active server
+    const prevServerId = connectedServerIdRef.current;
+    connectedServerIdRef.current = loginDialog;
     try {
       nicknameRef.current = nickname;
       connectedHostRef.current = host;
@@ -2327,6 +2347,7 @@ export function TerminalForum() {
       addToOpenTabs(loginDialog);
       setConnectedServerIds(prev => new Set(prev).add(loginDialog));
     } catch (err: any) {
+      connectedServerIdRef.current = prevServerId;
       const msg = err?.message || '';
       if (msg.includes('SERVER_PASSWORD_REQUIRED') || msg.includes('SERVER_PASSWORD_FAIL')) {
        setLoginDialog(null);
@@ -2392,9 +2413,37 @@ export function TerminalForum() {
 
   // ── Room actions ──────────────────────────────────────────
 
-  const joinVoice = (room: VoiceRoom) => {
+  // Leave voice on another server and switch UDP to the current one
+  const ensureVoiceOnCurrentServer = async () => {
+    const oldVoiceSid = voiceServerIdRef.current;
+    const targetSid = connectedServerIdRef.current;
+    if (oldVoiceSid && oldVoiceSid !== targetSid) {
+      // Stop camera/screen capture if active
+      stopVideoCapture();
+      cleanupVideo();
+      // Leave voice on the old server
+      window.electronAPI.sendChat(oldVoiceSid, 'CMD:LEAVE_VOICE');
+      window.electronAPI.stopVoice();
+      setVoiceServerId(null);
+      // Update old server's cached snapshot to reflect leaving voice
+      const oldSnap = serverStatesRef.current[oldVoiceSid];
+      if (oldSnap) oldSnap.currentVoiceRoom = null;
+      // Start UDP voice for the new server
+      if (serverInfo) {
+        const voiceHost = connectedHostRef.current || serverInfo.voiceHost;
+        try {
+          await window.electronAPI.startVoice(voiceHost, serverInfo.udpPort, nicknameRef.current, targetSid || '');
+        } catch (err) {
+          console.error('[Voice] Failed to start UDP for new server:', err);
+        }
+      }
+    }
+  };
+
+  const joinVoice = async (room: VoiceRoom) => {
     setViewModeTracked('voice');
-    if (room.name === currentVoiceRoom) return;
+    if (room.name === currentVoiceRoom && voiceServerIdRef.current === connectedServerIdRef.current) return;
+    await ensureVoiceOnCurrentServer();
     if (room.hasPassword) { setPwDialog({ room: room.name, type: 'voice' }); setPwInput(''); }
     else sendToServer(`CMD:JOIN_VOICE:${room.name}`);
   };
@@ -2406,8 +2455,9 @@ export function TerminalForum() {
     else sendToServer(`CMD:JOIN_TEXT:${room.name}`);
   };
 
-  const handlePwSubmit = () => {
+  const handlePwSubmit = async () => {
     if (!pwDialog || !pwInput) return;
+    if (pwDialog.type === 'voice') await ensureVoiceOnCurrentServer();
     const cmd = pwDialog.type === 'voice' ? 'JOIN_VOICE' : 'JOIN_TEXT';
     sendToServer(`CMD:${cmd}:${pwDialog.room}:${pwInput}`);
     setPwDialog(null);
@@ -2816,13 +2866,17 @@ export function TerminalForum() {
                 e.preventDefault();
                 if (!serverPasswordInput.trim()) return;
                 const { host, port } = parseAddress(serverPasswordDialog.address);
+                const spServerId = serverPasswordDialog.serverId || crypto.randomUUID();
                 setConnecting(true);
                 setStatus('Connecting with server password...');
+                // Set ref BEFORE await so incoming messages are recognized as active server
+                const prevServerId = connectedServerIdRef.current;
+                connectedServerIdRef.current = spServerId;
                 try {
                   nicknameRef.current = serverPasswordDialog.username;
                   connectedHostRef.current = host;
                   await window.electronAPI.connectChat(
-                    serverPasswordDialog.serverId || crypto.randomUUID(),
+                    spServerId,
                     host, port,
                     serverPasswordDialog.username, serverPasswordDialog.password,
                     serverPasswordDialog.isRegister, serverPasswordInput
@@ -2838,13 +2892,14 @@ export function TerminalForum() {
                   setServerIp(host);
                   setTcpPort(String(port));
                   setNickname(serverPasswordDialog.username);
-                  setConnectedServerId(serverPasswordDialog.serverId || null);
+                  setConnectedServerId(spServerId);
                   setIsConnected(true);
                   setStatus('Connected');
                   setShowHome(false);
                   setServerPasswordDialog(null);
                   if (serverPasswordDialog.serverId) addToOpenTabs(serverPasswordDialog.serverId);
                 } catch (err: any) {
+                  connectedServerIdRef.current = prevServerId;
                   const msg = err?.message || '';
                   if (msg.includes('SERVER_PASSWORD_FAIL')) {
                     setStatus('Forkert server-adgangskode — prøv igen');

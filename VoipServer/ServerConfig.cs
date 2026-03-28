@@ -100,8 +100,13 @@ public class ServerConfig
             ServerConfig config;
             if (!File.Exists(path))
             {
+                Console.WriteLine($"No config found at {path}, creating default...");
                 config = CreateDefault();
-                try { File.WriteAllText(path, JsonSerializer.Serialize(config, _writeOpts)); }
+                try
+                {
+                    File.WriteAllText(path, JsonSerializer.Serialize(config, _writeOpts));
+                    Console.WriteLine($"Default config written to {path}");
+                }
                 catch (Exception ex) { Console.WriteLine($"WARNING: Could not write default {path}: {ex.Message}"); }
             }
             else
@@ -112,8 +117,9 @@ public class ServerConfig
             config._loadedPath = path;
             return config;
         }
-        catch
+        catch (Exception ex)
         {
+            Console.WriteLine($"WARNING: Failed to load config from {path}: {ex.Message}");
             var config = CreateDefault();
             config._loadedPath = path;
             return config;

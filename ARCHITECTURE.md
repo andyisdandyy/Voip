@@ -241,7 +241,13 @@ text chat, see online users, and view voice room occupancy across all connected 
 by switching tabs—**no reconnection required**.
 
 - **Voice constraint**: only **one** voice chat session is active at a time. Joining
-  voice on Server B while in voice on Server A first leaves voice on A.
+  voice on Server B while in voice on Server A automatically sends `CMD:LEAVE_VOICE`
+  to A, stops camera/screen capture, tears down the old UDP session, starts a new UDP
+  session for B, and then sends `CMD:JOIN_VOICE` to B. The helper
+  `ensureVoiceOnCurrentServer()` centralises this logic and is called by both
+  `joinVoice()` and the password-protected room submit handler. The `SERVER_INFO`
+  auto-start UDP is also guarded by `!voiceServerIdRef.current` so that connecting to
+  a new server does not steal the UDP connection from an active voice session.
 - **Per-server state**: rooms, users, messages, roles, emojis, and E2EE keys are
   independent per connection. The renderer caches background server state in a ref and
   saves/restores it when switching tabs.
@@ -262,7 +268,12 @@ accent bottom border.
 
 - **Switching**: clicking another tab saves the current server's state snapshot and
   restores the target server's cached state. The TCP connection stays alive in the
-  background—no disconnect/reconnect cycle.
+  background—no disconnect/reconnect cycle. `connectedServerIdRef` is updated
+  **synchronously** (not deferred to `useEffect`) before any async IPC call so that
+  incoming server messages are never mis-routed as background traffic. When restoring
+  a server that had E2EE active, the client reloads the per-server passphrase from
+  `localStorage` (`voip-e2ee-keys`), re-derives the `CryptoKey`, and calls
+  `reDecryptMessages()` to decrypt any cached ciphertext.
 - **Closing**: each tab has an **×** close button (visible on hover) that removes the
   tab from the bar; if it is the active connection the client disconnects that server's
   TCP. Closing a tab does **not** remove the server from the pinned-servers list on the
@@ -616,6 +627,7 @@ Server → Client:
 ## Configuration Files
 
 ### `server-config.json`
+Created automatically with defaults on first run if missing. The server logs the path and outcome to stdout.
 ```jsonc
 {
   "ServerName": "Echo Server",
