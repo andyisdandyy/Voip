@@ -9,9 +9,12 @@ class CaptureProcessor extends AudioWorkletProcessor {
     const input = inputs[0];
     if (!input || !input[0]) return true;
 
-    const data = input[0];
-    for (let i = 0; i < data.length; i++) {
-      this.buffer[this.pos++] = data[i];
+    const left = input[0];
+    const right = input[1] || left;
+
+    for (let i = 0; i < left.length; i++) {
+      this.buffer[this.pos] = (left[i] + right[i]) * 0.5;
+      this.pos++;
       if (this.pos >= 960) {
         const int16 = new Int16Array(960);
         for (let j = 0; j < 960; j++) {

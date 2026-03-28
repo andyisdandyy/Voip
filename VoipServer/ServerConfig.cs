@@ -9,7 +9,7 @@ using System.Text.Json.Serialization;
 public class ServerConfig
 {
     // ── Server identity ─────────────────────────────────────
-    public string ServerName { get; set; } = "Voip Server";
+    public string ServerName { get; set; } = "Echo Server";
     public string? ServerPassword { get; set; }
 
     /// <summary>Server logo as a base64 data-URI (e.g. "data:image/png;base64,..."). Max ~64 KB.</summary>
@@ -41,6 +41,14 @@ public class ServerConfig
     /// When null or 0, the value of <see cref="UdpPort"/> is advertised instead.
     /// </summary>
     public int? PublicUdpPort { get; set; }
+
+    /// <summary>
+    /// HTTP port for the SSE notification endpoint.
+    /// Clients subscribe to real-time mention events via <c>GET /events?token=…</c>.
+    /// Defaults to <see cref="TcpPort"/> + 2 (e.g. 5003 when TcpPort is 5001).
+    /// Set to 0 to disable the SSE notification server.
+    /// </summary>
+    public int SsePort { get; set; } = 0;
 
     /// <summary>
     /// When true, TCP listens only on 127.0.0.1 (for use behind NGINX/reverse proxy).

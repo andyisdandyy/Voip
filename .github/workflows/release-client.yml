@@ -85,7 +85,7 @@ jobs:
 
       - name: Cleanup mounted DMG volumes
         run: |
-          hdiutil info | grep '/Volumes/Voip' | awk '{print $1}' | while read dev; do
+          hdiutil info | grep '/Volumes/Echo' | awk '{print $1}' | while read dev; do
             hdiutil detach "$dev" -force || true
           done
 

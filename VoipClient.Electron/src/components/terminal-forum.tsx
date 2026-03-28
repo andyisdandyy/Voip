@@ -17,8 +17,8 @@ interface ChatMsg   { id: string; msgId: string; sender: string; body: string; t
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean; screenMuted: boolean; screenVolume: number }
-interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string }
-interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string }
+interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string; authToken?: string; ssePort?: number }
+interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string; ssePort?: number }
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
@@ -40,7 +40,48 @@ function getVideoBitrate(width: number, height: number, fps: number): number {
   return Math.round(base * (fps / 30));
 }
 
-type ThemeColor = 'green' | 'blue' | 'red' | 'purple' | 'mono';
+type ThemeColor = 'green' | 'blue' | 'red' | 'purple' | 'cyan' | 'dusk' | 'mono' | 'light' | 'custom';
+
+interface CustomThemeColors { accent: string; bg: string; surface: string; text: string }
+const DEFAULT_CUSTOM_THEME: CustomThemeColors = { accent: '#3b82f6', bg: '#1a1a1a', surface: '#242424', text: '#e0e0e0' };
+
+function hexToHsl(hex: string): [number, number, number] {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (max === g) h = ((b - r) / d + 2) / 6;
+    else h = ((r - g) / d + 4) / 6;
+  }
+  return [h * 360, s * 100, l * 100];
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  s /= 100; l /= 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const toHex = (v: number) => Math.round(v * 255).toString(16).padStart(2, '0');
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+}
+
+function generateScale(hex: string): Record<string, string> {
+  const [h, s] = hexToHsl(hex);
+  const lightnesses = { '50': 96, '100': 90, '200': 80, '300': 70, '400': 58, '500': 48, '600': 40, '700': 32, '800': 25, '900': 18, '950': 10 };
+  const result: Record<string, string> = {};
+  for (const [key, l] of Object.entries(lightnesses)) result[key] = hslToHex(h, s, l);
+  return result;
+}
+
+function hexToRgb(hex: string): string {
+  return `${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}`;
+}
 
 function parseAddress(addr: string): { host: string; port: number } {
   const trimmed = addr.trim();
@@ -88,9 +129,12 @@ export function TerminalForum() {
   const [connecting, setConnecting]   = useState(false);
   const [serverInfo, setServerInfo]   = useState<ServerInfo | null>(null);
   const [connectedServerId, setConnectedServerId] = useState<string | null>(null);
+  const [voiceServerId, setVoiceServerId] = useState<string | null>(null);
   const [parkedVoiceServerId, setParkedVoiceServerId] = useState<string | null>(null);
   const [connectingToServerId, setConnectingToServerId] = useState<string | null>(null);
   const [showHome, setShowHome] = useState(false);
+  // Multi-server: set of server IDs with active TCP connections
+  const [connectedServerIds, setConnectedServerIds] = useState<Set<string>>(new Set());
 
   // Rooms (from server)
   const [voiceRooms, setVoiceRooms]       = useState<VoiceRoom[]>([]);
@@ -177,6 +221,10 @@ export function TerminalForum() {
     try { return (localStorage.getItem('voip-theme') as ThemeColor) || 'mono'; }
     catch { return 'mono'; }
   });
+  const [customTheme, setCustomTheme] = useState<CustomThemeColors>(() => {
+    try { return { ...DEFAULT_CUSTOM_THEME, ...JSON.parse(localStorage.getItem('voip-custom-theme') || '{}') }; }
+    catch { return DEFAULT_CUSTOM_THEME; }
+  });
   const [pinnedServers, setPinnedServers] = useState<PinnedServer[]>(() => {
     try {
       const raw = JSON.parse(localStorage.getItem('voip-pinned-servers') || '[]');
@@ -184,6 +232,7 @@ export function TerminalForum() {
         id: s.id, name: s.name,
         address: s.address || `${s.host || '127.0.0.1'}:${s.port || s.tcpPort || '5001'}`,
         username: s.username, password: s.password, serverPassword: s.serverPassword,
+        autoConnect: s.autoConnect, logo: s.logo, authToken: s.authToken, ssePort: s.ssePort,
       }));
     } catch { return []; }
   });
@@ -201,6 +250,13 @@ export function TerminalForum() {
   const [serverMentions, setServerMentions] = useState<Record<string, number>>({});
   const [updateReady, setUpdateReady] = useState<string | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
+  const [openTabs, setOpenTabs] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('voip-open-tabs') || '[]'); }
+    catch { return []; }
+  });
+  const [dragTabId, setDragTabId] = useState<string | null>(null);
+  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -251,6 +307,68 @@ export function TerminalForum() {
   const notificationVolumeRef = useRef(50);
   const prevVoiceUsersRef = useRef<Set<string>>(new Set());
   const uiSoundCtxRef = useRef<AudioContext | null>(null);
+  const voiceServerIdRef = useRef<string | null>(null);
+
+  // ── Multi-server state cache ──────────────────────────────
+  // Stores per-server state snapshots for background servers.
+  // The currently active (viewed) server's state is in the
+  // individual useState hooks above. When switching tabs, we
+  // save the current state into this ref and restore the new
+  // server's cached state.
+  interface ServerStateSnapshot {
+    nickname: string; serverIp: string; tcpPort: string;
+    serverInfo: ServerInfo | null; voiceRooms: VoiceRoom[]; textRooms: TextRoom[];
+    joinedTextRooms: Set<string>; currentTextRoom: string | null; currentVoiceRoom: string | null;
+    roomMessages: Record<string, ChatMsg[]>; pinnedMessages: Record<string, ChatMsg[]>;
+    onlineUsers: UserInfo[]; serverRoles: RoleInfo[];
+    cameraUsers: Set<string>; screenUsers: Set<string>;
+    soundboardSounds: string[]; customEmojis: Record<string, string>; e2eeActive: boolean;
+  }
+  const serverStatesRef = useRef<Record<string, ServerStateSnapshot>>({});
+
+  function takeServerSnapshot(): ServerStateSnapshot {
+    return {
+      nickname, serverIp, tcpPort, serverInfo, voiceRooms, textRooms,
+      joinedTextRooms: joinedTextRooms, currentTextRoom: currentTextRoom, currentVoiceRoom: currentVoiceRoom,
+      roomMessages, pinnedMessages, onlineUsers, serverRoles,
+      cameraUsers, screenUsers, soundboardSounds, customEmojis, e2eeActive: e2eeActive,
+    };
+  }
+
+  function restoreServerSnapshot(snap: ServerStateSnapshot) {
+    setNickname(snap.nickname); setServerIp(snap.serverIp); setTcpPort(snap.tcpPort);
+    setServerInfo(snap.serverInfo); setVoiceRooms(snap.voiceRooms); setTextRooms(snap.textRooms);
+    setJoinedText(snap.joinedTextRooms); setCurrentText(snap.currentTextRoom);
+    setCurrentVoice(snap.currentVoiceRoom);
+    setRoomMessages(snap.roomMessages); setPinnedMessages(snap.pinnedMessages);
+    setOnlineUsers(snap.onlineUsers); setServerRoles(snap.serverRoles);
+    setCameraUsers(snap.cameraUsers); setScreenUsers(snap.screenUsers);
+    setSoundboardSounds(snap.soundboardSounds); setCustomEmojis(snap.customEmojis);
+    setE2eeActive(snap.e2eeActive);
+  }
+
+  function resetServerState() {
+    setServerInfo(null); setVoiceRooms([]); setTextRooms([]);
+    setJoinedText(new Set()); setCurrentText(null); setCurrentVoice(null);
+    setRoomMessages({}); setPinnedMessages({}); setShowPins(false);
+    setOnlineUsers([]); setServerRoles([]);
+    setCameraUsers(new Set()); setScreenUsers(new Set());
+    setSoundboardSounds([]); setCustomEmojis({});
+    setE2eeActive(false); setE2eePrompt(false); e2eeKeyRef.current = null;
+    setSelectedVideoFeed(null);
+  }
+
+  // Helper: send a message to the currently viewed server
+  const sendToServer = useCallback((message: string) => {
+    const sid = connectedServerIdRef.current;
+    if (sid) window.electronAPI.sendChat(sid, message);
+  }, []);
+
+  // Helper: send a message to the server that owns the voice session
+  const sendToVoice = useCallback((message: string) => {
+    const sid = voiceServerIdRef.current;
+    if (sid) window.electronAPI.sendChat(sid, message);
+  }, []);
 
   // Settings
   const [showSettings, setShowSettings] = useState(false);
@@ -399,7 +517,7 @@ export function TerminalForum() {
   async function activateE2ee(passphrase: string) {
     const key = await deriveE2eeKey(passphrase);
     e2eeKeyRef.current = key;
-    window.electronAPI.setEncryptionKey(passphrase);
+    window.electronAPI.setEncryptionKey(connectedServerIdRef.current || '', passphrase);
     setE2eeActive(true);
     // Save per-server so we don't prompt again
     if (connectedServerIdRef.current) {
@@ -627,8 +745,8 @@ export function TerminalForum() {
   }
 
   // Play sound on mute/deafen toggle
-  useEffect(() => { isMutedRef.current = isMuted; if (isConnected) { playUiSound(isMuted ? 'mute' : 'unmute'); window.electronAPI.sendChat(`CMD:SET_MUTED:${isMuted}`); } }, [isMuted]);
-  useEffect(() => { isDeafenedRef.current = isDeafened; if (isConnected) { playUiSound(isDeafened ? 'deafen' : 'undeafen'); window.electronAPI.sendChat(`CMD:SET_DEAFENED:${isDeafened}`); } }, [isDeafened]);
+  useEffect(() => { isMutedRef.current = isMuted; if (isConnected) { playUiSound(isMuted ? 'mute' : 'unmute'); sendToVoice(`CMD:SET_MUTED:${isMuted}`); } }, [isMuted]);
+  useEffect(() => { isDeafenedRef.current = isDeafened; if (isConnected) { playUiSound(isDeafened ? 'deafen' : 'undeafen'); sendToVoice(`CMD:SET_DEAFENED:${isDeafened}`); } }, [isDeafened]);
   useEffect(() => { soundboardMutedRef.current = soundboardMuted; }, [soundboardMuted]);
   useEffect(() => { soundboardVolumeRef.current = soundboardVolume; if (soundboardGainRef.current) soundboardGainRef.current.gain.value = soundboardVolume / 100; try { localStorage.setItem('voip-soundboard-volume', String(soundboardVolume)); } catch {} }, [soundboardVolume]);
   useEffect(() => { echoCancellationRef.current = echoCancellation; try { localStorage.setItem('voip-echo-cancellation', String(echoCancellation)); } catch {} }, [echoCancellation]);
@@ -637,12 +755,29 @@ export function TerminalForum() {
   useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
   useEffect(() => { connectedServerIdRef.current = connectedServerId; }, [connectedServerId]);
   useEffect(() => { currentVoiceRoomRef.current = currentVoiceRoom; }, [currentVoiceRoom]);
+  useEffect(() => { voiceServerIdRef.current = voiceServerId; }, [voiceServerId]);
   useEffect(() => { try { localStorage.setItem('voip-theme', theme); } catch {} }, [theme]);
+  useEffect(() => {
+    try { localStorage.setItem('voip-custom-theme', JSON.stringify(customTheme)); } catch {}
+    const el = document.documentElement;
+    if (theme === 'custom') {
+      const scale = generateScale(customTheme.accent);
+      for (const [k, v] of Object.entries(scale)) el.style.setProperty(`--custom-green-${k}`, v);
+      el.style.setProperty('--custom-bg', customTheme.bg);
+      el.style.setProperty('--custom-surface', customTheme.surface);
+      el.style.setProperty('--custom-text', customTheme.text);
+      el.style.setProperty('--custom-accent-rgb', hexToRgb(customTheme.accent));
+    } else {
+      ['bg', 'surface', 'text', 'accent-rgb'].forEach(k => el.style.removeProperty(`--custom-${k}`));
+      ['50','100','200','300','400','500','600','700','800','900','950'].forEach(k => el.style.removeProperty(`--custom-green-${k}`));
+    }
+  }, [theme, customTheme]);
   useEffect(() => {
     try { localStorage.setItem('voip-ui-scale', String(uiScale)); } catch {}
     document.documentElement.style.fontSize = `${uiScale}%`;
   }, [uiScale]);
   useEffect(() => { window.electronAPI.getPlatform().then(p => setPlatform(p)); }, []);
+  useEffect(() => { window.electronAPI.getAppVersion().then(v => setAppVersion(v)); }, []);
 
   // Auto-updater listener
   useEffect(() => {
@@ -653,6 +788,7 @@ export function TerminalForum() {
     return unsub;
   }, []);
   useEffect(() => { try { localStorage.setItem('voip-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
+  useEffect(() => { try { localStorage.setItem('voip-open-tabs', JSON.stringify(openTabs)); } catch {} }, [openTabs]);
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
     perUserSettingsRef.current = perUserSettings;
@@ -737,7 +873,53 @@ export function TerminalForum() {
 
   // ── Server message handler ────────────────────────────────
 
-  const handleServerMessage = useCallback((line: string) => {
+  const handleServerMessage = useCallback((serverId: string, line: string) => {
+    // If the message is from a background server, cache it
+    if (serverId !== connectedServerIdRef.current) {
+      const snap = serverStatesRef.current[serverId];
+      if (snap) {
+        // Apply minimal state updates to the cached snapshot
+        if (line.startsWith('ROOMS:')) {
+          try {
+            const d = JSON.parse(line.substring(6));
+            snap.voiceRooms = (d.VoiceRooms || []).map((r: any) => ({ name: r.Name, hasPassword: r.HasPassword, bitrate: r.Bitrate || 0 }));
+            snap.textRooms = (d.TextRooms || []).map((r: any) => ({ name: r.Name, hasPassword: r.HasPassword }));
+          } catch {}
+        } else if (line.startsWith('USERS:')) {
+          try {
+            const d = JSON.parse(line.substring(6));
+            snap.onlineUsers = d.map((u: any) => ({ name: u.Name, voiceRoom: u.VoiceRoom || null, online: u.Online !== false, status: (u.Status || (u.Online !== false ? 'online' : 'offline')) as 'online' | 'away' | 'offline', roles: u.Roles || [], roleColor: u.RoleColor || null, avatar: u.Avatar || null, muted: !!u.Muted, deafened: !!u.Deafened }));
+          } catch {}
+        } else if (line.startsWith('MSG:')) {
+          const payload = line.substring(4);
+          const i1 = payload.indexOf(':');
+          if (i1 >= 0) {
+            const room = payload.substring(0, i1);
+            const rest1 = payload.substring(i1 + 1);
+            const i2 = rest1.indexOf(':');
+            if (i2 >= 0) {
+              const msgId = rest1.substring(0, i2);
+              const rest2 = rest1.substring(i2 + 1);
+              const i3 = rest2.indexOf(':');
+              if (i3 >= 0) {
+                const sender = rest2.substring(0, i3);
+                const text = rest2.substring(i3 + 1);
+                snap.roomMessages = { ...snap.roomMessages, [room]: [...(snap.roomMessages[room] || []), { id: crypto.randomUUID(), msgId, sender, body: text, timestamp: Date.now() }] };
+              }
+            }
+          }
+        } else if (line.startsWith('JOINED_VOICE:')) {
+          const payload = line.substring(13);
+          const [room] = payload.split(':', 2);
+          snap.currentVoiceRoom = room;
+        } else if (line === 'LEFT_VOICE') {
+          snap.currentVoiceRoom = null;
+        }
+      }
+      return;
+    }
+
+    // Active server — process normally
     if (line.startsWith('SERVER_INFO:')) {
       try {
         const d = JSON.parse(line.substring(12));
@@ -756,13 +938,14 @@ export function TerminalForum() {
           maxSoundSizeKB: d.MaxSoundSizeKB || 512,
           defaultBitrate: d.DefaultBitrate || 96000,
           giphyApiKey: d.GiphyApiKey || undefined,
+          ssePort: d.SsePort || undefined,
         });
 
-        // Update the pinned server's name and logo from the server's identity
+        // Update the pinned server's name, logo, and SSE port from the server's identity
         const sid = connectedServerIdRef.current;
         if (sid && d.ServerName) {
           setPinnedServers(prev => prev.map(s =>
-            s.id === sid ? { ...s, name: d.ServerName, logo: d.ServerLogo || undefined } : s
+            s.id === sid ? { ...s, name: d.ServerName, logo: d.ServerLogo || undefined, ssePort: d.SsePort || undefined } : s
           ));
         }
 
@@ -796,7 +979,7 @@ export function TerminalForum() {
         const udpPort = d.UdpPort || 5000;
         if (voiceHost && udpPort && !currentVoiceRoomRef.current) {
           console.log(`[Voice] Connecting UDP to ${voiceHost}:${udpPort} (server said: ${d.VoiceHost})`);
-          window.electronAPI.startVoice(voiceHost, udpPort, nicknameRef.current).catch(err => {
+          window.electronAPI.startVoice(voiceHost, udpPort, nicknameRef.current, connectedServerIdRef.current || '').catch(err => {
             console.error('[Voice] Auto-start failed:', err);
           });
         }
@@ -830,6 +1013,14 @@ export function TerminalForum() {
         const d = JSON.parse(line.substring(6));
         setServerRoles(d.map((r: any) => ({ name: r.Name, color: r.Color, priority: r.Priority, permissions: r.Permissions || [] })));
       } catch {}
+    } else if (line.startsWith('AUTH_TOKEN:')) {
+      const token = line.substring(11);
+      const sid = connectedServerIdRef.current;
+      if (sid && token) {
+        setPinnedServers(prev => prev.map(s =>
+          s.id === sid ? { ...s, authToken: token } : s
+        ));
+      }
     } else if (line === 'KICKED') {
       setStatus('You were kicked from the server');
       setIsConnected(false);
@@ -853,11 +1044,13 @@ export function TerminalForum() {
       const payload = line.substring(13);
       const [room, br] = payload.split(':', 2);
       setCurrentVoice(room);
+      setVoiceServerId(serverId);
       if (br) { const b = parseInt(br); if (!isNaN(b)) window.electronAPI.setBitrate(b); }
       playUiSound('joinSelf');
     } else if (line === 'LEFT_VOICE') {
       playUiSound('leaveSelf');
       setCurrentVoice(null);
+      if (voiceServerIdRef.current === serverId) setVoiceServerId(null);
     } else if (line.startsWith('HISTORY:')) {
       const payload = line.substring(8);
       const idx = payload.indexOf(':');
@@ -976,7 +1169,7 @@ export function TerminalForum() {
       delete gotKeyframeRef.current[user];
       if (watchingStreamsRef.current.has(user)) {
         watchingStreamsRef.current.delete(user);
-        window.electronAPI.sendChat(`CMD:UNWATCH_STREAM:${user}`);
+        sendToVoice(`CMD:UNWATCH_STREAM:${user}`);
       }
       setWatchingStreams(new Set(watchingStreamsRef.current));
       window.electronAPI.closePopout(user);
@@ -995,7 +1188,7 @@ export function TerminalForum() {
       delete gotKeyframeRef.current[user];
       if (watchingStreamsRef.current.has(user)) {
         watchingStreamsRef.current.delete(user);
-        window.electronAPI.sendChat(`CMD:UNWATCH_STREAM:${user}`);
+        sendToVoice(`CMD:UNWATCH_STREAM:${user}`);
       }
       setWatchingStreams(new Set(watchingStreamsRef.current));
       // Clean up screen audio playback pipeline for this user
@@ -1011,6 +1204,15 @@ export function TerminalForum() {
         const room = line.substring(8, i1);
         const sender = line.substring(i1 + 1, i2);
         new Notification(`@${sender} i #${room}`, { body: line.substring(i2 + 1).substring(0, 100) });
+      }
+    } else if (line.startsWith('DM:')) {
+      // DM:<fromUser>:<text> — incoming direct message notification
+      const i1 = line.indexOf(':', 3);
+      if (i1 >= 0) {
+        const fromUser = line.substring(3, i1);
+        const text = line.substring(i1 + 1);
+        new Notification(`DM from ${fromUser}`, { body: text.substring(0, 100) });
+        playUiSound('message');
       }
     } else if (line === 'REQUEST_KEYFRAME') {
       forceKeyframeRef.current = true;
@@ -1085,12 +1287,22 @@ export function TerminalForum() {
   useEffect(() => {
     const unsubs = [
       window.electronAPI.onChatMessage(handleServerMessage),
-      window.electronAPI.onChatError((msg) => { setStatus(`Error: ${msg}`); setIsConnected(false); setConnectedServerId(null); }),
-      window.electronAPI.onChatDisconnected(() => {
+      window.electronAPI.onChatError((serverId, msg) => {
+        if (serverId === connectedServerIdRef.current) {
+          setStatus(`Error: ${msg}`);
+          setIsConnected(false);
+          setConnectedServerId(null);
+        }
+        setConnectedServerIds(prev => { const s = new Set(prev); s.delete(serverId); return s; });
+      }),
+      window.electronAPI.onChatDisconnected((serverId) => {
+        setConnectedServerIds(prev => { const s = new Set(prev); s.delete(serverId); return s; });
+        delete serverStatesRef.current[serverId];
+        if (serverId !== connectedServerIdRef.current) return;
         setIsConnected(false);
         setConnectedServerId(null);
         setParkedVoiceServerId(null);
-        setCurrentVoice(null);
+        if (voiceServerIdRef.current === serverId) { setVoiceServerId(null); setCurrentVoice(null); }
         setCurrentText(null);
         setJoinedText(new Set());
         setRoomMessages({});
@@ -1105,7 +1317,7 @@ export function TerminalForum() {
         setE2eeActive(false);
         setE2eePrompt(false);
         e2eeKeyRef.current = null;
-        window.electronAPI.setEncryptionKey(null);
+        window.electronAPI.setEncryptionKey(serverId, null);
         setCameraUsers(new Set());
         setScreenUsers(new Set());
         stopAudio();
@@ -1226,28 +1438,30 @@ export function TerminalForum() {
     const unsub = window.electronAPI.onMention((serverId, room, sender, text) => {
       setServerMentions(prev => ({ ...prev, [serverId]: (prev[serverId] || 0) + 1 }));
       const server = pinnedServers.find(s => s.id === serverId);
-      const title = server ? server.name : 'Voip';
-      new Notification(`${title} — @${sender} i #${room}`, { body: text.substring(0, 100) });
+      const title = server ? server.name : 'Echo';
+      new Notification(`${title} — @${sender} i #${room}`, {
+        body: text.substring(0, 100),
+        icon: server?.logo || undefined,
+      });
     });
     return unsub;
   }, [pinnedServers]);
 
   useEffect(() => {
     for (const server of pinnedServers) {
-      // Never autoconnect to the server we're fully connected to, actively connecting to,
-      // or have a parked voice connection on — same username would kick us
-      if ((isConnected && server.id === connectedServerId) || server.id === parkedVoiceServerId || server.id === connectingToServerId) {
+      // Never autoconnect to servers with an active TCP connection — same username would kick us
+      if (connectedServerIds.has(server.id) || server.id === connectingToServerId) {
         window.electronAPI.stopAutoConnect(server.id);
         continue;
       }
-      if (server.autoConnect && server.username && server.password) {
-        const { host, port } = parseAddress(server.address);
-        window.electronAPI.startAutoConnect(server.id, host, port, server.username, server.password, server.serverPassword);
+      if (server.autoConnect && server.authToken && server.ssePort) {
+        const { host } = parseAddress(server.address);
+        window.electronAPI.startAutoConnect(server.id, host, server.ssePort, server.authToken);
       } else {
         window.electronAPI.stopAutoConnect(server.id);
       }
     }
-  }, [pinnedServers, isConnected, connectedServerId, parkedVoiceServerId, connectingToServerId]);
+  }, [pinnedServers, connectedServerIds, connectingToServerId]);
 
   // ── Audio lifecycle (tied to currentVoiceRoom) ────────────
 
@@ -1438,7 +1652,7 @@ export function TerminalForum() {
       }, Math.round(1000 / capFps));
       captureTypeRef.current = 'camera';
       setIsCameraOn(true);
-      window.electronAPI.sendChat('CMD:CAMERA_ON');
+      sendToVoice('CMD:CAMERA_ON');
     } catch (err) {
       console.error('[Camera] Failed:', err);
     }
@@ -1551,7 +1765,7 @@ export function TerminalForum() {
       stream.getVideoTracks()[0]?.addEventListener('ended', () => stopVideoCapture());
       captureTypeRef.current = 'screen';
       setIsScreenSharing(true);
-      window.electronAPI.sendChat('CMD:SCREEN_ON');
+      sendToVoice('CMD:SCREEN_ON');
     } catch (err) {
       // Clean up native loopback if it was started but getDisplayMedia failed
       // (e.g. user cancelled the picker dialog)
@@ -1591,8 +1805,8 @@ export function TerminalForum() {
       window.electronAPI.stopLoopback();
       nativeLoopbackRef.current = false;
     }
-    if (captureTypeRef.current === 'camera') window.electronAPI.sendChat('CMD:CAMERA_OFF');
-    if (captureTypeRef.current === 'screen') window.electronAPI.sendChat('CMD:SCREEN_OFF');
+    if (captureTypeRef.current === 'camera') sendToVoice('CMD:CAMERA_OFF');
+    if (captureTypeRef.current === 'screen') sendToVoice('CMD:SCREEN_OFF');
     captureTypeRef.current = 'none';
     setIsCameraOn(false);
     setIsScreenSharing(false);
@@ -1679,12 +1893,12 @@ export function TerminalForum() {
   function saveAvatar() {
     if (!avatarEditor) return;
     const base64 = exportAvatar(avatarEditor);
-    window.electronAPI.sendChat(`CMD:SET_AVATAR:${base64}`);
+    sendToServer(`CMD:SET_AVATAR:${base64}`);
     setAvatarEditor(null);
   }
 
   function removeAvatar() {
-    window.electronAPI.sendChat('CMD:REMOVE_AVATAR');
+    sendToServer('CMD:REMOVE_AVATAR');
   }
 
   function openLogoPicker() {
@@ -1736,7 +1950,7 @@ export function TerminalForum() {
   function saveEmoji() {
     if (!emojiEditor) return;
     const base64 = exportEmoji(emojiEditor);
-    window.electronAPI.sendChat(`CMD:UPLOAD_EMOJI:${emojiEditor.name}:${base64}`);
+    sendToServer(`CMD:UPLOAD_EMOJI:${emojiEditor.name}:${base64}`);
     const nameInput = document.getElementById('srv-emoji-name') as HTMLInputElement;
     if (nameInput) nameInput.value = '';
     setEmojiEditor(null);
@@ -1760,7 +1974,7 @@ export function TerminalForum() {
   function saveLogo() {
     if (!logoEditor) return;
     const dataUri = exportLogo(logoEditor);
-    window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: dataUri })}`);
+    sendToServer(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: dataUri })}`);
     setLogoEditor(null);
   }
 
@@ -1822,7 +2036,7 @@ export function TerminalForum() {
   function sendGif(url: string) {
     if (!currentTextRoom) return;
     const text = `__GIF__:${url}`;
-    window.electronAPI.sendChat(`MSG:${currentTextRoom}:${text}`);
+    sendToServer(`MSG:${currentTextRoom}:${text}`);
     setShowGifPicker(false);
     setGifQuery('');
     setGifResults([]);
@@ -2016,57 +2230,58 @@ export function TerminalForum() {
 
   // ── Pinned Server Functions ───────────────────────────────
 
+  const addToOpenTabs = (serverId: string) => {
+    setOpenTabs(prev => prev.includes(serverId) ? prev : [...prev, serverId]);
+  };
+
   const connectToPinnedServer = async (server: PinnedServer) => {
     // If clicking the currently connected server, go back to chat
     if (isConnected && connectedServerId === server.id) {
       setShowHome(false);
       return;
     }
-    // If connected to another server, disconnect (preserve voice if active)
-    if (isConnected) {
-      if (currentVoiceRoom) {
-        // Soft disconnect: reset chat state but keep voice alive.
-        // connectChat in main.js will park the old TCP socket.
-        setConnectingToServerId(server.id);
-        setParkedVoiceServerId(connectedServerId);
-        stopVideoCapture();
-        cleanupVideo();
-        setIsConnected(false);
-        setConnectedServerId(null);
-        setShowHome(false);
-        setCurrentText(null);
-        setJoinedText(new Set());
-        setRoomMessages({});
-        setPinnedMessages({});
-        setShowPins(false);
-        setOnlineUsers([]);
-        setVoiceRooms([]);
-        setTextRooms([]);
-        setStatus('Disconnected');
-        setSelectedVideoFeed(null);
-        setServerInfo(null);
-        setServerRoles([]);
-      } else {
-        disconnect();
+    // If this server is already connected in the background, switch to it
+    if (connectedServerIds.has(server.id) && server.id !== connectedServerId) {
+      // Save current server's state
+      if (connectedServerId) {
+        serverStatesRef.current[connectedServerId] = takeServerSnapshot();
       }
+      // Restore target server's state
+      const cached = serverStatesRef.current[server.id];
+      if (cached) restoreServerSnapshot(cached);
+      else resetServerState();
+      setConnectedServerId(server.id);
+      setIsConnected(true);
+      setShowHome(false);
+      setStatus('Connected');
+      addToOpenTabs(server.id);
+      return;
+    }
+    // Connect to a new server (keep other connections alive)
+    if (isConnected && connectedServerId) {
+      // Save current server's state before switching view
+      serverStatesRef.current[connectedServerId] = takeServerSnapshot();
+      resetServerState();
     }
     if (server.username && server.password) {
       const { host, port } = parseAddress(server.address);
-      // Stop background autoconnect while fully connected
       window.electronAPI.stopAutoConnect(server.id);
       setConnecting(true);
+      setConnectingToServerId(server.id);
       setStatus('Connecting...');
       setNickname(server.username);
       nicknameRef.current = server.username;
       connectedHostRef.current = host;
       try {
-        await window.electronAPI.connectChat(host, port, server.username, server.password, false, server.serverPassword);
+        await window.electronAPI.connectChat(server.id, host, port, server.username, server.password, false, server.serverPassword);
         setServerIp(host);
         setTcpPort(String(port));
         setConnectedServerId(server.id);
         setIsConnected(true);
         setStatus('Connected');
         setShowHome(false);
+        addToOpenTabs(server.id);
+        setConnectedServerIds(prev => new Set(prev).add(server.id));
       } catch (err: any) {
         const msg = err?.message || '';
         if (msg.includes('SERVER_PASSWORD_REQUIRED') || msg.includes('SERVER_PASSWORD_FAIL')) {
@@ -2098,7 +2313,7 @@ export function TerminalForum() {
     try {
       nicknameRef.current = nickname;
       connectedHostRef.current = host;
-      await window.electronAPI.connectChat(host, port, nickname, password, isRegister, server.serverPassword);
+      await window.electronAPI.connectChat(loginDialog, host, port, nickname, password, isRegister, server.serverPassword);
       setPinnedServers(prev => prev.map(s =>
         s.id === loginDialog ? { ...s, username: nickname, password } : s
       ));
@@ -2109,6 +2324,8 @@ export function TerminalForum() {
       setStatus('Connected');
       setShowHome(false);
       setLoginDialog(null);
+      addToOpenTabs(loginDialog);
+      setConnectedServerIds(prev => new Set(prev).add(loginDialog));
     } catch (err: any) {
       const msg = err?.message || '';
       if (msg.includes('SERVER_PASSWORD_REQUIRED') || msg.includes('SERVER_PASSWORD_FAIL')) {
@@ -2138,6 +2355,7 @@ export function TerminalForum() {
 
   const unpinServer = (serverId: string) => {
     setPinnedServers(prev => prev.filter(s => s.id !== serverId));
+    setOpenTabs(prev => prev.filter(id => id !== serverId));
     setServerContextMenu(null);
   };
 
@@ -2162,12 +2380,12 @@ export function TerminalForum() {
     if (!currentTextRoom) return;
     if (!input.trim() && !pendingFile) return;
     if (pendingFile) {
-      window.electronAPI.sendChat(`FILE:${currentTextRoom}:${pendingFile.name}:${pendingFile.mimeType}:${pendingFile.base64}`);
+      sendToServer(`FILE:${currentTextRoom}:${pendingFile.name}:${pendingFile.mimeType}:${pendingFile.base64}`);
       setPendingFile(null);
     }
     if (input.trim()) {
       const body = await e2eeEncryptText(input);
-      window.electronAPI.sendChat(`MSG:${currentTextRoom}:${body}`);
+      sendToServer(`MSG:${currentTextRoom}:${body}`);
       setInput('');
     }
   };
@@ -2178,20 +2396,20 @@ export function TerminalForum() {
     setViewModeTracked('voice');
     if (room.name === currentVoiceRoom) return;
     if (room.hasPassword) { setPwDialog({ room: room.name, type: 'voice' }); setPwInput(''); }
-    else window.electronAPI.sendChat(`CMD:JOIN_VOICE:${room.name}`);
+    else sendToServer(`CMD:JOIN_VOICE:${room.name}`);
   };
 
   const joinText = (room: TextRoom) => {
     setViewModeTracked('text');
     if (joinedTextRooms.has(room.name)) { setCurrentText(room.name); return; }
     if (room.hasPassword) { setPwDialog({ room: room.name, type: 'text' }); setPwInput(''); }
-    else window.electronAPI.sendChat(`CMD:JOIN_TEXT:${room.name}`);
+    else sendToServer(`CMD:JOIN_TEXT:${room.name}`);
   };
 
   const handlePwSubmit = () => {
     if (!pwDialog || !pwInput) return;
     const cmd = pwDialog.type === 'voice' ? 'JOIN_VOICE' : 'JOIN_TEXT';
-    window.electronAPI.sendChat(`CMD:${cmd}:${pwDialog.room}:${pwInput}`);
+    sendToServer(`CMD:${cmd}:${pwDialog.room}:${pwInput}`);
     setPwDialog(null);
     setPwInput('');
   };
@@ -2201,12 +2419,20 @@ export function TerminalForum() {
     setMouseActive(true);
     if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current);
     setIsCallFullscreen(false);
-    window.electronAPI.sendChat('CMD:LEAVE_VOICE');
+    sendToVoice('CMD:LEAVE_VOICE');
   };
 
   const disconnect = () => {
-    window.electronAPI.stopVoice();
-    window.electronAPI.disconnectChat();
+    const sid = connectedServerId;
+    if (voiceServerId === sid) {
+      window.electronAPI.stopVoice();
+      setVoiceServerId(null);
+    }
+    if (sid) {
+      window.electronAPI.disconnectChat(sid);
+      setConnectedServerIds(prev => { const s = new Set(prev); s.delete(sid); return s; });
+      delete serverStatesRef.current[sid];
+    }
     setIsConnected(false);
     setConnectedServerId(null);
     setShowHome(false);
@@ -2251,7 +2477,7 @@ export function TerminalForum() {
               <div className="w-[70px]" />
               <div className="flex-1 flex items-center justify-center">
                 <Terminal className="w-4 h-4 shrink-0 mr-2" />
-                <span className="text-xs font-bold">VOIP</span>
+                <span className="text-xs font-bold">ECHO</span>
               </div>
               <div className="w-[70px]" />
             </>
@@ -2259,7 +2485,7 @@ export function TerminalForum() {
             <>
               <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
                 <Terminal className="w-4 h-4 shrink-0" />
-                <span className="text-xs font-bold">VOIP</span>
+                <span className="text-xs font-bold">ECHO</span>
               </div>
               <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
                 <button onClick={() => window.electronAPI.minimizeWindow()}
@@ -2279,14 +2505,84 @@ export function TerminalForum() {
                 )}
         </div>
 
+        {/* ── Server Tab Bar ──────────────────────────────────── */}
+        {openTabs.length > 0 && (
+        <div className="flex items-center bg-[#0d120d]/80 border-b border-green-900/30 px-2 gap-0.5 overflow-x-auto shrink-0 scrollbar-none">
+          {openTabs.map(tabId => {
+            const server = pinnedServers.find(s => s.id === tabId);
+            if (!server) return null;
+            const isActiveTab = isConnected && connectedServerId === server.id;
+            const mentions = (!isActiveTab && serverMentions[server.id]) || 0;
+            return (
+              <div key={server.id}
+                draggable
+                onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragTabId(server.id); }}
+                onDragOver={(e) => { e.preventDefault(); setDragOverTabId(server.id); }}
+                onDragLeave={() => { if (dragOverTabId === server.id) setDragOverTabId(null); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragTabId && dragTabId !== server.id) {
+                    setOpenTabs(prev => {
+                      const next = prev.filter(id => id !== dragTabId);
+                      const idx = next.indexOf(server.id);
+                      next.splice(idx, 0, dragTabId!);
+                      return next;
+                    });
+                  }
+                  setDragTabId(null);
+                  setDragOverTabId(null);
+                }}
+                onDragEnd={() => { setDragTabId(null); setDragOverTabId(null); }}
+                onClick={() => {
+                  setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; });
+                  connectToPinnedServer(server);
+                }}
+                onContextMenu={(e) => { e.preventDefault(); setServerContextMenu({ serverId: server.id, x: e.clientX, y: e.clientY }); }}
+                className={`group flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-xs transition-all shrink-0 max-w-[200px] border-b-2 select-none ${
+                  dragOverTabId === server.id && dragTabId !== server.id
+                    ? 'bg-green-900/30 border-green-400'
+                    : isActiveTab
+                      ? 'bg-[#0a0e0a] text-green-400 border-green-500'
+                      : 'text-green-700 hover:text-green-500 hover:bg-green-900/20 border-transparent'
+                } ${dragTabId === server.id ? 'opacity-50' : ''} ${connecting ? 'pointer-events-none opacity-60' : 'cursor-pointer'}`}>
+                <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold overflow-hidden shrink-0"
+                  style={{ backgroundColor: server.logo ? 'transparent' : getServerColor(server.name) + '60' }}>
+                  {server.logo ? (
+                    <img src={server.logo} alt="" className="w-full h-full object-cover rounded" draggable={false} />
+                  ) : (
+                    <span className="text-white">{server.name.charAt(0).toUpperCase()}</span>
+                  )}
+                </div>
+                <span className="truncate">{isActiveTab && serverInfo ? serverInfo.serverName : server.name}</span>
+                {mentions > 0 && (
+                  <span className="w-4 h-4 bg-red-500 rounded-full flex items-center justify-center text-[9px] text-white font-bold shrink-0 animate-pulse">
+                    {mentions > 9 ? '9+' : mentions}
+                  </span>
+                )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (isActiveTab) disconnect();
+                    setOpenTabs(prev => prev.filter(id => id !== server.id));
+                  }}
+                  className="p-0.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/30 opacity-0 group-hover:opacity-100 transition-all shrink-0 ml-auto"
+                  title="Close tab">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        )}
+
         {/* ── Connect Screen Content ── */}
         <div className="flex-1 flex items-center justify-center overflow-y-auto">
           <div className="w-full max-w-2xl px-8 py-12">
             {/* Header */}
             <div className="text-center mb-12">
               <Terminal className="w-12 h-12 mx-auto mb-4 text-green-500" />
-              <h1 className="text-3xl font-bold text-green-400 mb-1">VOIP</h1>
-              <p className="text-xs text-green-700">v1.0.0 — Secure VoIP</p>
+              <h1 className="text-3xl font-bold text-green-400 mb-1">ECHO</h1>
+              <p className="text-xs text-green-700">{appVersion ? `v${appVersion}` : ''} — Secure VoIP</p>
             </div>
 
             {/* Pinned Servers */}
@@ -2315,7 +2611,7 @@ export function TerminalForum() {
                           {mentions > 9 ? '9+' : mentions}
                         </div>
                       )}
-                      {server.autoConnect && server.username && (
+                      {server.autoConnect && server.authToken && (
                         <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Autoconnect active">
                           <Wifi className="w-2 h-2 text-white" />
                         </div>
@@ -2526,11 +2822,13 @@ export function TerminalForum() {
                   nicknameRef.current = serverPasswordDialog.username;
                   connectedHostRef.current = host;
                   await window.electronAPI.connectChat(
+                    serverPasswordDialog.serverId || crypto.randomUUID(),
                     host, port,
                     serverPasswordDialog.username, serverPasswordDialog.password,
                     serverPasswordDialog.isRegister, serverPasswordInput
                   );
                   if (serverPasswordDialog.serverId) {
+                    setConnectedServerIds(prev => new Set(prev).add(serverPasswordDialog!.serverId!));
                     setPinnedServers(prev => prev.map(s =>
                       s.id === serverPasswordDialog!.serverId
                         ? { ...s, username: serverPasswordDialog!.username, password: serverPasswordDialog!.password, serverPassword: serverPasswordInput }
@@ -2545,6 +2843,7 @@ export function TerminalForum() {
                   setStatus('Connected');
                   setShowHome(false);
                   setServerPasswordDialog(null);
+                  if (serverPasswordDialog.serverId) addToOpenTabs(serverPasswordDialog.serverId);
                 } catch (err: any) {
                   const msg = err?.message || '';
                   if (msg.includes('SERVER_PASSWORD_FAIL')) {
@@ -2594,7 +2893,7 @@ export function TerminalForum() {
            <div className="w-[70px]" />
            <div className="flex-1 flex items-center justify-center min-w-0">
              <Terminal className="w-4 h-4 shrink-0 mr-2" />
-             <span className="text-xs font-bold truncate">VOIP</span>
+             <span className="text-xs font-bold truncate">ECHO</span>
                 <span className="text-xs text-green-700 truncate ml-1">— {nickname}</span>
                </div>
                <button onClick={() => setShowHome(true)}
@@ -2613,7 +2912,7 @@ export function TerminalForum() {
          <>
            <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
              <Terminal className="w-4 h-4 shrink-0" />
-             <span className="text-xs font-bold truncate">VOIP</span>
+             <span className="text-xs font-bold truncate">ECHO</span>
               <span className="text-xs text-green-700 truncate">— {nickname}</span>
              </div>
              <button onClick={() => setShowHome(true)}
@@ -2644,6 +2943,77 @@ export function TerminalForum() {
          </>
        )}
      </div>
+
+     {/* ── Server Tab Bar ──────────────────────────────────── */}
+     {openTabs.length > 0 && (
+     <div className={`flex items-center bg-[#0d120d]/80 border-b border-green-900/30 px-2 gap-0.5 overflow-x-auto shrink-0 scrollbar-none ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}>
+       {openTabs.map(tabId => {
+         const server = pinnedServers.find(s => s.id === tabId);
+         if (!server) return null;
+         const isActiveTab = connectedServerId === server.id;
+         const mentions = (!isActiveTab && serverMentions[server.id]) || 0;
+         return (
+           <div key={server.id}
+             draggable
+             onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragTabId(server.id); }}
+             onDragOver={(e) => { e.preventDefault(); setDragOverTabId(server.id); }}
+             onDragLeave={() => { if (dragOverTabId === server.id) setDragOverTabId(null); }}
+             onDrop={(e) => {
+               e.preventDefault();
+               if (dragTabId && dragTabId !== server.id) {
+                 setOpenTabs(prev => {
+                   const next = prev.filter(id => id !== dragTabId);
+                   const idx = next.indexOf(server.id);
+                   next.splice(idx, 0, dragTabId!);
+                   return next;
+                 });
+               }
+               setDragTabId(null);
+               setDragOverTabId(null);
+             }}
+             onDragEnd={() => { setDragTabId(null); setDragOverTabId(null); }}
+             onClick={() => {
+               if (isActiveTab) return;
+               setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; });
+               connectToPinnedServer(server);
+             }}
+             onContextMenu={(e) => { e.preventDefault(); setServerContextMenu({ serverId: server.id, x: e.clientX, y: e.clientY }); }}
+             className={`group flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-xs transition-all shrink-0 max-w-[200px] border-b-2 select-none ${
+               dragOverTabId === server.id && dragTabId !== server.id
+                 ? 'bg-green-900/30 border-green-400'
+                 : isActiveTab
+                   ? 'bg-[#0a0e0a] text-green-400 border-green-500'
+                   : 'text-green-700 hover:text-green-500 hover:bg-green-900/20 border-transparent'
+             } ${dragTabId === server.id ? 'opacity-50' : ''} ${connecting ? 'pointer-events-none opacity-60' : 'cursor-pointer'}`}>
+             <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold overflow-hidden shrink-0"
+               style={{ backgroundColor: server.logo ? 'transparent' : getServerColor(server.name) + '60' }}>
+               {server.logo ? (
+                 <img src={server.logo} alt="" className="w-full h-full object-cover rounded" draggable={false} />
+               ) : (
+                 <span className="text-white">{server.name.charAt(0).toUpperCase()}</span>
+               )}
+             </div>
+             <span className="truncate">{isActiveTab && serverInfo ? serverInfo.serverName : server.name}</span>
+             {mentions > 0 && (
+               <span className="w-4 h-4 bg-red-500 rounded-full flex items-center justify-center text-[9px] text-white font-bold shrink-0 animate-pulse">
+                 {mentions > 9 ? '9+' : mentions}
+               </span>
+             )}
+             <button
+               onClick={(e) => {
+                 e.stopPropagation();
+                 if (isActiveTab) disconnect();
+                 setOpenTabs(prev => prev.filter(id => id !== server.id));
+               }}
+               className="p-0.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/30 opacity-0 group-hover:opacity-100 transition-all shrink-0 ml-auto"
+               title="Close tab">
+               <X className="w-3 h-3" />
+             </button>
+           </div>
+         );
+       })}
+     </div>
+     )}
 
      {/* ── Main content wrapper with padding ──────────────── */}
      <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? '' : 'p-4 gap-4'}`}>
@@ -2684,19 +3054,19 @@ export function TerminalForum() {
                   {(hasPermission('reorder_rooms') || hasPermission('delete_rooms')) && (
                     <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
                       {hasPermission('reorder_rooms') && idx > 0 && (
-                        <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; window.electronAPI.sendChat(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
+                        <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; sendToServer(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
                           className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move up">
                           <ChevronUp className="w-3 h-3" />
                         </button>
                       )}
                       {hasPermission('reorder_rooms') && idx < textRooms.length - 1 && (
-                        <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx], names[idx + 1]] = [names[idx + 1], names[idx]]; window.electronAPI.sendChat(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
+                        <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx], names[idx + 1]] = [names[idx + 1], names[idx]]; sendToServer(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
                           className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move down">
                           <ChevronDown className="w-3 h-3" />
                         </button>
                       )}
                       {hasPermission('delete_rooms') && (
-                        <button onClick={() => { if (confirm(`Delete text channel "${r.name}"?`)) window.electronAPI.sendChat(`CMD:DELETE_TEXT_ROOM:${r.name}`); }}
+                        <button onClick={() => { if (confirm(`Delete text channel "${r.name}"?`)) sendToServer(`CMD:DELETE_TEXT_ROOM:${r.name}`); }}
                           className="p-0.5 text-green-800 hover:text-red-400 transition-colors" title="Delete channel">
                           <Trash2 className="w-3 h-3" />
                         </button>
@@ -2738,19 +3108,19 @@ export function TerminalForum() {
                       {(hasPermission('reorder_rooms') || hasPermission('delete_rooms')) && (
                         <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
                           {hasPermission('reorder_rooms') && idx > 0 && (
-                            <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; window.electronAPI.sendChat(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
+                            <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; sendToServer(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
                               className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move up">
                               <ChevronUp className="w-3 h-3" />
                             </button>
                           )}
                           {hasPermission('reorder_rooms') && idx < voiceRooms.length - 1 && (
-                            <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx], names[idx + 1]] = [names[idx + 1], names[idx]]; window.electronAPI.sendChat(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
+                            <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx], names[idx + 1]] = [names[idx + 1], names[idx]]; sendToServer(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
                               className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move down">
                               <ChevronDown className="w-3 h-3" />
                             </button>
                           )}
                           {hasPermission('delete_rooms') && (
-                            <button onClick={() => { if (confirm(`Delete voice channel "${r.name}"?`)) window.electronAPI.sendChat(`CMD:DELETE_VOICE_ROOM:${r.name}`); }}
+                            <button onClick={() => { if (confirm(`Delete voice channel "${r.name}"?`)) sendToServer(`CMD:DELETE_VOICE_ROOM:${r.name}`); }}
                               className="p-0.5 text-green-800 hover:text-red-400 transition-colors" title="Delete channel">
                               <Trash2 className="w-3 h-3" />
                             </button>
@@ -2815,7 +3185,7 @@ export function TerminalForum() {
                         if (soundboardSourceRef.current) { try { soundboardSourceRef.current.stop(); } catch {} soundboardSourceRef.current = null; soundboardGainRef.current = null; }
                         setPlayingSound(null);
                       } else {
-                        window.electronAPI.sendChat(`CMD:PLAY_SOUND:${name}`);
+                        sendToVoice(`CMD:PLAY_SOUND:${name}`);
                       }
                     }}
                     className={`text-left px-2.5 py-1.5 rounded text-xs transition-all truncate flex items-center gap-1.5 ${
@@ -2872,7 +3242,7 @@ export function TerminalForum() {
               <button onClick={() => {
                   const next = !isAway;
                   setIsAway(next);
-                  window.electronAPI.sendChat(`CMD:SET_STATUS:${next ? 'away' : 'online'}`);
+                  sendToServer(`CMD:SET_STATUS:${next ? 'away' : 'online'}`);
                 }}
                 className={`p-2 rounded-lg transition-all ${isAway ? 'bg-yellow-900/40 text-yellow-500 hover:bg-yellow-900/60' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40'}`}
                 title={isAway ? 'Set Online' : 'Set Away'}>
@@ -2969,7 +3339,7 @@ export function TerminalForum() {
                                         e.stopPropagation();
                                         watchingStreamsRef.current.add(u.name);
                                         setWatchingStreams(new Set(watchingStreamsRef.current));
-                                        window.electronAPI.sendChat(`CMD:WATCH_STREAM:${u.name}`);
+                                        sendToVoice(`CMD:WATCH_STREAM:${u.name}`);
                                       }}
                                       className="px-4 py-2 rounded-lg bg-green-600/30 text-green-400 hover:bg-green-600/50 transition-all text-sm font-bold flex items-center gap-2">
                                       <Play className="w-4 h-4" />
@@ -3132,7 +3502,7 @@ export function TerminalForum() {
                             <button onClick={() => {
                                 watchingStreamsRef.current.add(u.name);
                                 setWatchingStreams(new Set(watchingStreamsRef.current));
-                                window.electronAPI.sendChat(`CMD:WATCH_STREAM:${u.name}`);
+                                sendToVoice(`CMD:WATCH_STREAM:${u.name}`);
                                 setViewModeTracked('voice');
                               }}
                               className="mt-2 px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 hover:bg-green-600/30 transition-all text-xs font-bold flex items-center gap-1.5">
@@ -3224,7 +3594,7 @@ export function TerminalForum() {
                         if (unwatched.length === 0) return null;
                         return (
                           <button onClick={() => {
-                              unwatched.forEach(u => { watchingStreamsRef.current.add(u); window.electronAPI.sendChat(`CMD:WATCH_STREAM:${u}`); });
+                              unwatched.forEach(u => { watchingStreamsRef.current.add(u); sendToVoice(`CMD:WATCH_STREAM:${u}`); });
                               setWatchingStreams(new Set(watchingStreamsRef.current));
                               setViewModeTracked('voice');
                             }}
@@ -3282,7 +3652,7 @@ export function TerminalForum() {
                                 <div className="flex items-center gap-2">
                                   <span className="text-[10px] text-green-800">{dateStr} {timeStr}</span>
                                   {hasPermission('pin_messages') && (
-                                    <button onClick={() => window.electronAPI.sendChat(`CMD:UNPIN_MSG:${currentTextRoom}:${msg.msgId}`)}
+                                    <button onClick={() => sendToServer(`CMD:UNPIN_MSG:${currentTextRoom}:${msg.msgId}`)}
                                       className="opacity-0 group-hover/pin:opacity-100 p-0.5 text-green-800 hover:text-red-400 transition-all" title="Unpin">
                                       <X className="w-3 h-3" />
                                     </button>
@@ -3597,8 +3967,9 @@ export function TerminalForum() {
           <div className="p-3">
             {onlineUsersList.map(u => (
               <div key={u.name}
-                className="px-4 py-2.5 flex items-center gap-3 hover:bg-green-900/20 rounded-lg transition-all mb-2"
-                onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}>
+                className="px-4 py-2.5 flex items-center gap-3 hover:bg-green-900/20 rounded-lg transition-all mb-2 cursor-pointer"
+                onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}
+                onDoubleClick={() => { if (u.name !== nickname) window.electronAPI.openDm(u.name, connectedServerId || ''); }}>
                 <UserAvatar name={u.name} size="md" />
                 <div className="flex-1 min-w-0">
                   <span className="text-sm truncate block" style={{ color: u.roleColor || '#22c55e' }}>{u.name}</span>
@@ -3620,8 +3991,9 @@ export function TerminalForum() {
               <div className="p-3">
                 {awayUsersList.map(u => (
                   <div key={u.name}
-                    className="px-4 py-2.5 flex items-center gap-3 hover:bg-green-900/20 rounded-lg transition-all mb-2 opacity-70"
-                    onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}>
+                    className="px-4 py-2.5 flex items-center gap-3 hover:bg-green-900/20 rounded-lg transition-all mb-2 opacity-70 cursor-pointer"
+                    onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}
+                    onDoubleClick={() => { if (u.name !== nickname) window.electronAPI.openDm(u.name, connectedServerId || ''); }}>
                     <UserAvatar name={u.name} size="md" />
                     <div className="flex-1 min-w-0">
                       <span className="text-sm truncate block" style={{ color: u.roleColor || '#22c55e' }}>{u.name}</span>
@@ -3886,9 +4258,37 @@ export function TerminalForum() {
                       <option value="blue">Blue</option>
                       <option value="red">Red</option>
                       <option value="purple">Purple</option>
+                      <option value="cyan">Cyan</option>
+                      <option value="dusk">Dusk</option>
                       <option value="mono">Mono (Black/White)</option>
+                      <option value="light">Light</option>
+                      <option value="custom">Custom</option>
                     </select>
                   </div>
+                  {theme === 'custom' && (
+                    <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
+                      {([
+                        ['accent', 'Accent Color'],
+                        ['bg', 'Background'],
+                        ['surface', 'Surface / Panels'],
+                        ['text', 'Text Color'],
+                      ] as [keyof CustomThemeColors, string][]).map(([key, label]) => (
+                        <div key={key} className="flex items-center gap-3">
+                          <input type="color" value={customTheme[key]}
+                            onChange={e => setCustomTheme(prev => ({ ...prev, [key]: e.target.value }))}
+                            className="w-8 h-8 rounded cursor-pointer border border-green-900/50 bg-transparent [&::-webkit-color-swatch-wrapper]:p-0.5 [&::-webkit-color-swatch]:rounded" />
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs text-green-600">{label}</span>
+                            <span className="text-[10px] text-green-800 ml-2 font-mono">{customTheme[key]}</span>
+                          </div>
+                        </div>
+                      ))}
+                      <button onClick={() => setCustomTheme(DEFAULT_CUSTOM_THEME)}
+                        className="text-[10px] text-green-700 hover:text-green-500 transition-colors">
+                        Reset to defaults
+                      </button>
+                    </div>
+                  )}
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <label className="text-xs text-green-600">UI Scale</label>
@@ -4022,7 +4422,7 @@ export function TerminalForum() {
             MaxFileSizeKB: getNum('MaxFileSizeKB', serverInfo.maxFileSizeKB),
             MaxSoundSizeKB: getNum('MaxSoundSizeKB', serverInfo.maxSoundSizeKB),
           };
-          window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify(config)}`);
+          sendToServer(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify(config)}`);
           setShowServerSettings(false);
         };
         const allTabs: { id: typeof serverSettingsTab; label: string; icon: React.ReactNode; perm?: string }[] = [
@@ -4097,7 +4497,7 @@ export function TerminalForum() {
                                 Upload Logo
                               </button>
                               {serverInfo.serverLogo && (
-                                <button onClick={() => window.electronAPI.sendChat(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: '' })}`)}
+                                <button onClick={() => sendToServer(`CMD:UPDATE_SERVER_CONFIG:${JSON.stringify({ ServerLogo: '' })}`)}
                                   className="px-3 py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded-lg text-xs transition-all font-bold">
                                   Remove
                                 </button>
@@ -4189,7 +4589,7 @@ export function TerminalForum() {
                                   <span className="text-[10px] text-green-800">Priority: {role.priority}</span>
                                 </div>
                                 {!isProtected && (
-                                  <button onClick={() => { if (confirm(`Delete role "${role.name}"? Users with this role will lose it.`)) window.electronAPI.sendChat(`CMD:DELETE_ROLE:${role.name}`); }}
+                                  <button onClick={() => { if (confirm(`Delete role "${role.name}"? Users with this role will lose it.`)) sendToServer(`CMD:DELETE_ROLE:${role.name}`); }}
                                     className="p-1.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/20 transition-all" title="Delete role">
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
@@ -4258,7 +4658,7 @@ export function TerminalForum() {
                             const priority = parseInt((document.getElementById('new-role-priority') as HTMLInputElement)?.value) || 10;
                             const perms = ALL_PERMS.filter(p => (document.getElementById(`new-role-perm-${p}`) as HTMLInputElement)?.checked);
                             if (!name) return;
-                            window.electronAPI.sendChat(`CMD:CREATE_ROLE:${name}:${color}:${priority}:${perms.join(',')}`);
+                            sendToServer(`CMD:CREATE_ROLE:${name}:${color}:${priority}:${perms.join(',')}`);
                             (document.getElementById('new-role-name') as HTMLInputElement).value = '';
                             ALL_PERMS.forEach(p => { const el = document.getElementById(`new-role-perm-${p}`) as HTMLInputElement; if (el) el.checked = false; });
                           }}
@@ -4287,8 +4687,8 @@ export function TerminalForum() {
                                   <button key={role.name}
                                     disabled={isProtected}
                                     onClick={() => {
-                                      if (has) window.electronAPI.sendChat(`CMD:REMOVE_ROLE:${u.name}:${role.name}`);
-                                      else window.electronAPI.sendChat(`CMD:ASSIGN_ROLE:${u.name}:${role.name}`);
+                                      if (has) sendToServer(`CMD:REMOVE_ROLE:${u.name}:${role.name}`);
+                                      else sendToServer(`CMD:ASSIGN_ROLE:${u.name}:${role.name}`);
                                     }}
                                     className={`text-[10px] px-2 py-0.5 rounded-full transition-all ${
                                       isProtected
@@ -4328,11 +4728,11 @@ export function TerminalForum() {
                                 <span className="text-sm text-green-500">{name}</span>
                               </div>
                               <div className="flex items-center gap-1">
-                                <button onClick={() => window.electronAPI.sendChat(`CMD:PLAY_SOUND:${name}`)}
+                                <button onClick={() => sendToVoice(`CMD:PLAY_SOUND:${name}`)}
                                   className="p-1.5 rounded text-green-700 hover:text-green-400 hover:bg-green-900/30 transition-all" title="Preview">
                                   <Play className="w-3.5 h-3.5" />
                                 </button>
-                                <button onClick={() => { if (confirm(`Delete sound "${name}"?`)) window.electronAPI.sendChat(`CMD:DELETE_SOUND:${name}`); }}
+                                <button onClick={() => { if (confirm(`Delete sound "${name}"?`)) sendToServer(`CMD:DELETE_SOUND:${name}`); }}
                                   className="p-1.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/20 transition-all" title="Delete">
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -4372,7 +4772,7 @@ export function TerminalForum() {
                             reader.onload = () => {
                               const b64 = (reader.result as string).split(',')[1];
                               if (!b64) return;
-                              window.electronAPI.sendChat(`CMD:UPLOAD_SOUND:${name}:${b64}`);
+                              sendToServer(`CMD:UPLOAD_SOUND:${name}:${b64}`);
                               (document.getElementById('srv-sound-name') as HTMLInputElement).value = '';
                               fileInput.value = '';
                             };
@@ -4402,7 +4802,7 @@ export function TerminalForum() {
                                 <img src={`data:image/png;base64,${data}`} className="w-8 h-8 object-contain" alt={name} />
                                 <span className="text-sm text-green-500">:{name}:</span>
                               </div>
-                              <button onClick={() => { if (confirm(`Delete emoji ":${name}:"?`)) window.electronAPI.sendChat(`CMD:DELETE_EMOJI:${name}`); }}
+                              <button onClick={() => { if (confirm(`Delete emoji ":${name}:"?`)) sendToServer(`CMD:DELETE_EMOJI:${name}`); }}
                                 className="p-1.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/20 transition-all" title="Delete">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -4466,6 +4866,12 @@ export function TerminalForum() {
             </div>
             {!isSelf && (
               <>
+                <button
+                  onClick={(e) => { e.stopPropagation(); window.electronAPI.openDm(userContextMenu.userId, connectedServerId || ''); setUserContextMenu(null); }}
+                  className="w-full px-4 py-2.5 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all flex items-center gap-2 mb-2">
+                  <Send className="w-4 h-4" />
+                  <span className="text-sm">Direct Message</span>
+                </button>
                 <div className="mb-3">
                   <div className="flex items-center gap-2 mb-2">
                     <Volume2 className="w-4 h-4 text-green-500" />
@@ -4532,7 +4938,7 @@ export function TerminalForum() {
                       onClick={(e) => {
                         e.stopPropagation();
                         const cmd = has ? 'REMOVE_ROLE' : 'ASSIGN_ROLE';
-                        window.electronAPI.sendChat(`CMD:${cmd}:${userContextMenu.userId}:${role.name}`);
+                        sendToServer(`CMD:${cmd}:${userContextMenu.userId}:${role.name}`);
                       }}
                       className={`w-full px-3 py-1.5 rounded text-xs flex items-center gap-2 mb-1 transition-all ${
                         has ? 'bg-green-900/30 text-green-400' : 'text-green-700 hover:bg-green-900/20'
@@ -4548,7 +4954,7 @@ export function TerminalForum() {
             {/* Kick for admins */}
             {hasPermission('kick_users') && !isSelf && (
               <button
-                onClick={(e) => { e.stopPropagation(); window.electronAPI.sendChat(`CMD:KICK_USER:${userContextMenu.userId}`); setUserContextMenu(null); }}
+                onClick={(e) => { e.stopPropagation(); sendToServer(`CMD:KICK_USER:${userContextMenu.userId}`); setUserContextMenu(null); }}
                 className="w-full px-4 py-2 rounded-lg bg-red-900/20 text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 mb-2">
                 <PhoneOff className="w-4 h-4" />
                 <span className="text-sm">Kick User</span>
@@ -4576,8 +4982,8 @@ export function TerminalForum() {
             onClick={(e) => e.stopPropagation()}>
             {canPin && (
               <button onClick={() => {
-                  if (isPinned) window.electronAPI.sendChat(`CMD:UNPIN_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
-                  else window.electronAPI.sendChat(`CMD:PIN_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
+                  if (isPinned) sendToServer(`CMD:UNPIN_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
+                  else sendToServer(`CMD:PIN_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
                   setMsgContextMenu(null);
                 }}
                 className="w-full px-4 py-2.5 rounded-lg text-green-500 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
@@ -4587,7 +4993,7 @@ export function TerminalForum() {
             )}
             {canDelete && (
               <button onClick={() => {
-                  window.electronAPI.sendChat(`CMD:DELETE_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
+                  sendToServer(`CMD:DELETE_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
                   setMsgContextMenu(null);
                 }}
                 className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
@@ -5002,9 +5408,9 @@ export function TerminalForum() {
               e.preventDefault();
               if (!newRoomName.trim()) return;
               if (createRoomDialog.type === 'voice') {
-                window.electronAPI.sendChat(`CMD:CREATE_VOICE_ROOM:${newRoomName.trim()}:${newRoomPassword}:${newRoomBitrate}`);
+                sendToServer(`CMD:CREATE_VOICE_ROOM:${newRoomName.trim()}:${newRoomPassword}:${newRoomBitrate}`);
               } else {
-                window.electronAPI.sendChat(`CMD:CREATE_TEXT_ROOM:${newRoomName.trim()}:${newRoomPassword}`);
+                sendToServer(`CMD:CREATE_TEXT_ROOM:${newRoomName.trim()}:${newRoomPassword}`);
               }
               setCreateRoomDialog(null);
             }} className="p-6 space-y-4">

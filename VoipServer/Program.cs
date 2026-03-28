@@ -53,10 +53,13 @@ Log($"Loaded {roleStore.GetRoles().Count} roles");
 Log($"E2EE: {(!string.IsNullOrEmpty(serverConfig.EncryptionKey) ? "Server-managed key" : serverConfig.Encrypted ? "Client-side (ægte E2EE)" : "Disabled")}");
 
 var chatCts = new CancellationTokenSource();
-_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, avatarStore, soundboardStore, emojiStore, Log).StartAsync(chatCts.Token));
+var ssePort = serverConfig.SsePort > 0 ? serverConfig.SsePort : serverConfig.TcpPort + 2;
+var notificationServer = new NotificationServer(ssePort, serverConfig.BindLocalhost, Log);
+_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, avatarStore, soundboardStore, emojiStore, Log, notificationServer).StartAsync(chatCts.Token));
+_ = Task.Run(() => notificationServer.StartAsync(chatCts.Token));
 var bindAddr = serverConfig.BindLocalhost ? "127.0.0.1" : "0.0.0.0";
 Log($"Chat server started on {bindAddr}:{serverConfig.TcpPort}{(serverConfig.BindLocalhost ? " (use NGINX for TLS)" : "")}");
-
+Log($"SSE notification server started on {bindAddr}:{ssePort}");
 var udpPort = serverConfig.UdpPort;
 var udp = new UdpClient(udpPort);
 udp.Client.ReceiveBufferSize = 2 * 1024 * 1024;

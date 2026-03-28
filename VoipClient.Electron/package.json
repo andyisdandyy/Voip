@@ -1,9 +1,9 @@
 {
-  "name": "voip",
+  "name": "echo",
   "version": "0.9.97",
-  "description": "Voip Client",
+  "description": "Echo Client",
   "main": "electron/main.js",
-  "author": "Voip",
+  "author": "Echo",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
@@ -41,8 +41,8 @@
     "wait-on": "^8.0.0"
   },
   "build": {
-    "appId": "com.voip.app",
-    "productName": "Voip",
+    "appId": "com.echo.app",
+    "productName": "Echo",
     "copyright": "Copyright © 2025",
     "publish": {
       "provider": "github",
@@ -69,6 +69,12 @@
     "win": {
       "target": [
         {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
           "target": "portable",
           "arch": [
             "x64"
@@ -76,6 +82,12 @@
         }
       ],
       "icon": "build-resources/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "artifactName": "${productName}-${version}-setup.${ext}"
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable.${ext}"
@@ -102,8 +114,8 @@
       "entitlements": "build-resources/entitlements.mac.plist",
       "entitlementsInherit": "build-resources/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Voip needs microphone access for voice calls.",
-        "NSCameraUsageDescription": "Voip needs camera access for video calls."
+        "NSMicrophoneUsageDescription": "Echo needs microphone access for voice calls.",
+        "NSCameraUsageDescription": "Echo needs camera access for video calls."
       }
     },
     "linux": {
@@ -119,13 +131,13 @@
       "category": "Network",
       "artifactName": "${productName}-${version}-portable.${ext}",
       "desktop": {
-        "Name": "Voip",
+        "Name": "Echo",
         "Comment": "Secure VoIP Client",
         "Categories": "Network;Chat;AudioVideo;"
       }
     },
     "dmg": {
-      "title": "Voip",
+      "title": "Echo",
       "window": {
         "width": 540,
         "height": 380

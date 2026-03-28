@@ -1,4 +1,4 @@
-# Voip — Architecture & Code Overview
+# Echo — Architecture & Code Overview
 
 > A self-hosted VoIP + chat application with an Electron desktop client and a .NET 10 server.
 
@@ -7,7 +7,7 @@
 ## Repository Structure
 
 ```
-Voip/
+Echo/
 ├── .github/
 │   └── workflows/
 │       ├── release-server.yml  # GitHub Actions — builds & publishes server releases on tag push
@@ -16,6 +16,7 @@ Voip/
 ├── VoipServer/              # .NET 10 console application (server)
 │   ├── Program.cs           # Entry point — starts TCP chat server + UDP voice loop
 │   ├── ChatServer.cs        # TCP client handler (auth, rooms, commands, video relay)
+│   ├── NotificationServer.cs # SSE (Server-Sent Events) endpoint for push mention notifications
 │   ├── ServerConfig.cs      # Server configuration (server-config.json)
 │   ├── RoomsConfig.cs       # Voice/text room definitions (rooms.json) — supports runtime CRUD + reorder
 │   ├── RoomManager.cs       # Tracks user ↔ room membership (voice + text)
@@ -33,11 +34,13 @@ Voip/
 │   │   ├── main.js          # Main process — TCP/UDP networking, E2EE, TLS negotiation
 │   │   ├── preload.js       # Context bridge — exposes IPC APIs to renderer
 │   │   ├── popout-preload.js  # Context bridge for pop-out video windows
-│   │   └── popout-video.html  # Pop-out video window (canvas + VideoDecoder)
+│   │   ├── popout-video.html  # Pop-out video window (canvas + VideoDecoder)
+│   │   ├── dm-preload.js      # Context bridge for DM (direct message) windows
+│   │   └── dm-chat.html       # DM chat window (message list + input)
 │   ├── src/
 │   │   ├── App.tsx           # Root React component
 │   │   ├── main.tsx          # React entry point
-│   │   ├── index.css         # Tailwind CSS imports
+│   │   ├── index.css         # Tailwind CSS imports + theme color overrides (green, blue, red, purple, cyan, dusk, mono, light, custom)
 │   │   ├── components/
 │   │   │   └── terminal-forum.tsx  # Main UI component (connect screen, chat, voice, video)
 │   │   └── types/
@@ -72,16 +75,31 @@ Voip/
 ### Entry Point — `Program.cs`
 1. Loads `ServerConfig` and `RoomsConfig` from JSON files
 2. Starts an async file logger (Channel-based, writes to `logs/voipserver_debug.txt`)
-3. Launches the `ChatServer` on a background task (TCP)
-4. Opens a `UdpClient` for voice traffic
-5. Runs the main UDP receive loop:
+3. Creates `NotificationServer` (SSE endpoint for push mention notifications)
+4. Launches the `ChatServer` on a background task (TCP), passing the notification server
+5. Launches the `NotificationServer` on a background task (HTTP SSE)
+6. Opens a `UdpClient` for voice traffic
+7. Runs the main UDP receive loop:
    - **Audio packets** (0x01 prefix) — fast-path: skip string parsing, forward to broadcast channel
    - **HELLO** — registers a new voice client with a nonce handshake
    - **GOODBYE** — removes the client
    - **KEEPALIVE** — refreshes the client's last-seen timestamp
-6. A broadcast task (Channel-based) tags packets with sender name and relays to voice room peers
+8. A broadcast task (Channel-based) tags packets with sender name and relays to voice room peers
    - Sender name bytes are cached per username to avoid repeated UTF-8 encoding
-7. A cleanup task removes inactive UDP clients every 5 seconds
+9. A cleanup task removes inactive UDP clients every 5 seconds
+
+### SSE Notification Server — `NotificationServer.cs`
+Lightweight HTTP endpoint using `HttpListener` that provides Server-Sent Events (SSE)
+for real-time mention notifications without requiring a full TCP session.
+
+- **Token auth**: On successful TCP `AUTH`/`REGISTER`, the `ChatServer` issues an
+  HMAC-SHA256 signed token (`AUTH_TOKEN:<token>`) to the client. Tokens are valid for 7 days.
+- **SSE endpoint**: `GET /events?token=<token>` — validates the token, holds the
+  response open with `Content-Type: text/event-stream`, and pushes mention events.
+- **Event format**: `event: mention\ndata: {"room":"General","sender":"alice","text":"@bob hey"}\n\n`
+- **Heartbeat**: A `: heartbeat` comment is sent every 25 seconds to keep connections alive.
+- **Retry**: The server sends `retry: 15000\n\n` on connect so clients auto-reconnect after 15s.
+- **Port**: Configured via `SsePort` in `server-config.json` (defaults to `TcpPort + 2`).
 
 ### TCP Chat — `ChatServer.cs`
 Each connected TCP client gets its own async task (`HandleClientAsync`):
@@ -89,8 +107,9 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 #### Connection Lifecycle
 1. **Server password gate** — if `ServerPassword` is configured, the client must send it first
 2. **User authentication** — `AUTH:user:pass` or `REGISTER:user:pass`
-3. **Post-auth setup** — sends `SERVER_INFO`, room list, role list, auto-joins first text room
-4. **Message loop** — dispatches `CMD:`, `MSG:`, `FILE:`, and `VIDEO:` prefixed lines
+3. **Auth token** — on success, sends `AUTH_TOKEN:<token>` (HMAC-SHA256 signed, used for SSE notifications)
+4. **Post-auth setup** — sends `SERVER_INFO` (includes `SsePort`), room list, role list, auto-joins first text room
+5. **Message loop** — dispatches `CMD:`, `MSG:`, `FILE:`, `DM:`, and `VIDEO:` prefixed lines
 
 #### Command Protocol (CMD:)
 | Command | Description |
@@ -140,6 +159,17 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
   (`0x01`) is still broadcast to all room members
 - Watcher state is cleared automatically on `CAMERA_OFF`, `SCREEN_OFF`, `LEAVE_VOICE`,
   and disconnect
+
+#### Direct Messages (DM)
+Private 1-to-1 messages between users, relayed through the server.
+
+- **Send**: Client sends `DM:<targetUser>:<text>` (text is E2EE-encrypted in the main process if a key is active)
+- **Receive**: Server relays `DM:<fromUser>:<text>` to the recipient
+- **Echo**: Server sends `DM_SENT:<targetUser>:<text>` back to the sender for delivery confirmation
+- **Encryption**: When E2EE is active, DM text is encrypted with AES-256-GCM in the main process using the same PBKDF2-derived key as audio/video. The encrypted payload uses the `ENC:<base64>` format (same as room chat messages). Decryption also happens in the main process before forwarding to the DM window.
+- **UI**: Double-click a user in the sidebar or click "Direct Message" in the user context menu to open a DM window. Incoming DMs auto-open a window if one isn't already open for that user.
+- **Offline**: If the target user is not connected, the server responds with `ERROR:User is not online`
+- DMs are **not persisted** on the server — they exist only in the DM window's in-memory history
 
 ### Persistence Layer
 | Store | File | Purpose |
@@ -204,7 +234,54 @@ Available permissions:
   When `desktopCapturer` returns no sources (Wayland), the OS-native PipeWire portal
   handles source selection. Screen share audio is supported via PipeWire.
 
+### Multi-Server Connections
+The client can maintain **simultaneous TCP connections** to multiple servers. Each
+connection is identified by `serverId` (the pinned server's UUID). The user can browse
+text chat, see online users, and view voice room occupancy across all connected servers
+by switching tabs—**no reconnection required**.
+
+- **Voice constraint**: only **one** voice chat session is active at a time. Joining
+  voice on Server B while in voice on Server A first leaves voice on A.
+- **Per-server state**: rooms, users, messages, roles, emojis, and E2EE keys are
+  independent per connection. The renderer caches background server state in a ref and
+  saves/restores it when switching tabs.
+- **IPC tagging**: all TCP-related IPC channels (`tcp:connect`, `tcp:send`,
+  `tcp:message`, `tcp:error`, `tcp:disconnected`, `tcp:diag`, `e2ee:set-key`) include
+  `serverId` as the first data argument so the main process and renderer can route
+  messages to the correct connection.
+- **Voice routing**: `sendToVoice(msg)` targets the server that owns the voice session
+  (`voiceServerId`). `sendToServer(msg)` targets the currently viewed tab.
+
+### Server Tab Bar
+A browser-style tab bar sits below the window titlebar on both the home/connect screen
+and the main connected UI. Tabs are stored in a separate `openTabs` ordered list
+(persisted in `voip-open-tabs` in localStorage), independent of `pinnedServers`. A tab
+is automatically opened when a server connection succeeds. Each tab shows the server's
+logo (or initial) and name. The currently viewed server's tab is highlighted with an
+accent bottom border.
+
+- **Switching**: clicking another tab saves the current server's state snapshot and
+  restores the target server's cached state. The TCP connection stays alive in the
+  background—no disconnect/reconnect cycle.
+- **Closing**: each tab has an **×** close button (visible on hover) that removes the
+  tab from the bar; if it is the active connection the client disconnects that server's
+  TCP. Closing a tab does **not** remove the server from the pinned-servers list on the
+  home screen.
+- **Reordering**: tabs are HTML5-draggable; dropping a tab onto another reorders the
+  `openTabs` list.
+- **Mention badges**: inactive tabs show an animated red pill with the unread mention
+  count.
+- **Context menu**: right-clicking a tab opens the same server context menu as the
+  home-screen server cards (autoconnect toggle, logout, remove).
+
 ### Main Process — `electron/main.js`
+
+#### Multi-Server TCP State
+Instead of a single `tcpSocket`, the main process maintains a `tcpConnections` Map
+keyed by `serverId`. Each entry holds `{ socket, username, pingInterval, e2eeKey }`.
+A separate `activeVoiceServerId` tracks which connection owns the UDP voice session.
+Video frames (`tcp:send-video`) and audio encrypt/decrypt automatically route through
+the voice server's connection and E2EE key via `getVoiceE2eeKey()`.
 
 #### TCP Message Framing
 Incoming TCP data is accumulated in a string buffer and split on `\n`. A Node.js
@@ -298,11 +375,16 @@ user tile. Clicking it opts-in to decode and display that user's video frames.
 The text-chat bar also shows a "Join screenshare" shortcut when streams are
 available but not yet watched.
 
-#### Autoconnect
-For each pinned server with `autoConnect` enabled, a lightweight background TCP
-connection is maintained solely to receive `MENTION:` notifications. These sockets
-auto-reconnect every 15 seconds on disconnect and are paused for the actively
-connected server (to avoid same-username kick).
+#### Autoconnect (SSE Notifications)
+For each pinned server with `autoConnect` enabled and a valid `authToken`, the client
+opens a lightweight HTTP SSE connection to the server's notification endpoint
+(`GET /events?token=<token>` on the `SsePort`). This replaces the previous approach
+of maintaining a full TCP chat session per pinned server.
+
+- **No credentials sent** — uses the HMAC-SHA256 token issued during the main TCP auth
+- **Auto-reconnect** — reconnects after 15 seconds on disconnect
+- **Paused for active server** — SSE is stopped for the server the user is fully connected to
+- Tokens and `SsePort` are received during the primary TCP connection and persisted per server
 
 #### Auto-Updater
 Uses `electron-updater` with GitHub Releases as the update provider. On startup
@@ -312,8 +394,9 @@ dismissible toast in the bottom-right corner and can choose to restart or defer.
 A manual "Check for Updates" button is also available in the settings modal footer.
 
 **Note:** `quitAndInstall()` works with NSIS (Windows), AppImage (Linux), and
-DMG/ZIP (macOS). For Windows portable builds, updates are detected and downloaded
-but cannot be auto-installed — the user must manually download the new `.exe`.
+DMG/ZIP (macOS). Windows builds produce both an NSIS installer (supports seamless
+auto-updates) and a portable `.exe` (updates are detected and downloaded but must
+be applied manually by downloading the new `.exe`).
 
 | IPC Channel           | Direction      | Description                          |
 |-----------------------|----------------|--------------------------------------|
@@ -324,7 +407,7 @@ but cannot be auto-installed — the user must manually download the new `.exe`.
 | `updater:progress`    | main → renderer| Download progress (0-100%)           |
 | `updater:downloaded`  | main → renderer| Update downloaded and ready          |
 
-Release workflow: `.github/workflows/release-client.yml` builds Windows (portable),
+Release workflow: `.github/workflows/release-client.yml` builds Windows (NSIS installer + portable),
 macOS (DMG + ZIP), and Linux (AppImage) artifacts and publishes them to the
 GitHub Release via `--publish always`.
 
@@ -348,14 +431,34 @@ disconnect.
 | `popout:video-frame`  | main → popout  | Forward encoded video frame          |
 | `popout:feed-ended`   | main → popout  | Notifies pop-out that feed ended     |
 
+#### Direct Message Window
+Private chat windows opened via double-click on a user or the "Direct Message" context
+menu button. Each DM window is a separate frameless `BrowserWindow` with its own preload
+(`dm-preload.js`) and HTML (`dm-chat.html`). Messages are encrypted/decrypted in the main
+process using the same E2EE key as audio/video, so the DM window itself never handles
+encryption. Incoming DMs from users without an open window automatically spawn a new window.
+
+| IPC Channel           | Direction      | Description                          |
+|-----------------------|----------------|--------------------------------------|
+| `dm:open`             | invoke → main  | Open a DM window for a username      |
+| `dm:close`            | send → main    | Close a specific DM window           |
+| `dm:closed`           | main → renderer| Notifies renderer a DM window closed |
+| `dm:get-info`         | invoke (dm)    | DM window queries its own/target name|
+| `dm:send-message`     | send → main    | Send a DM (main encrypts + TCP send) |
+| `dm:message`          | main → dm      | Forward decrypted incoming DM text   |
+| `dm:minimize`         | send → main    | Minimize the sending DM window       |
+| `dm:maximize`         | send → main    | Toggle maximize on the DM window     |
+| `dm:close-self`       | send → main    | Close the sending DM window          |
+
 ### Renderer — `terminal-forum.tsx`
 
 The entire UI lives in a single React component (`TerminalForum`). Key sections:
 
 | Section | Lines (approx) | Purpose |
 |---------|----------------|---------|
-| Types & constants | 1–60 | Interfaces, resolution presets, color themes |
-| State declarations | 60–210 | ~60 `useState` hooks + ~40 `useRef` refs |
+| Types & constants | 1–95 | Interfaces, resolution presets, color themes, custom theme helpers (`hexToHsl`, `hslToHex`, `generateScale`) |
+| State declarations | 60–210 | ~60 `useState` hooks + ~40 `useRef` refs, per-server state cache (`serverStatesRef`) |
+| Multi-server helpers | 310–370 | `takeServerSnapshot`, `restoreServerSnapshot`, `resetServerState`, `sendToServer`, `sendToVoice` |
 | E2EE helpers | 208–290 | Key derivation, text encrypt/decrypt, re-decrypt |
 | UI sound engine | 330–410 | `playUiSound()` — synthesized tones via Web Audio oscillators |
 | Server message handler | 420–610 | Parses all `SERVER_INFO`, `ROOMS`, `MSG`, `VIDEO`, etc. |
@@ -368,16 +471,17 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:
-- TCP chat (connect, send, disconnect, message/error/disconnect listeners)
-- UDP voice (start, stop, send audio, audio received listener)
+- TCP chat — **all calls include `serverId`**: `connectChat(serverId, …)`, `sendChat(serverId, msg)`, `disconnectChat(serverId)`, message/error/disconnect listeners receive `(serverId, …)`
+- UDP voice — `startVoice(host, port, username, serverId)`, stop, send audio, audio received listener
 - Video (send, receive)
 - Screen sharing (source picker, share config)
 - Native WASAPI loopback (start, stop, supported check)
-- E2EE key management
+- E2EE key management — `setEncryptionKey(serverId, passphrase)`
 - Window controls (minimize, maximize, close, fullscreen)
 - Autoconnect (start, stop, mention listener)
 - Auto-updater (version, check, install, progress/status listeners)
 - Video pop-out (open, close, closed listener)
+- Direct messages — `openDm(username, serverId)`, close, closed listener
 
 ### AudioWorklet Processors
 - **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Used for voice capture.
@@ -451,8 +555,9 @@ Server → Client:
   SERVER_PASSWORD_REQUIRED | SERVER_PASSWORD_OK | SERVER_PASSWORD_FAIL:<reason>
   READY
   AUTH_OK | AUTH_FAIL:<reason> | REGISTER_OK | REGISTER_FAIL:<reason>
+  AUTH_TOKEN:<token>                              (HMAC-SHA256 signed SSE session token, sent after AUTH_OK/REGISTER_OK)
   SERVER_INFO:<json>
-  (SERVER_INFO includes ServerLogo data-URI and GiphyApiKey when configured)
+  (SERVER_INFO includes ServerLogo data-URI, GiphyApiKey, and SsePort when configured)
   ROOMS:<json>
   USERS:<json>                                   (includes Muted/Deafened/Camera/Screen per user)
   ROLES:<json>
@@ -494,6 +599,18 @@ Server → Client:
   [nameLen:1][name:N][0x02][opus_data]   (tagged screen audio from another user)
 ```
 
+### SSE (HTTP, Server-Sent Events)
+```
+Client → Server:
+  GET /events?token=<auth_token>       (HTTP request, held open)
+
+Server → Client:
+  retry: 15000                          (reconnect interval in ms)
+  : heartbeat                           (keep-alive comment, every 25s)
+  event: mention                        (mention notification)
+  data: {"room":"General","sender":"alice","text":"@bob hey","timestamp":1234567890}
+```
+
 ---
 
 ## Configuration Files
@@ -501,7 +618,7 @@ Server → Client:
 ### `server-config.json`
 ```jsonc
 {
-  "ServerName": "Voip Server",
+  "ServerName": "Echo Server",
   "ServerPassword": null,           // Optional gate password
   "ServerLogo": null,               // Base64 data-URI (max ~64 KB, cropped via editor)
   "Encrypted": false,               // True E2EE (client-side key)
@@ -511,6 +628,7 @@ Server → Client:
   "TcpPort": 5001,
   "PublicUdpPort": null,            // For reverse proxy setups
   "BindLocalhost": false,           // true = 127.0.0.1 (behind NGINX)
+  "SsePort": 0,                     // SSE notification port (0 = TcpPort + 2)
   "MaxCameraWidth": 1920,
   "MaxCameraHeight": 1080,
   "MaxScreenWidth": 1920,
@@ -572,7 +690,7 @@ npm run dev          # Vite dev server + Electron
 
 ### Build Client
 ```bash
-npm run dist:win     # Windows portable executable
+npm run dist:win     # Windows NSIS installer + portable executable
 npm run dist:linux   # Linux portable AppImage
 npm run dist:mac     # macOS DMG (universal)
 ```
@@ -584,7 +702,7 @@ npm run dist:mac     # macOS DMG (universal)
 | `release-server.yml` | `v*` | Publishes a self-contained `linux-x64` server binary |
 | `release-client.yml` | `client-v*` | Publishes Windows (x64), macOS (x64 + arm64), and Linux (x64) Electron installers |
 
-**macOS DMG note:** The client workflow builds x64 and arm64 DMGs sequentially in the same job. A `Cleanup mounted DMG volumes` step (`hdiutil detach -force`) runs between the two builds to prevent the arm64 build from failing due to leftover `/Volumes/Voip` mount points from the x64 DMG creation.
+**macOS DMG note:** The client workflow builds x64 and arm64 DMGs sequentially in the same job. A `Cleanup mounted DMG volumes` step (`hdiutil detach -force`) runs between the two builds to prevent the arm64 build from failing due to leftover `/Volumes/Echo` mount points from the x64 DMG creation.
 
 ---
 

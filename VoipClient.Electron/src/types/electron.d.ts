@@ -1,15 +1,15 @@
 export {};
 
 interface ElectronAPI {
-  connectChat: (host: string, port: number, username: string, password: string, isRegister: boolean, serverPassword?: string) => Promise<{ success: boolean }>;
-  sendChat: (message: string) => void;
-  disconnectChat: () => void;
-  requestDiag: () => void;
-  onChatMessage: (callback: (line: string) => void) => () => void;
-  onChatError: (callback: (msg: string) => void) => () => void;
-  onChatDisconnected: (callback: () => void) => () => void;
+  connectChat: (serverId: string, host: string, port: number, username: string, password: string, isRegister: boolean, serverPassword?: string) => Promise<{ success: boolean }>;
+  sendChat: (serverId: string, message: string) => void;
+  disconnectChat: (serverId?: string) => void;
+  requestDiag: (serverId: string) => void;
+  onChatMessage: (callback: (serverId: string, line: string) => void) => () => void;
+  onChatError: (callback: (serverId: string, msg: string) => void) => () => void;
+  onChatDisconnected: (callback: (serverId: string) => void) => () => void;
 
-  startVoice: (host: string, port: number, username: string) => Promise<{ success: boolean }>;
+  startVoice: (host: string, port: number, username: string, serverId: string) => Promise<{ success: boolean }>;
   sendAudio: (pcmBuffer: ArrayBuffer) => void;
   sendScreenAudio: (pcmBuffer: ArrayBuffer) => void;
   stopVoice: () => void;
@@ -25,14 +25,11 @@ interface ElectronAPI {
   setShareSource: (sourceId: string, withAudio: boolean) => Promise<boolean>;
 
   // Native WASAPI loopback (process-targeted)
-  // Audio is encoded directly in the main process — renderer only controls start/stop.
-  // sourceId: desktopCapturer source ID — window sources use INCLUDE mode (only that app),
-  //           screen sources or omitted use EXCLUDE mode (all system audio except Electron).
   loopbackSupported: () => Promise<boolean>;
   startLoopback: (sourceId?: string | null) => Promise<{ success: boolean; sampleRate?: number; channels?: number; error?: string }>;
   stopLoopback: () => void;
 
-  setEncryptionKey: (passphrase: string | null) => void;
+  setEncryptionKey: (serverId: string, passphrase: string | null) => void;
 
   minimizeWindow: () => void;
   maximizeWindow: () => void;
@@ -40,7 +37,7 @@ interface ElectronAPI {
   getPlatform: () => Promise<string>;
   fullscreenWindow: () => void;
 
-  startAutoConnect: (serverId: string, host: string, port: number, username: string, password: string, serverPassword?: string) => void;
+  startAutoConnect: (serverId: string, host: string, ssePort: number, token: string) => void;
   stopAutoConnect: (serverId: string) => void;
   onMention: (callback: (serverId: string, room: string, sender: string, text: string) => void) => () => void;
 
@@ -56,6 +53,11 @@ interface ElectronAPI {
   openPopout: (username: string) => Promise<void>;
   closePopout: (username: string) => void;
   onPopoutClosed: (callback: (username: string) => void) => () => void;
+
+  // Direct Messages
+  openDm: (username: string, serverId: string) => Promise<void>;
+  closeDm: (username: string) => void;
+  onDmClosed: (callback: (username: string) => void) => () => void;
 }
 
 declare global {

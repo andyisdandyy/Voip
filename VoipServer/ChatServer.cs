@@ -22,6 +22,7 @@ public class ChatServer
     private readonly SoundboardStore _soundboardStore;
     private readonly EmojiStore _emojiStore;
     private readonly ServerConfig _serverConfig;
+    private readonly NotificationServer? _notificationServer;
     private readonly Action<string>? _log;
 
     // ── Connected clients ───────────────────────────────────
@@ -47,7 +48,7 @@ public class ChatServer
     private const int MaxAuthAttempts = 5;
     private static readonly TimeSpan AuthLockoutDuration = TimeSpan.FromMinutes(2);
 
-    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, AvatarStore avatarStore, SoundboardStore soundboardStore, EmojiStore emojiStore, Action<string>? log = null)
+    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, AvatarStore avatarStore, SoundboardStore soundboardStore, EmojiStore emojiStore, Action<string>? log = null, NotificationServer? notificationServer = null)
     {
         _serverConfig = serverConfig;
         var bindAddress = serverConfig.BindLocalhost ? IPAddress.Loopback : IPAddress.Any;
@@ -60,6 +61,7 @@ public class ChatServer
         _soundboardStore = soundboardStore;
         _emojiStore = emojiStore;
         _log = log;
+        _notificationServer = notificationServer;
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -162,6 +164,11 @@ public class ChatServer
                 var isFirst = _userStore.GetAllUsernames().Count <= 1;
                 _roleStore.EnsureDefaultRole(name, isFirst);
                 await writer.WriteLineAsync("REGISTER_OK").ConfigureAwait(false);
+                if (_notificationServer != null)
+                {
+                    var token = _notificationServer.IssueToken(name);
+                    await writer.WriteLineAsync($"AUTH_TOKEN:{token}").ConfigureAwait(false);
+                }
             }
             else if (authLine.StartsWith("AUTH:"))
             {
@@ -186,6 +193,11 @@ public class ChatServer
                 name = _userStore.GetDisplayName(parts[0]);
                 _roleStore.EnsureDefaultRole(name, false);
                 await writer.WriteLineAsync("AUTH_OK").ConfigureAwait(false);
+                if (_notificationServer != null)
+                {
+                    var token = _notificationServer.IssueToken(name);
+                    await writer.WriteLineAsync($"AUTH_TOKEN:{token}").ConfigureAwait(false);
+                }
             }
             else
             {
@@ -247,6 +259,8 @@ public class ChatServer
                     await HandleFileAsync(writer, name, line.Substring(5)).ConfigureAwait(false);
                 else if (line.StartsWith("MSG:"))
                     await HandleMessageAsync(writer, name, line.Substring(4)).ConfigureAwait(false);
+                else if (line.StartsWith("DM:"))
+                    await HandleDirectMessageAsync(writer, name, line.Substring(3)).ConfigureAwait(false);
             }
         }
         catch (IOException) { }
@@ -939,6 +953,23 @@ public class ChatServer
                         await kv.Value.writer.WriteLineAsync($"MENTION:{roomName}:{name}:{text}").ConfigureAwait(false);
                     }
                     catch { }
+
+                    // Also push to SSE subscribers (background notification clients)
+                    if (_notificationServer != null)
+                    {
+                        _ = _notificationServer.PushMentionAsync(targetName, roomName, name, text);
+                    }
+                }
+            }
+
+            // Push mentions to SSE-only subscribers (users not connected via TCP)
+            if (_notificationServer != null)
+            {
+                var connectedNames = new HashSet<string>(_clients.Values.Select(c => c.name), StringComparer.OrdinalIgnoreCase);
+                foreach (var uname in _userStore.GetAllUsernames())
+                {
+                    if (uname != name && !connectedNames.Contains(uname) && text.Contains($"@{uname}", StringComparison.OrdinalIgnoreCase))
+                        _ = _notificationServer.PushMentionAsync(uname, roomName, name, text);
                 }
             }
         }
@@ -1037,6 +1068,8 @@ public class ChatServer
             info["EncryptionKey"] = encKey;
         if (!string.IsNullOrEmpty(_serverConfig.GiphyApiKey))
             info["GiphyApiKey"] = _serverConfig.GiphyApiKey;
+        var ssePort = _serverConfig.SsePort > 0 ? _serverConfig.SsePort : _serverConfig.TcpPort + 2;
+        info["SsePort"] = ssePort;
         var json = JsonSerializer.Serialize(info);
         await writer.WriteLineAsync($"SERVER_INFO:{json}").ConfigureAwait(false);
     }
@@ -1233,6 +1266,38 @@ public class ChatServer
             try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
             catch { }
         }
+    }
+
+    private async Task HandleDirectMessageAsync(StreamWriter senderWriter, string senderName, string payload)
+    {
+        // payload = <targetUser>:<text>
+        var colonIdx = payload.IndexOf(':');
+        if (colonIdx < 0) return;
+
+        var targetName = payload.Substring(0, colonIdx);
+        var text = payload.Substring(colonIdx + 1);
+
+        // Validate target exists and is online
+        var targetClient = _clients.FirstOrDefault(kv =>
+            string.Equals(kv.Value.name, targetName, StringComparison.OrdinalIgnoreCase));
+
+        if (targetClient.Key == null)
+        {
+            await senderWriter.WriteLineAsync("ERROR:User is not online").ConfigureAwait(false);
+            return;
+        }
+
+        // Relay to recipient
+        var message = $"DM:{senderName}:{text}";
+        try { await targetClient.Value.writer.WriteLineAsync(message).ConfigureAwait(false); }
+        catch { }
+
+        // Echo back to sender so the DM window can confirm delivery
+        var echo = $"DM_SENT:{targetName}:{text}";
+        try { await senderWriter.WriteLineAsync(echo).ConfigureAwait(false); }
+        catch { }
+
+        _log?.Invoke($"[DM] {senderName} → {targetName} ({text.Length} chars)");
     }
 
     private async Task RelayVideoAsync(string senderName, string rawLine)

@@ -1,40 +1,40 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // ── TCP Chat ──────────────────────────────────────────────
-  connectChat: (host, port, username, password, isRegister, serverPassword) =>
-    ipcRenderer.invoke('tcp:connect', host, port, username, password, isRegister, serverPassword),
+  // ── TCP Chat (multi-server) ────────────────────────────────
+  connectChat: (serverId, host, port, username, password, isRegister, serverPassword) =>
+    ipcRenderer.invoke('tcp:connect', serverId, host, port, username, password, isRegister, serverPassword),
 
-  sendChat: (message) =>
-    ipcRenderer.send('tcp:send', message),
+  sendChat: (serverId, message) =>
+    ipcRenderer.send('tcp:send', serverId, message),
 
-  disconnectChat: () =>
-    ipcRenderer.send('tcp:disconnect'),
+  disconnectChat: (serverId) =>
+    ipcRenderer.send('tcp:disconnect', serverId),
 
-  requestDiag: () =>
-    ipcRenderer.send('tcp:diag'),
+  requestDiag: (serverId) =>
+    ipcRenderer.send('tcp:diag', serverId),
 
   onChatMessage: (callback) => {
-    const handler = (_event, msg) => callback(msg);
+    const handler = (_event, serverId, msg) => callback(serverId, msg);
     ipcRenderer.on('tcp:message', handler);
     return () => ipcRenderer.removeListener('tcp:message', handler);
   },
 
   onChatError: (callback) => {
-    const handler = (_event, msg) => callback(msg);
+    const handler = (_event, serverId, msg) => callback(serverId, msg);
     ipcRenderer.on('tcp:error', handler);
     return () => ipcRenderer.removeListener('tcp:error', handler);
   },
 
   onChatDisconnected: (callback) => {
-    const handler = () => callback();
+    const handler = (_event, serverId) => callback(serverId);
     ipcRenderer.on('tcp:disconnected', handler);
     return () => ipcRenderer.removeListener('tcp:disconnected', handler);
   },
 
   // ── UDP Voice ─────────────────────────────────────────────
-  startVoice: (host, port, username) =>
-    ipcRenderer.invoke('udp:start', host, port, username),
+  startVoice: (host, port, username, serverId) =>
+    ipcRenderer.invoke('udp:start', host, port, username, serverId),
 
   sendAudio: (pcmBuffer) =>
     ipcRenderer.send('udp:send-audio', pcmBuffer),
@@ -89,8 +89,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopLoopback: () => ipcRenderer.send('loopback:stop'),
 
   // ── E2EE ───────────────────────────────────────────────────
-  setEncryptionKey: (passphrase) =>
-    ipcRenderer.send('e2ee:set-key', passphrase),
+  setEncryptionKey: (serverId, passphrase) =>
+    ipcRenderer.send('e2ee:set-key', serverId, passphrase),
 
   // ── Window Controls ───────────────────────────────────────
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
@@ -99,9 +99,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform: () => ipcRenderer.invoke('get-platform'),
   fullscreenWindow: () => ipcRenderer.send('window:fullscreen'),
 
-  // ── Autoconnect (background mention listener) ─────────────
-  startAutoConnect: (serverId, host, port, username, password, serverPassword) =>
-    ipcRenderer.send('autoconnect:start', serverId, host, port, username, password, serverPassword),
+  // ── Autoconnect (background SSE mention listener) ──────────
+  startAutoConnect: (serverId, host, ssePort, token) =>
+    ipcRenderer.send('autoconnect:start', serverId, host, ssePort, token),
   stopAutoConnect: (serverId) =>
     ipcRenderer.send('autoconnect:stop', serverId),
   onMention: (callback) => {
@@ -137,5 +137,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, username) => callback(username);
     ipcRenderer.on('popout:closed', handler);
     return () => ipcRenderer.removeListener('popout:closed', handler);
+  },
+
+  // ── Direct Messages ───────────────────────────────────────
+  openDm: (username, serverId) => ipcRenderer.invoke('dm:open', username, serverId),
+  closeDm: (username) => ipcRenderer.send('dm:close', username),
+  onDmClosed: (callback) => {
+    const handler = (_event, username) => callback(username);
+    ipcRenderer.on('dm:closed', handler);
+    return () => ipcRenderer.removeListener('dm:closed', handler);
   },
 });
