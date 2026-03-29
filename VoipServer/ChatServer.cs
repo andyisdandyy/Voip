@@ -106,6 +106,7 @@ public class ChatServer
 
             // ── Phase 1: Server password gate (before any user credentials) ──
             var clientIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "unknown";
+            _log?.Invoke($"[Chat] TCP connection accepted from {clientIp}");
 
             if (!string.IsNullOrEmpty(_serverConfig.ServerPassword))
             {
