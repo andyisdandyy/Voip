@@ -855,6 +855,23 @@ The script downloads the binary from GitHub Releases, swaps it in place, and pri
 - **Chunked encoding** — replaced the spread with a loop using `String.fromCharCode.apply(null, combined.subarray(i, i + 8192))` in 8 KB chunks, avoiding call-stack overflow for arbitrarily large payloads.
 - **Error visibility** — wrapped the entire `handleSubmit` body in a `try/catch` that logs to console and calls `setStatus('⚠ Send failed: …')` so future errors are surfaced in the UI.
 
+### SQLite Multi-Statement Batch Bug (ChatHistoryStore.cs)
+
+**Problem:** After migrating chat history from JSON to SQLite (v1.1.12), the `pins` table
+was never created. `InitializeDatabase()` ran all DDL (`CREATE TABLE messages`, `CREATE TABLE pins`,
+indexes, and PRAGMAs) as a single multi-statement `ExecuteNonQuery()` batch. `PRAGMA journal_mode = WAL`
+returns a result set, which caused `Microsoft.Data.Sqlite` to stop iterating the batch before reaching
+the `CREATE TABLE IF NOT EXISTS pins` statement. The `messages` table was created (it came first),
+so normal chat worked, but any operation touching `pins` threw `SqliteException: no such table: pins` —
+including `GetPinnedMessages()` called during `SendHistoryAsync`, which disconnected every client on
+room join.
+
+**Fix:**
+- **Individual execution** — split the batch into one `Exec(conn, sql)` call per DDL/PRAGMA statement,
+  so each gets its own prepare → step cycle and can't be skipped by an earlier statement's result set.
+- **Server-side resilience** (prior fix) — `HandleClientAsync` already wraps `SendHistoryAsync` and the
+  inner read loop in try/catch, so a SQLite error no longer silently kills the TCP connection.
+
 ---
 
 ## Development

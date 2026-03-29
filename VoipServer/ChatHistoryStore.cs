@@ -220,30 +220,41 @@ public class ChatHistoryStore
     private void InitializeDatabase()
     {
         using var conn = Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
 
+        // Execute each statement individually — Microsoft.Data.Sqlite may stop
+        // iterating a multi-statement batch when a PRAGMA returns a result set,
+        // which would silently skip later CREATE TABLE statements.
+        Exec(conn, "PRAGMA journal_mode = WAL");
+        Exec(conn, "PRAGMA synchronous = NORMAL");
+
+        Exec(conn, """
             CREATE TABLE IF NOT EXISTS messages (
                 id   TEXT NOT NULL,
                 room TEXT NOT NULL,
                 user TEXT NOT NULL,
                 text TEXT NOT NULL,
                 time TEXT NOT NULL
-            );
+            )
+            """);
 
-            CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room, rowid);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_id_room ON messages (id, room);
+        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room, rowid)");
+        Exec(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_id_room ON messages (id, room)");
 
+        Exec(conn, """
             CREATE TABLE IF NOT EXISTS pins (
                 room   TEXT NOT NULL,
                 msg_id TEXT NOT NULL,
                 UNIQUE(room, msg_id)
-            );
+            )
+            """);
 
-            CREATE INDEX IF NOT EXISTS idx_pins_room ON pins (room);
-            """;
+        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_pins_room ON pins (room)");
+    }
+
+    private static void Exec(SqliteConnection conn, string sql)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
         cmd.ExecuteNonQuery();
     }
 
