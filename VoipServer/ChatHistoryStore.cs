@@ -237,7 +237,10 @@ public class ChatHistoryStore
             )
             """);
 
-        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room, rowid)");
+        // rowid is an implicit virtual column in SQLite and cannot appear in index
+        // definitions.  An index on (room) alone is sufficient — ORDER BY rowid
+        // queries benefit from it because SQLite stores rows in rowid order already.
+        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room)");
         Exec(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_id_room ON messages (id, room)");
 
         Exec(conn, """
