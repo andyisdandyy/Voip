@@ -73,6 +73,7 @@ Echo/
 - **.NET 10** console app (top-level statements in `Program.cs`)
 - NuGet dependency: `Microsoft.Data.Sqlite` for chat history storage
 - Most data is stored as flat JSON files; chat history and pins use SQLite (`chat_history.db`)
+- `IncludeNativeLibrariesForSelfExtract` is enabled so native libraries (e.g. `e_sqlite3`) are embedded inside the single-file binary and auto-extracted at runtime
 
 ### Entry Point — `Program.cs`
 1. Loads `ServerConfig` and `RoomsConfig` from JSON files
