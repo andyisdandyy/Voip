@@ -16,8 +16,8 @@ public class NotificationServer
     private readonly Action<string>? _log;
     private readonly byte[] _hmacKey;
 
-    /// <summary>Active SSE subscribers: username → list of response streams.</summary>
-    private readonly ConcurrentDictionary<string, ConcurrentBag<SseClient>> _subscribers = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Active SSE subscribers: username → set of response streams.</summary>
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<SseClient, byte>> _subscribers = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Issued tokens: token string → username (for validation).</summary>
     private readonly ConcurrentDictionary<string, (string username, DateTime issuedAt)> _tokens = new();
@@ -116,8 +116,9 @@ public class NotificationServer
         var ssePayload = $"event: mention\ndata: {data}\n\n";
 
         var dead = new List<SseClient>();
-        foreach (var client in clients)
+        foreach (var kv in clients)
         {
+            var client = kv.Key;
             try
             {
                 if (client.Cts.IsCancellationRequested) { dead.Add(client); continue; }
@@ -134,19 +135,7 @@ public class NotificationServer
         foreach (var d in dead)
         {
             d.Cts.Cancel();
-            clients.TryTake(out _);
-        }
-    }
-
-    /// <summary>
-    /// Removes all tokens for a given username (e.g., on password change).
-    /// </summary>
-    public void RevokeTokens(string username)
-    {
-        foreach (var kv in _tokens)
-        {
-            if (kv.Value.username.Equals(username, StringComparison.OrdinalIgnoreCase))
-                _tokens.TryRemove(kv.Key, out _);
+            clients.TryRemove(d, out _);
         }
     }
 
@@ -225,8 +214,8 @@ public class NotificationServer
         var writer = new StreamWriter(response.OutputStream, new UTF8Encoding(false)) { AutoFlush = false };
         var client = new SseClient(writer, cts);
 
-        var bag = _subscribers.GetOrAdd(username, _ => new ConcurrentBag<SseClient>());
-        bag.Add(client);
+        var bag = _subscribers.GetOrAdd(username, _ => new ConcurrentDictionary<SseClient, byte>());
+        bag.TryAdd(client, 0);
 
         _log?.Invoke($"[SSE] '{username}' subscribed for notifications");
 

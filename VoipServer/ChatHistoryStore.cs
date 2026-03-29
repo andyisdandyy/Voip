@@ -91,6 +91,39 @@ public class ChatHistoryStore
         return new();
     }
 
+    /// <summary>
+    /// Returns up to <paramref name="count"/> messages older than the message
+    /// identified by <paramref name="beforeId"/>. If <paramref name="beforeId"/>
+    /// is null or empty the newest messages are returned.
+    /// </summary>
+    public List<ChatMessage> GetHistory(string room, int count, string? beforeId)
+    {
+        if (!_history.TryGetValue(room, out var msgs))
+            return new();
+
+        lock (msgs)
+        {
+            int endIndex = msgs.Count;
+            if (!string.IsNullOrEmpty(beforeId))
+            {
+                var idx = msgs.FindIndex(m => m.Id == beforeId);
+                if (idx >= 0) endIndex = idx;
+            }
+            int startIndex = Math.Max(0, endIndex - count);
+            return msgs.GetRange(startIndex, endIndex - startIndex);
+        }
+    }
+
+    public int GetMessageCount(string room)
+    {
+        if (_history.TryGetValue(room, out var msgs))
+        {
+            lock (msgs)
+                return msgs.Count;
+        }
+        return 0;
+    }
+
     // ── Pin support ─────────────────────────────────────────
 
     public bool PinMessage(string room, string msgId)
@@ -127,10 +160,15 @@ public class ChatHistoryStore
             return msgs.Where(m => pinIds.Contains(m.Id)).ToList();
     }
 
-    public bool IsPinned(string room, string msgId)
+    /// <summary>Renames a room key in history and pins (used when a channel is renamed).</summary>
+    public void RenameRoom(string oldName, string newName)
     {
-        if (!_pins.TryGetValue(room, out var pins)) return false;
-        lock (pins) return pins.Contains(msgId);
+        if (string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase)) return;
+        if (_history.TryRemove(oldName, out var msgs))
+            _history[newName] = msgs;
+        if (_pins.TryRemove(oldName, out var pins))
+            _pins[newName] = pins;
+        ScheduleSave();
     }
 
     private void Load()

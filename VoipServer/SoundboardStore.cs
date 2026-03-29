@@ -23,8 +23,6 @@ public class SoundboardStore
         Load();
     }
 
-    public Dictionary<string, string> GetAll() => new(_sounds);
-
     /// <summary>Returns only the names (no audio data) for the list.</summary>
     public List<string> GetNames() => _sounds.Keys.ToList();
 

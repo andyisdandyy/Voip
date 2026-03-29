@@ -25,15 +25,6 @@ public class EmojiStore
 
     public Dictionary<string, string> GetAll() => new(_emojis);
 
-    /// <summary>Returns only the names (no image data) for the list.</summary>
-    public List<string> GetNames() => _emojis.Keys.ToList();
-
-    public string? GetEmoji(string name)
-    {
-        _emojis.TryGetValue(name, out var data);
-        return data;
-    }
-
     public bool AddEmoji(string name, string base64Data)
     {
         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(base64Data))

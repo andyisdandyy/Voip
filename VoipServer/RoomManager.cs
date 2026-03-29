@@ -107,12 +107,21 @@ public class RoomManager
         return _textRoomMembers.TryGetValue(roomName, out var members) && members.ContainsKey(username);
     }
 
-    public List<string> GetUserTextRooms(string username)
+    /// <summary>Renames a voice room in the user-room tracking map.</summary>
+    public void RenameVoiceRoom(string oldName, string newName)
     {
-        return _textRoomMembers
-            .Where(kv => kv.Value.ContainsKey(username))
-            .Select(kv => kv.Key)
-            .ToList();
+        foreach (var kv in _userVoiceRoom)
+        {
+            if (string.Equals(kv.Value, oldName, StringComparison.OrdinalIgnoreCase))
+                _userVoiceRoom.TryUpdate(kv.Key, newName, kv.Value);
+        }
+    }
+
+    /// <summary>Renames a text room in the member tracking map.</summary>
+    public void RenameTextRoom(string oldName, string newName)
+    {
+        if (_textRoomMembers.TryRemove(oldName, out var members))
+            _textRoomMembers[newName] = members;
     }
 
     public void RemoveUser(string username)

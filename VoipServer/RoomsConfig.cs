@@ -103,6 +103,23 @@ public class RoomsConfig
         return true;
     }
 
+    public bool EditVoiceRoom(string oldName, string newName, string? password, int bitrate)
+    {
+        var room = VoiceRooms.FirstOrDefault(r => string.Equals(r.Name, oldName, StringComparison.OrdinalIgnoreCase));
+        if (room == null) return false;
+        // If renaming, ensure the new name doesn't collide with another room
+        if (!string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(newName)) return false;
+            if (VoiceRooms.Any(r => !ReferenceEquals(r, room) && string.Equals(r.Name, newName, StringComparison.OrdinalIgnoreCase))) return false;
+        }
+        room.Name = newName;
+        room.Password = password;
+        room.Bitrate = bitrate > 0 ? bitrate : 96000;
+        Save();
+        return true;
+    }
+
     // ── Text Room Mutations ─────────────────────────────────
 
     public bool CreateTextRoom(string name, string? password)
@@ -119,6 +136,21 @@ public class RoomsConfig
         var room = TextRooms.FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
         if (room == null) return false;
         TextRooms.Remove(room);
+        Save();
+        return true;
+    }
+
+    public bool EditTextRoom(string oldName, string newName, string? password)
+    {
+        var room = TextRooms.FirstOrDefault(r => string.Equals(r.Name, oldName, StringComparison.OrdinalIgnoreCase));
+        if (room == null) return false;
+        if (!string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(newName)) return false;
+            if (TextRooms.Any(r => !ReferenceEquals(r, room) && string.Equals(r.Name, newName, StringComparison.OrdinalIgnoreCase))) return false;
+        }
+        room.Name = newName;
+        room.Password = password;
         Save();
         return true;
     }

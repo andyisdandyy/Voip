@@ -41,6 +41,7 @@ if (process.platform === 'darwin') {
 // which is more stable across GPU drivers.
 if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-features', 'WGCCapturerWin,AllowWgcScreenCapturer,AllowWgcWindowCapturer,AllowWgcDesktopCapturer');
+  app.setAppUserModelId('Echo');
 }
 
 // Linux: enable Wayland support via Ozone platform auto-detection.
@@ -65,7 +66,6 @@ let selectedShareSource = null;
 let shareWithAudio = false;
 let shareIsWindow = false;
 const popoutWindows = new Map(); // username → BrowserWindow
-const dmWindows = new Map(); // username → BrowserWindow (DM chat windows)
 
 // ── E2EE (End-to-End Encryption) ────────────────────────────
 // Uses AES-256-GCM with a PBKDF2-derived key. When enabled, audio
@@ -164,6 +164,7 @@ function createWindow() {
     height: 750,
     minWidth: 800,
     minHeight: 500,
+    icon: path.join(__dirname, '..', 'build-resources', 'icon.png'),
     ...(isMac
       ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 12, y: 12 } }
       : { frame: false, roundedCorners: false }),
@@ -585,88 +586,17 @@ function setupIPC() {
     if (win && !win.isDestroyed()) win.close();
   });
 
-  // ── Direct Message Windows ──────────────────────────────────
-  ipcMain.handle('dm:open', (_event, targetUsername, serverId) => {
-    openDmWindow(targetUsername, null, serverId);
-  });
-
-  ipcMain.on('dm:close', (_event, targetUsername) => {
-    const win = dmWindows.get(targetUsername);
-    if (win && !win.isDestroyed()) win.close();
-    dmWindows.delete(targetUsername);
-  });
-
-  ipcMain.handle('dm:get-info', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const conn = win?._dmServerId ? tcpConnections.get(win._dmServerId) : null;
-    return { myName: conn?.username || '', targetName: win?._dmTargetUsername || '' };
-  });
-
-  ipcMain.on('dm:send-message', (event, text) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const target = win?._dmTargetUsername;
-    const conn = win?._dmServerId ? tcpConnections.get(win._dmServerId) : null;
-    if (target && conn?.socket && !conn.socket.destroyed) {
+  // ── Direct Messages (inline in renderer) ────────────────────
+  ipcMain.on('dm:send-inline', (_event, serverId, targetUsername, text) => {
+    const conn = tcpConnections.get(serverId);
+    if (conn?.socket && !conn.socket.destroyed) {
       const encrypted = e2eeEncryptText(text, conn.e2eeKey);
-      conn.socket.write(`DM:${target}:${encrypted}\n`);
+      conn.socket.write(`DM:${targetUsername}:${encrypted}\n`);
     }
-  });
-
-  ipcMain.on('dm:minimize', (event) => {
-    BrowserWindow.fromWebContents(event.sender)?.minimize();
-  });
-  ipcMain.on('dm:maximize', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (win?.isMaximized()) win.unmaximize(); else win?.maximize();
-  });
-  ipcMain.on('dm:close-self', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (win && !win.isDestroyed()) win.close();
   });
 }
 
-function openDmWindow(targetUsername, initialMessage, serverId) {
-  if (dmWindows.has(targetUsername)) {
-    const existing = dmWindows.get(targetUsername);
-    if (!existing.isDestroyed()) {
-      existing.focus();
-      // If there's an initial message, forward it to the existing window
-      if (initialMessage) {
-        existing.webContents.send('dm:message', targetUsername, initialMessage);
-      }
-      return;
-    }
-    dmWindows.delete(targetUsername);
-  }
-  const win = new BrowserWindow({
-    width: 500,
-    height: 600,
-    minWidth: 350,
-    minHeight: 300,
-    frame: false,
-    backgroundColor: '#0a0e0a',
-    webPreferences: {
-      preload: path.join(__dirname, 'dm-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-  win._dmTargetUsername = targetUsername;
-  win._dmServerId = serverId;
-  win.loadFile(path.join(__dirname, 'dm-chat.html'));
-  win.on('closed', () => {
-    dmWindows.delete(targetUsername);
-    mainWindow?.webContents.send('dm:closed', targetUsername);
-  });
-  // If there's an initial message, send it once the window is ready
-  if (initialMessage) {
-    win.webContents.once('did-finish-load', () => {
-      win.webContents.send('dm:message', targetUsername, initialMessage);
-    });
-  }
-  dmWindows.set(targetUsername, win);
-  console.log(`[DM] Opened window for ${targetUsername}`);
-}
+// DM window creation removed — DMs are now rendered inline in the main renderer.
 
 // ── TCP Chat ────────────────────────────────────────────────
 
@@ -790,26 +720,28 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
         if (line.startsWith('DIAG:')) {
           console.log('[DIAG]', line.substring(5));
         }
-        // Route incoming DMs to the DM window
+        // Route incoming DMs to the renderer (inline DM tabs)
         if (line.startsWith('DM:')) {
           const i1 = line.indexOf(':', 3);
           if (i1 >= 0) {
             const fromUser = line.substring(3, i1);
             const rawText = line.substring(i1 + 1);
             const text = e2eeDecryptText(rawText, conn?.e2eeKey);
-            const dmWin = dmWindows.get(fromUser);
-            if (dmWin && !dmWin.isDestroyed()) {
-              dmWin.webContents.send('dm:message', fromUser, text);
-              if (dmWin.isMinimized()) dmWin.flashFrame(true);
-            } else {
-              openDmWindow(fromUser, text, serverId);
-            }
             mainWindow?.webContents.send('tcp:message', serverId, `DM:${fromUser}:${text}`);
           }
           continue;
         }
         if (line.startsWith('DM_SENT:')) {
-          mainWindow?.webContents.send('tcp:message', serverId, line);
+          // DM_SENT:<target>:<text> — decrypt the text before forwarding
+          const i1 = line.indexOf(':', 8);
+          if (i1 >= 0) {
+            const target = line.substring(8, i1);
+            const rawText = line.substring(i1 + 1);
+            const text = e2eeDecryptText(rawText, conn?.e2eeKey);
+            mainWindow?.webContents.send('tcp:message', serverId, `DM_SENT:${target}:${text}`);
+          } else {
+            mainWindow?.webContents.send('tcp:message', serverId, line);
+          }
           continue;
         }
         mainWindow?.webContents.send('tcp:message', serverId, line);

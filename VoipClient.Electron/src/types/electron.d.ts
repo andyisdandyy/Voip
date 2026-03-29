@@ -54,10 +54,8 @@ interface ElectronAPI {
   closePopout: (username: string) => void;
   onPopoutClosed: (callback: (username: string) => void) => () => void;
 
-  // Direct Messages
-  openDm: (username: string, serverId: string) => Promise<void>;
-  closeDm: (username: string) => void;
-  onDmClosed: (callback: (username: string) => void) => () => void;
+  // Direct Messages (inline)
+  sendDm: (serverId: string, target: string, text: string) => void;
 }
 
 declare global {

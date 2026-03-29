@@ -40,7 +40,7 @@ Echo/
 │   ├── src/
 │   │   ├── App.tsx           # Root React component
 │   │   ├── main.tsx          # React entry point
-│   │   ├── index.css         # Tailwind CSS imports + theme color overrides (green, blue, red, purple, cyan, dusk, mono, light, custom)
+│   │   ├── index.css         # Tailwind CSS imports + theme color overrides (mono, light, custom)
 │   │   ├── components/
 │   │   │   └── terminal-forum.tsx  # Main UI component (connect screen, chat, voice, video)
 │   │   └── types/
@@ -98,6 +98,8 @@ for real-time mention notifications without requiring a full TCP session.
   response open with `Content-Type: text/event-stream`, and pushes mention events.
 - **Event format**: `event: mention\ndata: {"room":"General","sender":"alice","text":"@bob hey"}\n\n`
 - **Heartbeat**: A `: heartbeat` comment is sent every 25 seconds to keep connections alive.
+- **Subscriber tracking**: Uses `ConcurrentDictionary<SseClient, byte>` per user for
+  correct dead-client removal (avoids the ConcurrentBag arbitrary-remove pitfall).
 - **Retry**: The server sends `retry: 15000\n\n` on connect so clients auto-reconnect after 15s.
 - **Port**: Configured via `SsePort` in `server-config.json` (defaults to `TcpPort + 2`).
 
@@ -144,6 +146,8 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `UNPIN_MSG:<room>:<msgId>` | Unpin a message (requires `pin_messages`) |
 | `CREATE_VOICE_ROOM:<name>:<password>:<bitrate>` | Create a voice room (requires `create_rooms`) |
 | `CREATE_TEXT_ROOM:<name>:<password>` | Create a text room (requires `create_rooms`) |
+| `EDIT_VOICE_ROOM:<oldName>:<newName>:<password>:<bitrate>` | Edit a voice room — rename, change password/bitrate (requires `create_rooms`). Migrates user tracking and broadcasts updated room list. |
+| `EDIT_TEXT_ROOM:<oldName>:<newName>:<password>` | Edit a text room — rename, change password (requires `create_rooms`). Migrates user tracking and chat history on rename. |
 | `DELETE_VOICE_ROOM:<name>` | Delete a voice room (requires `delete_rooms`) |
 | `DELETE_TEXT_ROOM:<name>` | Delete a text room (requires `delete_rooms`) |
 | `REORDER_VOICE_ROOMS:<name1>,<name2>,...` | Reorder voice rooms (requires `reorder_rooms`) |
@@ -166,10 +170,10 @@ Private 1-to-1 messages between users, relayed through the server.
 - **Send**: Client sends `DM:<targetUser>:<text>` (text is E2EE-encrypted in the main process if a key is active)
 - **Receive**: Server relays `DM:<fromUser>:<text>` to the recipient
 - **Echo**: Server sends `DM_SENT:<targetUser>:<text>` back to the sender for delivery confirmation
-- **Encryption**: When E2EE is active, DM text is encrypted with AES-256-GCM in the main process using the same PBKDF2-derived key as audio/video. The encrypted payload uses the `ENC:<base64>` format (same as room chat messages). Decryption also happens in the main process before forwarding to the DM window.
-- **UI**: Double-click a user in the sidebar or click "Direct Message" in the user context menu to open a DM window. Incoming DMs auto-open a window if one isn't already open for that user.
+- **Encryption**: When E2EE is active, DM text is encrypted with AES-256-GCM in the main process using the same PBKDF2-derived key as audio/video. The encrypted payload uses the `ENC:<base64>` format (same as room chat messages). Decryption also happens in the main process before forwarding to the renderer.
+- **UI**: Double-click a user in the sidebar or click "Direct Message" in the user context menu to open an inline DM tab in the tab bar. The DM chat replaces the server content area while the tab is active. Incoming DMs auto-open a tab if one isn't already open for that user.
 - **Offline**: If the target user is not connected, the server responds with `ERROR:User is not online`
-- DMs are **not persisted** on the server — they exist only in the DM window's in-memory history
+- DMs are **not persisted** on the server or client — they exist only in the renderer's in-memory state
 
 ### Persistence Layer
 | Store | File | Purpose |
@@ -189,6 +193,8 @@ Private 1-to-1 messages between users, relayed through the server.
 - **Legacy migration**: SHA-256 hashes are automatically upgraded on next login
 - **Rate limiting**: 5 failed auth attempts per IP → 2-minute lockout
 - **Server password**: Compared with `CryptographicOperations.FixedTimeEquals` (timing-safe)
+- **Username matching**: All username comparisons in `ChatServer` use
+  `StringComparison.OrdinalIgnoreCase` for consistent case-insensitive behaviour
 - **E2EE modes**:
   - *Server-managed*: Server distributes a key to all clients (convenience)
   - *True E2EE*: Clients share a passphrase out-of-band; server never sees the key
@@ -257,6 +263,17 @@ by switching tabs—**no reconnection required**.
   messages to the correct connection.
 - **Voice routing**: `sendToVoice(msg)` targets the server that owns the voice session
   (`voiceServerId`). `sendToServer(msg)` targets the currently viewed tab.
+- **Audio pipeline persistence**: the renderer's audio lifecycle (`AudioContext`, mic
+  stream, per-user playback nodes) is preserved when switching server tabs. Because
+  `currentVoiceRoom` is part of the per-server snapshot and becomes `null` when viewing
+  a non-voice server, the `useEffect` that manages `startAudio`/`stopAudio` checks
+  `voiceServerIdRef` before tearing down — if an active voice session exists on *any*
+  server the pipeline stays alive. Similarly, switching back to the voice server skips
+  redundant `startAudio` calls when the `AudioContext` is already running.
+- **Background voice-server disconnect**: if the server owning the voice session
+  disconnects while the user is viewing another tab, the `onChatDisconnected` handler
+  detects the match via `voiceServerIdRef` and calls `stopAudio()` + clears
+  `voiceServerId` before the early-return guard for background servers.
 
 ### Server Tab Bar
 A browser-style tab bar sits below the window titlebar on both the home/connect screen
@@ -286,6 +303,12 @@ accent bottom border.
   home-screen server cards (autoconnect toggle, logout, remove).
 
 ### Main Process — `electron/main.js`
+
+#### Windows App Identity
+On Windows, `app.setAppUserModelId('Echo')` is called at startup so that OS
+notifications display the app name **Echo** (instead of the default Electron ID).
+The `BrowserWindow` is also given an explicit `icon` pointing to
+`build-resources/icon.png` so the notification toast shows the correct logo.
 
 #### Multi-Server TCP State
 Instead of a single `tcpSocket`, the main process maintains a `tcpConnections` Map
@@ -442,24 +465,17 @@ disconnect.
 | `popout:video-frame`  | main → popout  | Forward encoded video frame          |
 | `popout:feed-ended`   | main → popout  | Notifies pop-out that feed ended     |
 
-#### Direct Message Window
-Private chat windows opened via double-click on a user or the "Direct Message" context
-menu button. Each DM window is a separate frameless `BrowserWindow` with its own preload
-(`dm-preload.js`) and HTML (`dm-chat.html`). Messages are encrypted/decrypted in the main
-process using the same E2EE key as audio/video, so the DM window itself never handles
-encryption. Incoming DMs from users without an open window automatically spawn a new window.
+#### Direct Messages (Inline)
+Private 1-to-1 chats rendered inline in the main renderer as tabs alongside server tabs.
+Double-clicking a user or clicking "Direct Message" in the context menu opens a DM tab
+that takes up the full content area (replacing the server panels while active). Messages
+are encrypted/decrypted in the main process using the same E2EE key as audio/video.
+Incoming DMs from users without an open tab automatically create one. DM message history
+is kept in-memory per username and is lost on reload.
 
 | IPC Channel           | Direction      | Description                          |
 |-----------------------|----------------|--------------------------------------|
-| `dm:open`             | invoke → main  | Open a DM window for a username      |
-| `dm:close`            | send → main    | Close a specific DM window           |
-| `dm:closed`           | main → renderer| Notifies renderer a DM window closed |
-| `dm:get-info`         | invoke (dm)    | DM window queries its own/target name|
-| `dm:send-message`     | send → main    | Send a DM (main encrypts + TCP send) |
-| `dm:message`          | main → dm      | Forward decrypted incoming DM text   |
-| `dm:minimize`         | send → main    | Minimize the sending DM window       |
-| `dm:maximize`         | send → main    | Toggle maximize on the DM window     |
-| `dm:close-self`       | send → main    | Close the sending DM window          |
+| `dm:send-inline`      | send → main    | Send a DM (main encrypts + TCP send) |
 
 ### Renderer — `terminal-forum.tsx`
 
@@ -476,9 +492,9 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | IPC subscriptions | 554–649 | Wires up audio/video receive callbacks |
 | Audio lifecycle | 679–776 | `startAudio()` / `stopAudio()` — `cleanupVideo()` resets decoders, watching state, and pop-outs but preserves `cameraUsers`/`screenUsers` (server-authoritative state synced via `USERS` broadcasts) |
 | Video capture | 778–970 | Camera and screen share encoding |
-| Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload |
+| Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload (object URLs are revoked after image load to prevent memory leaks) |
 | Connect screen | 1410+ | Server list, login dialogs |
-| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage), per-user screenshare mute (right-click context menu), right-click context menu on voice channel sidebar users and call UI tiles |
+| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage), per-user screenshare mute (right-click context menu), right-click context menu on voice channel sidebar users and call UI tiles, voice activity indicator (green ring around profile picture when speaking). Footer status bar removed; compact panel spacing (1.5 units padding/gap) with 3 px resize handles. Inline DM tabs in tab bar (bubble-style chat, full content area). Voice channel bitrate label hidden from sidebar (bitrate is still stored internally and used for Opus encoding). Lazy-loaded chat history: server sends last 50 messages on join, client loads 50 more on scroll-to-top via `CMD:FETCH_HISTORY`. |
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:
@@ -492,7 +508,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Autoconnect (start, stop, mention listener)
 - Auto-updater (version, check, install, progress/status listeners)
 - Video pop-out (open, close, closed listener)
-- Direct messages — `openDm(username, serverId)`, close, closed listener
+- Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows)
 
 ### AudioWorklet Processors
 - **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Used for voice capture.
@@ -556,6 +572,7 @@ Client → Server:
   AUTH:<username>:<password>
   REGISTER:<username>:<password>
   CMD:<command>
+  CMD:FETCH_HISTORY:<room>:<beforeId>:<count>   (load older messages, max 50)
   MSG:<room>:<text>
   FILE:<room>:<filename>:<mimeType>:<base64>
   VIDEO:<flagsHex>:<base64>
@@ -574,7 +591,7 @@ Server → Client:
   ROLES:<json>
   JOINED_VOICE:<room>:<bitrate> | LEFT_VOICE
   JOINED_TEXT:<room> | LEFT_TEXT:<room>
-  HISTORY:<room>:<json>
+  HISTORY:<room>:<hasMore>:<json>               (hasMore=True/False for pagination)
   MSG:<room>:<msgId>:<sender>:<text>
   MSG_DELETED:<room>:<msgId>
   VIDEO:<sender>:<flagsHex>:<base64>

@@ -60,11 +60,6 @@ public class RoleStore
 
     public List<RoleDefinition> GetRoles() { lock (_lock) return _data.Roles.ToList(); }
 
-    public RoleDefinition? GetRole(string roleName)
-    {
-        lock (_lock) return GetRoleUnsafe(roleName);
-    }
-
     public List<string> GetUserRoleNames(string username)
     {
         lock (_lock)

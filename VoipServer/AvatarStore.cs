@@ -46,11 +46,6 @@ public class AvatarStore
             Save();
     }
 
-    public Dictionary<string, string> GetAllAvatars()
-    {
-        return new Dictionary<string, string>(_avatars);
-    }
-
     private void Load()
     {
         try

@@ -212,7 +212,7 @@ public class ChatServer
             // Kick existing connections with same username (old one's cleanup will see new client)
             foreach (var existingKv in _clients.ToArray())
             {
-                if (existingKv.Key != client && existingKv.Value.name == name)
+                if (existingKv.Key != client && string.Equals(existingKv.Value.name, name, StringComparison.OrdinalIgnoreCase))
                 {
                     _clients.TryRemove(existingKv.Key, out _);
                     try { existingKv.Key.Close(); } catch { }
@@ -271,7 +271,7 @@ public class ChatServer
 
             // Only remove from rooms if no other connection exists for this user
             // (preserves voice room membership on reconnect / server switch)
-            var stillConnected = _clients.Values.Any(c => c.name == name);
+            var stillConnected = _clients.Values.Any(c => string.Equals(c.name, name, StringComparison.OrdinalIgnoreCase));
             if (!stillConnected)
             {
                 if (_cameraActive.TryRemove(name, out _))
@@ -461,6 +461,25 @@ public class ChatServer
             }
             else if (args.Length >= 2)
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("FETCH_HISTORY:"))
+        {
+            // FETCH_HISTORY:<room>:<beforeId>:<count>
+            var args = cmd.Substring("FETCH_HISTORY:".Length).Split(':', 3);
+            if (args.Length >= 3)
+            {
+                var roomName = args[0];
+                var beforeId = args[1];
+                if (int.TryParse(args[2], out var count))
+                {
+                    count = Math.Clamp(count, 1, 50);
+                    var older = _history.GetHistory(roomName, count, beforeId);
+                    // There are more messages if the oldest returned isn't the first in the room
+                    var hasMore = older.Count > 0 && older.Count == count;
+                    var json = JsonSerializer.Serialize(older);
+                    await writer.WriteLineAsync($"HISTORY:{roomName}:{hasMore}:{json}").ConfigureAwait(false);
+                }
+            }
         }
         else if (cmd.StartsWith("ASSIGN_ROLE:"))
         {
@@ -860,6 +879,55 @@ public class ChatServer
             else
                 await writer.WriteLineAsync("ERROR:Invalid room order").ConfigureAwait(false);
         }
+        else if (cmd.StartsWith("EDIT_VOICE_ROOM:"))
+        {
+            // EDIT_VOICE_ROOM:<oldName>:<newName>:<password>:<bitrate>
+            if (!_roleStore.HasPermission(name, "create_rooms"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            var args = cmd.Substring("EDIT_VOICE_ROOM:".Length).Split(':', 4);
+            var oldName = args[0];
+            var newName = args.Length > 1 ? args[1] : oldName;
+            var password = args.Length > 2 && !string.IsNullOrEmpty(args[2]) ? args[2] : null;
+            var bitrate = args.Length > 3 && int.TryParse(args[3], out var ebr) ? ebr : 96000;
+            if (_rooms.Config.EditVoiceRoom(oldName, newName, password, bitrate))
+            {
+                if (!string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase))
+                    _rooms.RenameVoiceRoom(oldName, newName);
+                _log?.Invoke($"[Rooms] {name} edited voice room '{oldName}' → '{newName}'");
+                await BroadcastRoomListAsync().ConfigureAwait(false);
+                await BroadcastUserListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Room not found or name conflict").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("EDIT_TEXT_ROOM:"))
+        {
+            // EDIT_TEXT_ROOM:<oldName>:<newName>:<password>
+            if (!_roleStore.HasPermission(name, "create_rooms"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            var args = cmd.Substring("EDIT_TEXT_ROOM:".Length).Split(':', 3);
+            var oldName = args[0];
+            var newName = args.Length > 1 ? args[1] : oldName;
+            var password = args.Length > 2 && !string.IsNullOrEmpty(args[2]) ? args[2] : null;
+            if (_rooms.Config.EditTextRoom(oldName, newName, password))
+            {
+                if (!string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _rooms.RenameTextRoom(oldName, newName);
+                    _history.RenameRoom(oldName, newName);
+                }
+                _log?.Invoke($"[Rooms] {name} edited text room '{oldName}' → '{newName}'");
+                await BroadcastRoomListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Room not found or name conflict").ConfigureAwait(false);
+        }
         else if (cmd.StartsWith("UPDATE_SERVER_CONFIG:"))
         {
             if (!_roleStore.HasPermission(name, "server_settings"))
@@ -1017,11 +1085,13 @@ public class ChatServer
 
     private async Task SendHistoryAsync(StreamWriter writer, string roomName)
     {
-        var history = _history.GetHistory(roomName);
+        var history = _history.GetHistory(roomName, 50, null);
         if (history.Count > 0)
         {
+            var total = _history.GetMessageCount(roomName);
+            var hasMore = total > history.Count;
             var json = JsonSerializer.Serialize(history);
-            await writer.WriteLineAsync($"HISTORY:{roomName}:{json}").ConfigureAwait(false);
+            await writer.WriteLineAsync($"HISTORY:{roomName}:{hasMore}:{json}").ConfigureAwait(false);
         }
 
         var pinned = _history.GetPinnedMessages(roomName);

@@ -58,8 +58,6 @@ public class UserStore
         return (true, "");
     }
 
-    public bool UserExists(string username) => _users.ContainsKey(username);
-
     public string GetDisplayName(string username)
     {
         // ConcurrentDictionary uses OrdinalIgnoreCase comparer, so the stored key

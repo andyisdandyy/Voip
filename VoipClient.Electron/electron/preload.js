@@ -139,12 +139,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('popout:closed', handler);
   },
 
-  // ── Direct Messages ───────────────────────────────────────
-  openDm: (username, serverId) => ipcRenderer.invoke('dm:open', username, serverId),
-  closeDm: (username) => ipcRenderer.send('dm:close', username),
-  onDmClosed: (callback) => {
-    const handler = (_event, username) => callback(username);
-    ipcRenderer.on('dm:closed', handler);
-    return () => ipcRenderer.removeListener('dm:closed', handler);
-  },
+  // ── Direct Messages (inline in renderer) ───────────────────
+  sendDm: (serverId, target, text) => ipcRenderer.send('dm:send-inline', serverId, target, text),
 });

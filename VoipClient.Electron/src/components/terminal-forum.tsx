@@ -5,7 +5,7 @@ import {
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
   Plus, LogOut, Command, Wifi, WifiOff, Home, Paperclip, Download, FileText, Send, Smile, Moon, Image as ImageIcon,
   Music, Upload, Play, Trash, ChevronUp, ChevronDown, Eye, EyeOff, Shield, Sliders, Users, Check,
-  PanelRightClose, PanelRightOpen, ExternalLink, Pin,
+  PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
@@ -22,6 +22,8 @@ interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: strin
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
+interface DmTab { username: string; serverId: string }
+interface DmMessage { id: string; sender: string; body: string; timestamp: number }
 
 const VIDEO_RESOLUTIONS = {
   '720p':  { label: '720p',  width: 1280, height: 720 },
@@ -40,7 +42,7 @@ function getVideoBitrate(width: number, height: number, fps: number): number {
   return Math.round(base * (fps / 30));
 }
 
-type ThemeColor = 'green' | 'blue' | 'red' | 'purple' | 'cyan' | 'dusk' | 'mono' | 'light' | 'custom';
+type ThemeColor = 'mono' | 'light' | 'custom';
 
 interface CustomThemeColors { accent: string; bg: string; surface: string; text: string }
 const DEFAULT_CUSTOM_THEME: CustomThemeColors = { accent: '#3b82f6', bg: '#1a1a1a', surface: '#242424', text: '#e0e0e0' };
@@ -130,7 +132,6 @@ export function TerminalForum() {
   const [serverInfo, setServerInfo]   = useState<ServerInfo | null>(null);
   const [connectedServerId, setConnectedServerId] = useState<string | null>(null);
   const [voiceServerId, setVoiceServerId] = useState<string | null>(null);
-  const [parkedVoiceServerId, setParkedVoiceServerId] = useState<string | null>(null);
   const [connectingToServerId, setConnectingToServerId] = useState<string | null>(null);
   const [showHome, setShowHome] = useState(false);
   // Multi-server: set of server IDs with active TCP connections
@@ -147,6 +148,9 @@ export function TerminalForum() {
   const [roomMessages, setRoomMessages] = useState<Record<string, ChatMsg[]>>({});
   const [pinnedMessages, setPinnedMessages] = useState<Record<string, ChatMsg[]>>({});
   const [showPins, setShowPins] = useState(false);
+  const [roomHasMore, setRoomHasMore] = useState<Record<string, boolean>>({});
+  const [roomLoadingMore, setRoomLoadingMore] = useState<Record<string, boolean>>({});
+  const chatScrollRef = useRef<HTMLDivElement>(null);
 
   // Users
   const [onlineUsers, setOnlineUsers] = useState<UserInfo[]>([]);
@@ -258,13 +262,20 @@ export function TerminalForum() {
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
 
+  // Direct Messages (inline tabs)
+  const [openDmTabs, setOpenDmTabs] = useState<DmTab[]>([]);
+  const [activeDmTab, setActiveDmTab] = useState<string | null>(null); // username or null
+  const [dmMessages, setDmMessages] = useState<Record<string, DmMessage[]>>({});
+  const [dmInput, setDmInput] = useState('');
+  const dmMessagesEndRef = useRef<HTMLDivElement>(null);
+  const dmInputRef = useRef<HTMLInputElement>(null);
+
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef       = useRef<HTMLInputElement>(null);
   const fileInputRef   = useRef<HTMLInputElement>(null);
   const audioCtxRef    = useRef<AudioContext | null>(null);
   const captureRef     = useRef<AudioWorkletNode | null>(null);
-  const playbackRef    = useRef<AudioWorkletNode | null>(null);
   const streamRef      = useRef<MediaStream | null>(null);
   const isMutedRef     = useRef(false);
   const isDeafenedRef  = useRef(false);
@@ -308,6 +319,8 @@ export function TerminalForum() {
   const prevVoiceUsersRef = useRef<Set<string>>(new Set());
   const uiSoundCtxRef = useRef<AudioContext | null>(null);
   const voiceServerIdRef = useRef<string | null>(null);
+  const [speakingUsers, setSpeakingUsers] = useState<Set<string>>(new Set());
+  const speakingTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // ── Multi-server state cache ──────────────────────────────
   // Stores per-server state snapshots for background servers.
@@ -320,6 +333,7 @@ export function TerminalForum() {
     serverInfo: ServerInfo | null; voiceRooms: VoiceRoom[]; textRooms: TextRoom[];
     joinedTextRooms: Set<string>; currentTextRoom: string | null; currentVoiceRoom: string | null;
     roomMessages: Record<string, ChatMsg[]>; pinnedMessages: Record<string, ChatMsg[]>;
+    roomHasMore: Record<string, boolean>;
     onlineUsers: UserInfo[]; serverRoles: RoleInfo[];
     cameraUsers: Set<string>; screenUsers: Set<string>;
     soundboardSounds: string[]; customEmojis: Record<string, string>; e2eeActive: boolean;
@@ -330,7 +344,7 @@ export function TerminalForum() {
     return {
       nickname, serverIp, tcpPort, serverInfo, voiceRooms, textRooms,
       joinedTextRooms: joinedTextRooms, currentTextRoom: currentTextRoom, currentVoiceRoom: currentVoiceRoom,
-      roomMessages, pinnedMessages, onlineUsers, serverRoles,
+      roomMessages, pinnedMessages, roomHasMore, onlineUsers, serverRoles,
       cameraUsers, screenUsers, soundboardSounds, customEmojis, e2eeActive: e2eeActive,
     };
   }
@@ -341,6 +355,7 @@ export function TerminalForum() {
     setJoinedText(snap.joinedTextRooms); setCurrentText(snap.currentTextRoom);
     setCurrentVoice(snap.currentVoiceRoom);
     setRoomMessages(snap.roomMessages); setPinnedMessages(snap.pinnedMessages);
+    setRoomHasMore(snap.roomHasMore);
     setOnlineUsers(snap.onlineUsers); setServerRoles(snap.serverRoles);
     setCameraUsers(snap.cameraUsers); setScreenUsers(snap.screenUsers);
     setSoundboardSounds(snap.soundboardSounds); setCustomEmojis(snap.customEmojis);
@@ -351,6 +366,7 @@ export function TerminalForum() {
     setServerInfo(null); setVoiceRooms([]); setTextRooms([]);
     setJoinedText(new Set()); setCurrentText(null); setCurrentVoice(null);
     setRoomMessages({}); setPinnedMessages({}); setShowPins(false);
+    setRoomHasMore({}); setRoomLoadingMore({});
     setOnlineUsers([]); setServerRoles([]);
     setCameraUsers(new Set()); setScreenUsers(new Set());
     setSoundboardSounds([]); setCustomEmojis({});
@@ -418,7 +434,7 @@ export function TerminalForum() {
   const [emojiAutoIndex, setEmojiAutoIndex] = useState(0);
 
   // Room management
-  const [createRoomDialog, setCreateRoomDialog] = useState<{ type: 'voice' | 'text' } | null>(null);
+  const [createRoomDialog, setCreateRoomDialog] = useState<{ type: 'voice' | 'text'; editing?: string } | null>(null);
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomPassword, setNewRoomPassword] = useState('');
   const [newRoomBitrate, setNewRoomBitrate] = useState('96000');
@@ -1053,22 +1069,44 @@ export function TerminalForum() {
       setCurrentVoice(null);
       if (voiceServerIdRef.current === serverId) setVoiceServerId(null);
     } else if (line.startsWith('HISTORY:')) {
+      // Format: HISTORY:<room>:<hasMore>:<json>
       const payload = line.substring(8);
-      const idx = payload.indexOf(':');
-      if (idx >= 0) {
-        const room = payload.substring(0, idx);
-        try {
-          const msgs: any[] = JSON.parse(payload.substring(idx + 1));
-          Promise.all(msgs.map(async m => ({
-            id: crypto.randomUUID(),
-            msgId: m.Id || '',
-            sender: m.User || '',
-            body: await e2eeDecryptText(m.Text || ''),
-            timestamp: new Date(m.Time).getTime(),
-          }))).then(formatted => {
-            setRoomMessages(prev => ({ ...prev, [room]: [...formatted, ...(prev[room] || [])] }));
-          });
-        } catch {}
+      const i1 = payload.indexOf(':');
+      if (i1 >= 0) {
+        const room = payload.substring(0, i1);
+        const rest = payload.substring(i1 + 1);
+        const i2 = rest.indexOf(':');
+        if (i2 >= 0) {
+          const hasMore = rest.substring(0, i2).toLowerCase() === 'true';
+          try {
+            const msgs: any[] = JSON.parse(rest.substring(i2 + 1));
+            const scrollEl = chatScrollRef.current;
+            const prevScrollHeight = scrollEl?.scrollHeight || 0;
+            const prevScrollTop = scrollEl?.scrollTop || 0;
+            Promise.all(msgs.map(async m => ({
+              id: crypto.randomUUID(),
+              msgId: m.Id || '',
+              sender: m.User || '',
+              body: await e2eeDecryptText(m.Text || ''),
+              timestamp: new Date(m.Time).getTime(),
+            }))).then(formatted => {
+              setRoomMessages(prev => {
+                const existing = prev[room] || [];
+                if (existing.length === 0) return { ...prev, [room]: formatted };
+                // Older messages — prepend and preserve scroll position
+                requestAnimationFrame(() => {
+                  if (scrollEl) {
+                    const newScrollHeight = scrollEl.scrollHeight;
+                    scrollEl.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+                  }
+                });
+                return { ...prev, [room]: [...formatted, ...existing] };
+              });
+              setRoomHasMore(prev => ({ ...prev, [room]: hasMore }));
+              setRoomLoadingMore(prev => ({ ...prev, [room]: false }));
+            });
+          } catch {}
+        }
       }
     } else if (line.startsWith('MSG_DELETED:')) {
       const payload = line.substring(12);
@@ -1207,13 +1245,29 @@ export function TerminalForum() {
         new Notification(`@${sender} i #${room}`, { body: line.substring(i2 + 1).substring(0, 100) });
       }
     } else if (line.startsWith('DM:')) {
-      // DM:<fromUser>:<text> — incoming direct message notification
+      // DM:<fromUser>:<text> — incoming direct message (already decrypted by main process)
       const i1 = line.indexOf(':', 3);
       if (i1 >= 0) {
         const fromUser = line.substring(3, i1);
         const text = line.substring(i1 + 1);
+        const msg: DmMessage = { id: crypto.randomUUID(), sender: fromUser, body: text, timestamp: Date.now() };
+        setDmMessages(prev => ({ ...prev, [fromUser]: [...(prev[fromUser] || []), msg] }));
+        // Auto-open a DM tab if one isn't already open
+        setOpenDmTabs(prev => {
+          if (prev.some(t => t.username === fromUser)) return prev;
+          return [...prev, { username: fromUser, serverId }];
+        });
+        if (notificationSoundsRef.current) playUiSound('message');
         new Notification(`DM from ${fromUser}`, { body: text.substring(0, 100) });
-        playUiSound('message');
+      }
+    } else if (line.startsWith('DM_SENT:')) {
+      // DM_SENT:<target>:<text> — our sent DM echoed back (already decrypted by main process)
+      const i1 = line.indexOf(':', 8);
+      if (i1 >= 0) {
+        const target = line.substring(8, i1);
+        const text = line.substring(i1 + 1);
+        const msg: DmMessage = { id: crypto.randomUUID(), sender: nickname, body: text, timestamp: Date.now() };
+        setDmMessages(prev => ({ ...prev, [target]: [...(prev[target] || []), msg] }));
       }
     } else if (line === 'REQUEST_KEYFRAME') {
       forceKeyframeRef.current = true;
@@ -1299,11 +1353,15 @@ export function TerminalForum() {
       window.electronAPI.onChatDisconnected((serverId) => {
         setConnectedServerIds(prev => { const s = new Set(prev); s.delete(serverId); return s; });
         delete serverStatesRef.current[serverId];
+        // If the voice server disconnected (even in background), clean up audio
+        if (voiceServerIdRef.current === serverId) {
+          setVoiceServerId(null);
+          stopAudio();
+        }
         if (serverId !== connectedServerIdRef.current) return;
         setIsConnected(false);
         setConnectedServerId(null);
-        setParkedVoiceServerId(null);
-        if (voiceServerIdRef.current === serverId) { setVoiceServerId(null); setCurrentVoice(null); }
+        setCurrentVoice(null);
         setCurrentText(null);
         setJoinedText(new Set());
         setRoomMessages({});
@@ -1321,7 +1379,6 @@ export function TerminalForum() {
         window.electronAPI.setEncryptionKey(serverId, null);
         setCameraUsers(new Set());
         setScreenUsers(new Set());
-        stopAudio();
       }),
       window.electronAPI.onAudioReceived((senderName, data) => {
         if (isDeafenedRef.current || !audioCtxRef.current) return;
@@ -1346,6 +1403,12 @@ export function TerminalForum() {
           const copy = new Uint8Array(data).buffer;
           pipeline.playback.port.postMessage(copy, [copy]);
         }
+        // Track speaking state
+        setSpeakingUsers(prev => { if (prev.has(senderName)) return prev; const s = new Set(prev); s.add(senderName); return s; });
+        if (speakingTimeoutsRef.current[senderName]) clearTimeout(speakingTimeoutsRef.current[senderName]);
+        speakingTimeoutsRef.current[senderName] = setTimeout(() => {
+          setSpeakingUsers(prev => { if (!prev.has(senderName)) return prev; const s = new Set(prev); s.delete(senderName); return s; });
+        }, 300);
       }),
       window.electronAPI.onScreenAudioReceived((senderName, data) => {
         if (isDeafenedRef.current || !audioCtxRef.current) return;
@@ -1465,14 +1528,28 @@ export function TerminalForum() {
   }, [pinnedServers, connectedServerIds, connectingToServerId]);
 
   // ── Audio lifecycle (tied to currentVoiceRoom) ────────────
+  // When switching server tabs, currentVoiceRoom changes to the target
+  // server's value (often null). If the user is still in voice on another
+  // server (voiceServerIdRef is set), we must NOT tear down the audio
+  // pipeline — otherwise mic capture and playback stop even though the
+  // UDP session is still alive.
 
   useEffect(() => {
     if (currentVoiceRoom) {
-      startAudio().catch(err => console.error('Audio start failed:', err));
-    } else {
+      // Only start if audio isn't already running (avoids teardown+restart on tab switch back)
+      if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+        startAudio().catch(err => console.error('Audio start failed:', err));
+      }
+    } else if (!voiceServerIdRef.current) {
+      // No active voice session on any server — safe to stop
       stopAudio();
     }
-    return () => stopAudio();
+    return () => {
+      // Cleanup: only tear down if there's no voice session active elsewhere
+      if (!voiceServerIdRef.current) {
+        stopAudio();
+      }
+    };
   }, [currentVoiceRoom]);
 
   async function startAudio() {
@@ -1562,7 +1639,6 @@ export function TerminalForum() {
     audioCtxRef.current?.close().catch(() => {});
     audioCtxRef.current = null;
     captureRef.current = null;
-    playbackRef.current = null;
     screenCaptureRef.current = null;
     // Clean up per-user voice playback pipelines
     for (const p of Object.values(userPlaybackRef.current)) {
@@ -1574,6 +1650,10 @@ export function TerminalForum() {
       try { p.playback.disconnect(); p.gain.disconnect(); } catch {}
     }
     userScreenPlaybackRef.current = {};
+    // Clear speaking state
+    for (const t of Object.values(speakingTimeoutsRef.current)) clearTimeout(t);
+    speakingTimeoutsRef.current = {};
+    setSpeakingUsers(new Set());
   }
 
   async function createVideoEncoder(width: number, height: number, bitrate: number, framerate: number, bitrateMode: 'constant' | 'variable' = 'constant') {
@@ -1870,8 +1950,9 @@ export function TerminalForum() {
       const file = input.files?.[0];
       if (!file) return;
       const img = new window.Image();
-      img.onload = () => setAvatarEditor({ img, zoom: 1, offsetX: 0, offsetY: 0 });
-      img.src = URL.createObjectURL(file);
+      const url = URL.createObjectURL(file);
+      img.onload = () => { URL.revokeObjectURL(url); setAvatarEditor({ img, zoom: 1, offsetX: 0, offsetY: 0 }); };
+      img.src = url;
     };
     input.click();
   }
@@ -1910,8 +1991,9 @@ export function TerminalForum() {
       const file = input.files?.[0];
       if (!file) return;
       const img = new window.Image();
-      img.onload = () => setLogoEditor({ img, zoom: 1, offsetX: 0, offsetY: 0 });
-      img.src = URL.createObjectURL(file);
+      const url = URL.createObjectURL(file);
+      img.onload = () => { URL.revokeObjectURL(url); setLogoEditor({ img, zoom: 1, offsetX: 0, offsetY: 0 }); };
+      img.src = url;
     };
     input.click();
   }
@@ -1927,8 +2009,9 @@ export function TerminalForum() {
       const file = input.files?.[0];
       if (!file) return;
       const img = new window.Image();
-      img.onload = () => setEmojiEditor({ img, zoom: 1, offsetX: 0, offsetY: 0, name });
-      img.src = URL.createObjectURL(file);
+      const url = URL.createObjectURL(file);
+      img.onload = () => { URL.revokeObjectURL(url); setEmojiEditor({ img, zoom: 1, offsetX: 0, offsetY: 0, name }); };
+      img.src = url;
     };
     input.click();
   }
@@ -2165,9 +2248,37 @@ export function TerminalForum() {
 
   // ── Auto‑scroll ───────────────────────────────────────────
 
+  const loadingOlderRef = useRef(false);
+
   useEffect(() => {
+    // Don't auto-scroll to bottom when we just prepended older messages
+    if (loadingOlderRef.current) {
+      loadingOlderRef.current = false;
+      return;
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [roomMessages, currentTextRoom]);
+
+  useEffect(() => {
+    dmMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [dmMessages, activeDmTab]);
+
+  // ── Load older messages on scroll-to-top ──────────────────
+
+  const handleChatScroll = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el || !currentTextRoom) return;
+    if (el.scrollTop > 80) return;
+    if (!roomHasMore[currentTextRoom]) return;
+    if (roomLoadingMore[currentTextRoom]) return;
+    const msgs = roomMessages[currentTextRoom] || [];
+    if (msgs.length === 0) return;
+    const oldestMsgId = msgs[0].msgId;
+    if (!oldestMsgId) return;
+    loadingOlderRef.current = true;
+    setRoomLoadingMore(prev => ({ ...prev, [currentTextRoom]: true }));
+    sendToServer(`CMD:FETCH_HISTORY:${currentTextRoom}:${oldestMsgId}:50`);
+  }, [currentTextRoom, roomHasMore, roomLoadingMore, roomMessages, sendToServer]);
 
   // ── Helpers ───────────────────────────────────────────────
 
@@ -2233,6 +2344,17 @@ export function TerminalForum() {
 
   const addToOpenTabs = (serverId: string) => {
     setOpenTabs(prev => prev.includes(serverId) ? prev : [...prev, serverId]);
+  };
+
+  const openInlineDm = (username: string, serverId: string) => {
+    if (username === nickname) return;
+    setOpenDmTabs(prev => {
+      if (prev.some(t => t.username === username && t.serverId === serverId)) return prev;
+      return [...prev, { username, serverId }];
+    });
+    setActiveDmTab(username);
+    setDmInput('');
+    setShowHome(false);
   };
 
   const connectToPinnedServer = async (server: PinnedServer) => {
@@ -2999,13 +3121,13 @@ export function TerminalForum() {
        )}
      </div>
 
-     {/* ── Server Tab Bar ──────────────────────────────────── */}
-     {openTabs.length > 0 && (
+     {/* ── Server + DM Tab Bar ──────────────────────────────── */}
+     {(openTabs.length > 0 || openDmTabs.length > 0) && (
      <div className={`flex items-center bg-[#0d120d]/80 border-b border-green-900/30 px-2 gap-0.5 overflow-x-auto shrink-0 scrollbar-none ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}>
        {openTabs.map(tabId => {
          const server = pinnedServers.find(s => s.id === tabId);
          if (!server) return null;
-         const isActiveTab = connectedServerId === server.id;
+         const isActiveTab = connectedServerId === server.id && !activeDmTab;
          const mentions = (!isActiveTab && serverMentions[server.id]) || 0;
          return (
            <div key={server.id}
@@ -3028,6 +3150,7 @@ export function TerminalForum() {
              }}
              onDragEnd={() => { setDragTabId(null); setDragOverTabId(null); }}
              onClick={() => {
+               setActiveDmTab(null);
                if (isActiveTab) return;
                setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; });
                connectToPinnedServer(server);
@@ -3067,14 +3190,99 @@ export function TerminalForum() {
            </div>
          );
        })}
+       {/* ── DM tabs ──────────────────────────────────────── */}
+       {openDmTabs.map(dm => {
+         const isActiveDm = activeDmTab === dm.username;
+         const unread = !isActiveDm && (dmMessages[dm.username] || []).some(m => m.sender !== nickname);
+         return (
+           <div key={`dm-${dm.username}`}
+             onClick={() => { setActiveDmTab(dm.username); setDmInput(''); setShowHome(false); }}
+             className={`group flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-xs transition-all shrink-0 max-w-[200px] border-b-2 select-none cursor-pointer ${
+               isActiveDm
+                 ? 'bg-[#0a0e0a] text-green-400 border-green-500'
+                 : 'text-green-700 hover:text-green-500 hover:bg-green-900/20 border-transparent'
+             }`}>
+             <Send className="w-3.5 h-3.5 shrink-0" />
+             <span className="truncate">{dm.username}</span>
+             <button
+               onClick={(e) => {
+                 e.stopPropagation();
+                 setOpenDmTabs(prev => prev.filter(t => t.username !== dm.username));
+                 if (isActiveDm) setActiveDmTab(null);
+               }}
+               className="p-0.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/30 opacity-0 group-hover:opacity-100 transition-all shrink-0 ml-auto"
+               title="Close DM">
+               <X className="w-3 h-3" />
+             </button>
+           </div>
+         );
+       })}
      </div>
      )}
 
      {/* ── Main content wrapper with padding ──────────────── */}
-     <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? '' : 'p-4 gap-4'}`}>
+     <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? '' : 'p-1.5 gap-1.5'}`}>
 
+      {/* ── Inline DM Chat ─────────────────────────────────── */}
+      {activeDmTab ? (() => {
+        const dmTab = openDmTabs.find(t => t.username === activeDmTab);
+        if (!dmTab) return null;
+        const msgs = dmMessages[activeDmTab] || [];
+        return (
+          <div className="flex-1 flex flex-col overflow-hidden bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10">
+            {/* DM header */}
+            <div className="px-4 py-3 border-b border-green-900/30 flex items-center gap-3 shrink-0">
+              <Send className="w-4 h-4 text-green-600" />
+              <span className="text-sm text-green-400 font-bold">DM — {activeDmTab}</span>
+            </div>
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {msgs.length === 0 && (
+                <div className="flex-1 flex items-center justify-center h-full text-green-800 text-sm">
+                  No messages yet — say hi!
+                </div>
+              )}
+              {msgs.map(msg => {
+                const isMe = msg.sender === nickname;
+                return (
+                  <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[70%] px-3 py-2 rounded-lg ${isMe ? 'bg-green-900/40 text-green-400' : 'bg-[#0a0e0a] text-green-500'}`}>
+                      <div className="text-[10px] text-green-700 mb-0.5">{msg.sender} · {new Date(msg.timestamp).toLocaleTimeString()}</div>
+                      <div className="text-sm break-words whitespace-pre-wrap">{msg.body}</div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={dmMessagesEndRef} />
+            </div>
+            {/* Input */}
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              if (!dmInput.trim()) return;
+              window.electronAPI.sendDm(dmTab.serverId, dmTab.username, dmInput);
+              setDmInput('');
+              dmInputRef.current?.focus();
+            }} className="px-4 py-3 border-t border-green-900/30 flex gap-2 shrink-0">
+              <input
+                ref={dmInputRef}
+                type="text"
+                value={dmInput}
+                onChange={e => setDmInput(e.target.value)}
+                placeholder={`Message ${activeDmTab}...`}
+                className="flex-1 bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2.5 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-1 focus:ring-green-900/50 transition-all text-sm"
+                autoFocus
+              />
+              <button type="submit" disabled={!dmInput.trim()}
+                className="px-4 py-2.5 bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:text-green-800 text-green-400 rounded-lg transition-all text-sm font-bold">
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
+          </div>
+        );
+      })() : (
+      <>
       {/* ── Main content ───────────────────────────────────── */}
-      <div className="flex-1 flex gap-4 overflow-hidden">
+      <div className="flex-1 flex gap-0 overflow-hidden">
 
         {/* ── Left sidebar: rooms ─────────────────────────── */}
         <div className={`bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10 flex flex-col shrink-0 ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}
@@ -3106,8 +3314,14 @@ export function TerminalForum() {
                     {r.hasPassword ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
                     <span className="text-sm truncate">{r.name}</span>
                   </button>
-                  {(hasPermission('reorder_rooms') || hasPermission('delete_rooms')) && (
+                  {(hasPermission('reorder_rooms') || hasPermission('delete_rooms') || hasPermission('create_rooms')) && (
                     <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
+                      {hasPermission('create_rooms') && (
+                        <button onClick={() => { setCreateRoomDialog({ type: 'text', editing: r.name }); setNewRoomName(r.name); setNewRoomPassword(''); }}
+                          className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Edit channel">
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                      )}
                       {hasPermission('reorder_rooms') && idx > 0 && (
                         <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; sendToServer(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
                           className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move up">
@@ -3158,10 +3372,15 @@ export function TerminalForum() {
                         }`}>
                         {r.hasPassword ? <Lock className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                         <span className="text-sm truncate">{r.name}</span>
-                        {r.bitrate > 0 && <span className="ml-auto text-xs text-green-800">{r.bitrate / 1000}k</span>}
                       </button>
-                      {(hasPermission('reorder_rooms') || hasPermission('delete_rooms')) && (
+                      {(hasPermission('reorder_rooms') || hasPermission('delete_rooms') || hasPermission('create_rooms')) && (
                         <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
+                          {hasPermission('create_rooms') && (
+                            <button onClick={() => { setCreateRoomDialog({ type: 'voice', editing: r.name }); setNewRoomName(r.name); setNewRoomPassword(''); setNewRoomBitrate(String(r.bitrate)); }}
+                              className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Edit channel">
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          )}
                           {hasPermission('reorder_rooms') && idx > 0 && (
                             <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; sendToServer(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
                               className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move up">
@@ -3327,9 +3546,9 @@ export function TerminalForum() {
         {/* ── Left resize handle ──────────────────────────── */}
         {!(isCallFullscreen && viewMode === 'voice' && currentVoiceRoom) && (
           <div
-            className="w-1 shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-green-500/20 transition-colors rounded-full"
+            className="w-[3px] shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-green-500/20 transition-colors"
             onMouseDown={(e) => startResize('left', e)}>
-            <div className="w-0.5 h-8 bg-green-900/40 group-hover:bg-green-500/60 rounded-full transition-colors" />
+            <div className="w-px h-6 bg-green-900/30 group-hover:bg-green-500/60 rounded-full transition-colors" />
           </div>
         )}
 
@@ -3365,6 +3584,7 @@ export function TerminalForum() {
                       const isLocal = u.name === nickname;
                       const isSelected = selectedVideoFeed === u.name;
                       if (selectedVideoFeed && !isSelected) return null;
+                      const isSpeaking = isLocal ? (micLevel > 0.05 && !isMuted) : speakingUsers.has(u.name);
                       return (
                         <div key={u.name}
                           onClick={() => setSelectedVideoFeed(isSelected ? null : u.name)}
@@ -3372,8 +3592,11 @@ export function TerminalForum() {
                           className={`relative bg-[#0a0e0a] rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${
                             isSelected
                               ? 'h-full border-green-500 shadow-lg shadow-green-900/50'
-                              : 'border-green-900/30 hover:border-green-700/50'
-                          }`}>
+                              : isSpeaking
+                                ? 'shadow-lg'
+                                : 'border-green-900/30 hover:border-green-700/50'
+                          }`}
+                          style={!isSelected && isSpeaking ? { borderColor: '#4ade80', '--tw-shadow-color': 'rgba(34, 197, 94, 0.5)' } as React.CSSProperties : undefined}>
                           <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-green-950/50 to-green-900/30">
                             {isLocal ? (
                               (isCameraOn || isScreenSharing) ? (
@@ -3523,9 +3746,13 @@ export function TerminalForum() {
                         const isSelf = u.name === nickname;
                         const userMuted = isSelf ? isMuted : u.muted;
                         const userDeafened = isSelf ? isDeafened : u.deafened;
+                        const isSpeaking = isSelf ? (micLevel > 0.05 && !isMuted) : speakingUsers.has(u.name);
                         return (
                         <div key={u.name} className="flex flex-col items-center">
-                          <div className="w-32 h-32 rounded-full ring-4 ring-green-900/50 shadow-lg shadow-green-900/50 mb-3 relative overflow-visible">
+                          <div className={`w-32 h-32 rounded-full ring-2 shadow-lg mb-3 relative overflow-visible transition-all duration-200 ${
+                            !isSpeaking ? 'ring-green-900/50 shadow-green-900/50' : ''
+                          }`}
+                            style={isSpeaking ? { '--tw-ring-color': '#4ade80', '--tw-shadow-color': 'rgba(34, 197, 94, 0.5)' } as React.CSSProperties : undefined}>
                             {u.avatar ? (
                               <img src={`data:image/jpeg;base64,${u.avatar}`} className="w-32 h-32 rounded-full object-cover" />
                             ) : (
@@ -3723,7 +3950,10 @@ export function TerminalForum() {
                   </div>
                 </div>
               )}
-              <div className="flex-1 overflow-y-auto p-6 space-y-0">
+              <div ref={chatScrollRef} onScroll={handleChatScroll} className="flex-1 overflow-y-auto p-6 space-y-0">
+                {currentTextRoom && roomLoadingMore[currentTextRoom] && (
+                  <div className="text-center text-xs text-green-700 py-2">Loading older messages…</div>
+                )}
                 {currentMessages.map((msg, idx) => {
                   const prev = idx > 0 ? currentMessages[idx - 1] : null;
                   const sameSender = prev && prev.sender === msg.sender && msg.sender !== '';
@@ -4006,9 +4236,9 @@ export function TerminalForum() {
         {/* ── Right resize handle ─────────────────────────── */}
         {showUserList && !(isCallFullscreen && viewMode === 'voice' && currentVoiceRoom) && (
           <div
-            className="w-1 shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-green-500/20 transition-colors rounded-full"
+            className="w-[3px] shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-green-500/20 transition-colors"
             onMouseDown={(e) => startResize('right', e)}>
-            <div className="w-0.5 h-8 bg-green-900/40 group-hover:bg-green-500/60 rounded-full transition-colors" />
+            <div className="w-px h-6 bg-green-900/30 group-hover:bg-green-500/60 rounded-full transition-colors" />
           </div>
         )}
 
@@ -4024,7 +4254,7 @@ export function TerminalForum() {
               <div key={u.name}
                 className="px-4 py-2.5 flex items-center gap-3 hover:bg-green-900/20 rounded-lg transition-all mb-2 cursor-pointer"
                 onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}
-                onDoubleClick={() => { if (u.name !== nickname) window.electronAPI.openDm(u.name, connectedServerId || ''); }}>
+                onDoubleClick={() => { if (u.name !== nickname) openInlineDm(u.name, connectedServerId || ''); }}>
                 <UserAvatar name={u.name} size="md" />
                 <div className="flex-1 min-w-0">
                   <span className="text-sm truncate block" style={{ color: u.roleColor || '#22c55e' }}>{u.name}</span>
@@ -4048,7 +4278,7 @@ export function TerminalForum() {
                   <div key={u.name}
                     className="px-4 py-2.5 flex items-center gap-3 hover:bg-green-900/20 rounded-lg transition-all mb-2 opacity-70 cursor-pointer"
                     onContextMenu={(e) => { e.preventDefault(); setUserContextMenu({ userId: u.name, x: e.clientX, y: e.clientY }); }}
-                    onDoubleClick={() => { if (u.name !== nickname) window.electronAPI.openDm(u.name, connectedServerId || ''); }}>
+                    onDoubleClick={() => { if (u.name !== nickname) openInlineDm(u.name, connectedServerId || ''); }}>
                     <UserAvatar name={u.name} size="md" />
                     <div className="flex-1 min-w-0">
                       <span className="text-sm truncate block" style={{ color: u.roleColor || '#22c55e' }}>{u.name}</span>
@@ -4083,16 +4313,7 @@ export function TerminalForum() {
         )}
       </div>
 
-      {/* ── Footer status bar ──────────────────────────────── */}
-      {!(isCallFullscreen && viewMode === 'voice' && currentVoiceRoom) && (
-      <div className="bg-[#0d120d]/80 backdrop-blur-sm px-4 py-2 rounded-lg flex items-center gap-4 text-xs text-green-700 shadow-lg shadow-green-900/20">
-        <span>STATUS: {isConnected ? 'CONNECTED' : 'DISCONNECTED'}</span>
-        {e2eeActive && <span className="text-green-500">🔒 E2EE</span>}
-        {currentTextRoom && <span>ROOM: #{currentTextRoom}</span>}
-        {currentVoiceRoom && <span>🔊 {currentVoiceRoom} ({fmt(callDuration)})</span>}
-        <span>USERS: {onlineUsersList.length}/{onlineUsers.length}</span>
-        <span className="ml-auto">{status}</span>
-      </div>
+      </>
       )}
       </div>{/* end content wrapper */}
 
@@ -4309,13 +4530,7 @@ export function TerminalForum() {
                     <select value={theme}
                       onChange={e => setTheme(e.target.value as ThemeColor)}
                       className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="green">Green (Default)</option>
-                      <option value="blue">Blue</option>
-                      <option value="red">Red</option>
-                      <option value="purple">Purple</option>
-                      <option value="cyan">Cyan</option>
-                      <option value="dusk">Dusk</option>
-                      <option value="mono">Mono (Black/White)</option>
+                      <option value="mono">Mono (Default)</option>
                       <option value="light">Light</option>
                       <option value="custom">Custom</option>
                     </select>
@@ -4349,22 +4564,17 @@ export function TerminalForum() {
                       <label className="text-xs text-green-600">UI Scale</label>
                       <span className="text-xs text-green-500 font-mono">{uiScale}%</span>
                     </div>
-                    <input type="range" min="75" max="150" step="5" value={uiScale}
+                    <input type="range" min="50" max="150" step="5" value={uiScale}
                       onChange={e => setUiScale(parseInt(e.target.value))}
                       className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
                     <div className="relative text-[10px] text-green-800 mt-1 h-4">
-                      <span className="absolute left-0">75%</span>
-                      <span className="absolute" style={{ left: '33.3%', transform: 'translateX(-50%)' }}>100%</span>
+                      <span className="absolute left-0">50%</span>
+                      <span className="absolute" style={{ left: '50%', transform: 'translateX(-50%)' }}>100%</span>
                       <span className="absolute right-0">150%</span>
                     </div>
                   </div>
-                  <label className="flex items-center gap-3 cursor-pointer">
-                    <input type="checkbox" defaultChecked
-                      className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                    <span className="text-sm text-green-500">Compact mode</span>
-                  </label>
-                </div>
-              </div>
+                    </div>
+                  </div>
 
               {/* Keybind Settings */}
               <div className="pt-4 border-t border-green-900/30">
@@ -4922,7 +5132,7 @@ export function TerminalForum() {
             {!isSelf && (
               <>
                 <button
-                  onClick={(e) => { e.stopPropagation(); window.electronAPI.openDm(userContextMenu.userId, connectedServerId || ''); setUserContextMenu(null); }}
+                  onClick={(e) => { e.stopPropagation(); openInlineDm(userContextMenu.userId, connectedServerId || ''); setUserContextMenu(null); }}
                   className="w-full px-4 py-2.5 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all flex items-center gap-2 mb-2">
                   <Send className="w-4 h-4" />
                   <span className="text-sm">Direct Message</span>
@@ -5444,7 +5654,7 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── Create Room Dialog ────────────────────────────── */}
+      {/* ── Create / Edit Room Dialog ─────────────────────── */}
       {createRoomDialog && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
@@ -5452,7 +5662,9 @@ export function TerminalForum() {
               <div className="flex items-center gap-3">
                 {createRoomDialog.type === 'voice' ? <Volume2 className="w-5 h-5 text-green-500" /> : <Hash className="w-5 h-5 text-green-500" />}
                 <h2 className="text-lg font-bold text-green-400">
-                  {createRoomDialog.type === 'voice' ? 'CREATE VOICE CHANNEL' : 'CREATE TEXT CHANNEL'}
+                  {createRoomDialog.editing
+                    ? (createRoomDialog.type === 'voice' ? 'EDIT VOICE CHANNEL' : 'EDIT TEXT CHANNEL')
+                    : (createRoomDialog.type === 'voice' ? 'CREATE VOICE CHANNEL' : 'CREATE TEXT CHANNEL')}
                 </h2>
               </div>
               <button onClick={() => setCreateRoomDialog(null)} className="p-2 text-green-600 hover:text-green-400">
@@ -5462,10 +5674,18 @@ export function TerminalForum() {
             <form onSubmit={e => {
               e.preventDefault();
               if (!newRoomName.trim()) return;
-              if (createRoomDialog.type === 'voice') {
-                sendToServer(`CMD:CREATE_VOICE_ROOM:${newRoomName.trim()}:${newRoomPassword}:${newRoomBitrate}`);
+              if (createRoomDialog.editing) {
+                if (createRoomDialog.type === 'voice') {
+                  sendToServer(`CMD:EDIT_VOICE_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomPassword}:${newRoomBitrate}`);
+                } else {
+                  sendToServer(`CMD:EDIT_TEXT_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomPassword}`);
+                }
               } else {
-                sendToServer(`CMD:CREATE_TEXT_ROOM:${newRoomName.trim()}:${newRoomPassword}`);
+                if (createRoomDialog.type === 'voice') {
+                  sendToServer(`CMD:CREATE_VOICE_ROOM:${newRoomName.trim()}:${newRoomPassword}:${newRoomBitrate}`);
+                } else {
+                  sendToServer(`CMD:CREATE_TEXT_ROOM:${newRoomName.trim()}:${newRoomPassword}`);
+                }
               }
               setCreateRoomDialog(null);
             }} className="p-6 space-y-4">
@@ -5477,7 +5697,7 @@ export function TerminalForum() {
                   autoFocus />
               </div>
               <div className="space-y-2">
-                <label className="text-xs text-green-700 block">{'>'} PASSWORD <span className="text-green-800">(optional)</span></label>
+                <label className="text-xs text-green-700 block">{'>'} PASSWORD <span className="text-green-800">(optional{createRoomDialog.editing ? ' — leave empty to remove' : ''})</span></label>
                 <input type="text" value={newRoomPassword} onChange={e => setNewRoomPassword(e.target.value)}
                   placeholder="Leave empty for no password"
                   className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
@@ -5498,8 +5718,8 @@ export function TerminalForum() {
               )}
               <button type="submit" disabled={!newRoomName.trim()}
                 className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
-                <Plus className="w-5 h-5" />
-                CREATE CHANNEL
+                {createRoomDialog.editing ? <Check className="w-5 h-5" /> : <Plus className="w-5 h-5" />}
+                {createRoomDialog.editing ? 'SAVE CHANGES' : 'CREATE CHANNEL'}
               </button>
             </form>
           </div>
