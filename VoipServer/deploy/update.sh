@@ -86,9 +86,11 @@ echo "Downloading..."
 curl_gh -H "Accept: application/octet-stream" "$DOWNLOAD_URL" -o "${TMP}/${ASSET_NAME}"
 tar xzf "${TMP}/${ASSET_NAME}" -C "$TMP"
 
-# ── Swap binary ──────────────────────────────────────────
+# ── Swap binary + native libs ────────────────────────────
 cp "${TMP}/VoipServer" "${SCRIPT_DIR}/VoipServer"
 chmod +x "${SCRIPT_DIR}/VoipServer"
+# Copy native libraries (e.g. e_sqlite3.so) if present
+find "$TMP" -name '*.so' -exec cp {} "${SCRIPT_DIR}/" \;
 echo "$RELEASE_TAG" > "$VERSION_FILE"
 
 rm -rf "$TMP"

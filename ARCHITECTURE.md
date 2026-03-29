@@ -879,7 +879,7 @@ npm run dist:mac     # macOS DMG (universal)
 
 | Workflow | Trigger tag | What it does |
 |---|---|---|
-| `release-server.yml` | `v*` | Publishes a self-contained `linux-x64` server binary |
+| `release-server.yml` | `v*` | Publishes a self-contained `linux-x64` server binary + native libraries (e.g. `e_sqlite3.so`) |
 | `release-client.yml` | `client-v*` | Publishes Windows (x64), macOS (x64 + arm64), and Linux (x64) Electron installers |
 
 **macOS builds:** The client workflow uses two separate jobs (`build-mac-x64` and `build-mac-arm64`) that each run on their own `macos-14` VM. The `mac.target` config in `package.json` lists only the target formats (`dmg`, `zip`) without hardcoded `arch` arrays, so the architecture is controlled entirely by the CLI `--x64`/`--arm64` flags in the workflow. This ensures each job builds only its intended architecture and avoids cross-arch `hdiutil` failures when creating DMGs on Apple Silicon runners.

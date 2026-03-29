@@ -32,7 +32,7 @@ jobs:
       - name: Package
         run: |
           cd artifacts/linux-x64
-          tar czf ../../VoipServer-linux-x64.tar.gz VoipServer
+          tar czf ../../VoipServer-linux-x64.tar.gz .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
