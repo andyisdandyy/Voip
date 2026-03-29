@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import {
   Terminal, Hash, User, Circle, Mic, MicOff, Headphones,
   Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, Monitor,
@@ -122,7 +122,7 @@ const EMOJI_SHORTCODES: Record<string, string> = {
 // ── Blob URL media player ─────────────────────────────────
 // Converts base64 data to a Blob URL for reliable <video>/<audio> playback.
 // Data URLs fail for large media and Chromium doesn't recognise video/quicktime.
-function BlobMedia({ type, base64, mimeType, className }: { type: 'video' | 'audio'; base64: string; mimeType: string; className?: string }) {
+const BlobMedia = memo(function BlobMedia({ type, base64, mimeType, className }: { type: 'video' | 'audio'; base64: string; mimeType: string; className?: string }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     try {
@@ -143,7 +143,7 @@ function BlobMedia({ type, base64, mimeType, className }: { type: 'video' | 'aud
   if (!src) return null;
   if (type === 'video') return <video src={src} controls preload="metadata" className={className} />;
   return <audio src={src} controls preload="metadata" className={className} />;
-}
+});
 
 // ── Component ───────────────────────────────────────────────
 
@@ -161,7 +161,10 @@ export function TerminalForum() {
   const [connectingToServerId, setConnectingToServerId] = useState<string | null>(null);
   const [showHome, setShowHome] = useState(false);
   // ── Browser-style back/forward navigation history ─────────
-  type NavEntry = { type: 'home' } | { type: 'server'; serverId: string } | { type: 'dm'; username: string };
+  type NavEntry =
+    | { type: 'home' }
+    | { type: 'server'; serverId: string; view: 'voice' | 'text'; textRoom?: string | null }
+    | { type: 'dm'; username: string };
   const navHistoryRef = useRef<NavEntry[]>([{ type: 'home' }]);
   const navIndexRef = useRef(0);
   const isNavRestoreRef = useRef(false);  // true while applying a back/forward entry
@@ -230,6 +233,7 @@ export function TerminalForum() {
   const [isRegister, setIsRegister] = useState(false);
   const [msgContextMenu, setMsgContextMenu] = useState<MsgContextMenu | null>(null);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; dataUrl: string } | null>(null);
+  const [fileUploadStatus, setFileUploadStatus] = useState<string | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [selectedVideoFeed, setSelectedVideoFeed] = useState<string | null>(null);
@@ -351,6 +355,7 @@ export function TerminalForum() {
   const connectedHostRef = useRef('');
   const connectedServerIdRef = useRef<string | null>(null);
   const currentVoiceRoomRef = useRef<string | null>(null);
+  const currentTextRoomRef = useRef<string | null>(null);
   const keybindsRef = useRef<Record<string, KeyBind | null>>({});
   const userPlaybackRef = useRef<Record<string, { playback: AudioWorkletNode; gain: GainNode }>>({});
   const userScreenPlaybackRef = useRef<Record<string, { playback: AudioWorkletNode; gain: GainNode }>>({});
@@ -418,7 +423,7 @@ export function TerminalForum() {
   // ── Browser-style back / forward helpers ───────────────────
   const navEntriesEqual = (a: NavEntry, b: NavEntry): boolean => {
     if (a.type !== b.type) return false;
-    if (a.type === 'server' && b.type === 'server') return a.serverId === b.serverId;
+    if (a.type === 'server' && b.type === 'server') return a.serverId === b.serverId && a.view === b.view && (a.textRoom ?? null) === (b.textRoom ?? null);
     if (a.type === 'dm' && b.type === 'dm') return a.username === b.username;
     return true;
   };
@@ -433,17 +438,57 @@ export function TerminalForum() {
     updateNavButtons();
   };
 
+  // Build a server nav entry from the current in-server view state
+  const serverNavEntry = (serverId: string): NavEntry => ({
+    type: 'server', serverId, view: viewModeRef.current, textRoom: currentTextRoomRef.current,
+  });
+
   const applyNavEntry = (entry: NavEntry) => {
     isNavRestoreRef.current = true;
     if (entry.type === 'home') {
+      const currentSid = connectedServerIdRef.current;
+      if (currentSid) serverStatesRef.current[currentSid] = takeServerSnapshot();
       setActiveDmTab(null);
       setShowHome(true);
     } else if (entry.type === 'server') {
       setActiveDmTab(null);
-      const server = pinnedServers.find(s => s.id === entry.serverId);
-      if (server) {
-        setShowHome(false);
-        connectToPinnedServer(server);
+      setShowHome(false);
+      const currentSid = connectedServerIdRef.current;
+      if (currentSid === entry.serverId) {
+        // Same server — just switch the sub-view
+        setViewModeTracked(entry.view);
+        if (entry.view === 'text') setCurrentText(entry.textRoom ?? null);
+      } else {
+        // Different server — do snapshot swap directly (bypass connectToPinnedServer to avoid stale-state issues)
+        const cached = serverStatesRef.current[entry.serverId];
+        if (cached) {
+          // Save current server's state
+          if (currentSid) serverStatesRef.current[currentSid] = takeServerSnapshot();
+          // Restore target
+          restoreServerSnapshot(cached);
+          connectedServerIdRef.current = entry.serverId;
+          setConnectedServerId(entry.serverId);
+          setIsConnected(true);
+          addToOpenTabs(entry.serverId);
+          // Override sub-view from nav entry
+          setViewModeTracked(entry.view);
+          if (entry.view === 'text') setCurrentText(entry.textRoom ?? null);
+          // Restore E2EE key
+          if (cached.e2eeActive) {
+            try {
+              const stored = JSON.parse(localStorage.getItem('voip-e2ee-keys') || '{}');
+              const passphrase = stored[entry.serverId];
+              if (passphrase) activateE2ee(passphrase);
+              else { e2eeKeyRef.current = null; setE2eeActive(false); }
+            } catch { e2eeKeyRef.current = null; setE2eeActive(false); }
+          } else {
+            e2eeKeyRef.current = null;
+          }
+        } else {
+          // No cached state — try connectToPinnedServer as fallback
+          const server = pinnedServers.find(s => s.id === entry.serverId);
+          if (server) connectToPinnedServer(server);
+        }
       }
     } else if (entry.type === 'dm') {
       setActiveDmTab(entry.username);
@@ -464,6 +509,12 @@ export function TerminalForum() {
     navIndexRef.current++;
     applyNavEntry(navHistoryRef.current[navIndexRef.current]);
   };
+
+  // Keep stable refs so the mount-once mouse/keyboard listener always calls the latest closure
+  const navBackRef = useRef(navBack);
+  const navForwardRef = useRef(navForward);
+  navBackRef.current = navBack;
+  navForwardRef.current = navForward;
 
   // Helper: send a message to the currently viewed server
   const sendToServer = useCallback((message: string) => {
@@ -608,7 +659,13 @@ export function TerminalForum() {
     const combined = new Uint8Array(12 + ct.byteLength);
     combined.set(iv);
     combined.set(new Uint8Array(ct), 12);
-    return 'ENC:' + btoa(String.fromCharCode(...combined));
+    // Build binary string in chunks to avoid call-stack overflow from spread operator
+    let binary = '';
+    const CHUNK = 8192;
+    for (let i = 0; i < combined.length; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, combined.subarray(i, Math.min(i + CHUNK, combined.length)) as unknown as number[]);
+    }
+    return 'ENC:' + btoa(binary);
   }
 
   async function e2eeDecryptText(data: string): Promise<string> {
@@ -868,6 +925,7 @@ export function TerminalForum() {
   useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
   useEffect(() => { connectedServerIdRef.current = connectedServerId; }, [connectedServerId]);
   useEffect(() => { currentVoiceRoomRef.current = currentVoiceRoom; }, [currentVoiceRoom]);
+  useEffect(() => { currentTextRoomRef.current = currentTextRoom; }, [currentTextRoom]);
   useEffect(() => { voiceServerIdRef.current = voiceServerId; }, [voiceServerId]);
   useEffect(() => { try { localStorage.setItem('voip-theme', theme); } catch {} }, [theme]);
   const customThemeSaveRef = useRef(0);
@@ -1002,13 +1060,13 @@ export function TerminalForum() {
   // Browser-style back/forward via mouse buttons 3/4 and Alt+Arrow keys
   useEffect(() => {
     const onMouse = (e: MouseEvent) => {
-      if (e.button === 3) { e.preventDefault(); navBack(); }
-      else if (e.button === 4) { e.preventDefault(); navForward(); }
+      if (e.button === 3) { e.preventDefault(); navBackRef.current(); }
+      else if (e.button === 4) { e.preventDefault(); navForwardRef.current(); }
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
-      if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navBack(); }
-      else if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navForward(); }
+      if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navBackRef.current(); }
+      else if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navForwardRef.current(); }
     };
     window.addEventListener('mouseup', onMouse);
     window.addEventListener('keydown', onKey);
@@ -1196,6 +1254,9 @@ export function TerminalForum() {
       const room = line.substring(9);
       setJoinedText(prev => { const s = new Set(prev); s.delete(room); return s; });
       setCurrentText(prev => prev === room ? null : prev);
+      setRoomMessages(prev => { const n = { ...prev }; delete n[room]; return n; });
+      setPinnedMessages(prev => { const n = { ...prev }; delete n[room]; return n; });
+      setRoomHasMore(prev => { const n = { ...prev }; delete n[room]; return n; });
     } else if (line.startsWith('JOINED_VOICE:')) {
       const payload = line.substring(13);
       const [room, br] = payload.split(':', 2);
@@ -1410,6 +1471,17 @@ export function TerminalForum() {
       }
     } else if (line === 'REQUEST_KEYFRAME') {
       forceKeyframeRef.current = true;
+    } else if (line.startsWith('FILE_PROGRESS:')) {
+      // FILE_PROGRESS:<room>:<stage>  (received | transcoding | broadcasting | done)
+      const payload = line.substring(14);
+      const ci = payload.indexOf(':');
+      if (ci >= 0) {
+        const stage = payload.substring(ci + 1);
+        if (stage === 'done') setFileUploadStatus(null);
+        else if (stage === 'received') setFileUploadStatus('Processing…');
+        else if (stage === 'transcoding') setFileUploadStatus('Transcoding video…');
+        else if (stage === 'broadcasting') setFileUploadStatus('Broadcasting…');
+      }
     } else if (line.startsWith('SOUNDBOARD:')) {
       try {
         const names: string[] = JSON.parse(line.substring(11));
@@ -1747,6 +1819,7 @@ export function TerminalForum() {
       // Start mic level monitoring
       if (micLevelIntervalRef.current) clearInterval(micLevelIntervalRef.current);
       const levelData = new Uint8Array(analyser.frequencyBinCount);
+      let prevLevel = 0;
       micLevelIntervalRef.current = setInterval(() => {
         if (!analyserRef.current) return;
         analyserRef.current.getByteTimeDomainData(levelData);
@@ -1755,8 +1828,12 @@ export function TerminalForum() {
           const v = (levelData[i] - 128) / 128;
           sum += v * v;
         }
-        setMicLevel(Math.min(1, Math.sqrt(sum / levelData.length) * 3));
-      }, 50);
+        const newLevel = Math.min(1, Math.sqrt(sum / levelData.length) * 3);
+        if (Math.abs(newLevel - prevLevel) > 0.02) {
+          prevLevel = newLevel;
+          setMicLevel(newLevel);
+        }
+      }, 100);
 
       // Playback: per-user pipelines are created dynamically in onAudioReceived
       console.log('[Audio] Pipeline ready — capture + per-user playback');
@@ -2080,7 +2157,7 @@ export function TerminalForum() {
     setVideoInputs(all.filter(d => d.kind === 'videoinput'));
   }
 
-  const myAvatar = onlineUsers.find(u => u.name === nickname)?.avatar || null;
+  const myAvatar = useMemo(() => onlineUsers.find(u => u.name === nickname)?.avatar || null, [onlineUsers, nickname]);
 
   function openAvatarPicker() {
     const input = document.createElement('input');
@@ -2532,8 +2609,8 @@ export function TerminalForum() {
     return parts.join('+');
   };
 
-  const currentMessages = currentTextRoom ? (roomMessages[currentTextRoom] || []) : [];
-  const usersInRoom = onlineUsers.filter(u => u.online && u.voiceRoom === currentVoiceRoom);
+  const currentMessages = useMemo(() => currentTextRoom ? (roomMessages[currentTextRoom] || []) : [], [currentTextRoom, roomMessages]);
+  const usersInRoom = useMemo(() => onlineUsers.filter(u => u.online && u.voiceRoom === currentVoiceRoom), [onlineUsers, currentVoiceRoom]);
 
   // Track voice room membership changes for join/leave sounds
   useEffect(() => {
@@ -2551,23 +2628,26 @@ export function TerminalForum() {
     prevVoiceUsersRef.current = currentUsers;
   }, [usersInRoom, currentVoiceRoom]);
   const isVideoMode = isCameraOn || isScreenSharing || cameraUsers.size > 0 || screenUsers.size > 0;
-  const onlineUsersList = onlineUsers.filter(u => u.online && u.status !== 'away');
-  const awayUsersList = onlineUsers.filter(u => u.online && u.status === 'away');
-  const offlineUsersList = onlineUsers.filter(u => !u.online);
+  const onlineUsersList = useMemo(() => onlineUsers.filter(u => u.online && u.status !== 'away'), [onlineUsers]);
+  const awayUsersList = useMemo(() => onlineUsers.filter(u => u.online && u.status === 'away'), [onlineUsers]);
+  const offlineUsersList = useMemo(() => onlineUsers.filter(u => !u.online), [onlineUsers]);
 
-  const myUser = onlineUsers.find(u => u.name === nickname);
-  const ALL_PERMISSIONS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings'];
-  const myPermissions = new Set<string>();
-  if (myUser) {
-    for (const roleName of myUser.roles) {
-      const role = serverRoles.find(r => r.name === roleName);
-      if (role) {
-        if (role.permissions.includes('admin')) { ALL_PERMISSIONS.forEach(p => myPermissions.add(p)); }
-        else role.permissions.forEach(p => myPermissions.add(p));
+  const myPermissions = useMemo(() => {
+    const ALL_PERMS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings'];
+    const perms = new Set<string>();
+    const myUser = onlineUsers.find(u => u.name === nickname);
+    if (myUser) {
+      for (const roleName of myUser.roles) {
+        const role = serverRoles.find(r => r.name === roleName);
+        if (role) {
+          if (role.permissions.includes('admin')) { ALL_PERMS.forEach(p => perms.add(p)); }
+          else role.permissions.forEach(p => perms.add(p));
+        }
       }
     }
-  }
-  const hasPermission = (perm: string) => myPermissions.has('admin') || myPermissions.has(perm);
+    return perms;
+  }, [onlineUsers, nickname, serverRoles]);
+  const hasPermission = useCallback((perm: string) => myPermissions.has('admin') || myPermissions.has(perm), [myPermissions]);
 
   // ── Pinned Server Functions ───────────────────────────────
 
@@ -2694,7 +2774,7 @@ export function TerminalForum() {
       setConnectedServerId(loginDialog);
       setIsConnected(true);
       setStatus('Connected');
-      pushNav({ type: 'server', serverId: loginDialog });
+      pushNav({ type: 'server', serverId: loginDialog, view: 'text', textRoom: null });
       setShowHome(false);
       setLoginDialog(null);
       addToOpenTabs(loginDialog);
@@ -2753,59 +2833,70 @@ export function TerminalForum() {
     e.preventDefault();
     if (!currentTextRoom) return;
     if (!input.trim() && !pendingFile) return;
-    if (pendingFile) {
-      let { name: fName, mimeType: fMime, base64: fData } = pendingFile;
+    try {
+      if (pendingFile) {
+        let { name: fName, mimeType: fMime, base64: fData } = pendingFile;
+        setFileUploadStatus('Sending…');
 
-      // ── Video file upload strategy ──
-      // 1. If the server has a file server enabled → upload via HTTP (server transcodes, works with E2EE)
-      // 2. Else send inline as base64
-      const fileServerPort = serverInfo?.fileServerPort;
-      const currentServer = pinnedServers.find(s => s.id === connectedServerIdRef.current);
-      const serverHost = currentServer?.address?.split(':')[0];
-      const authToken = currentServer?.authToken;
+        // ── Video file upload strategy ──
+        // 1. If the server has a file server enabled → upload via HTTP (server transcodes, works with E2EE)
+        // 2. Else send inline as base64
+        const fileServerPort = serverInfo?.fileServerPort;
+        const currentServer = pinnedServers.find(s => s.id === connectedServerIdRef.current);
+        const serverHost = currentServer?.address?.split(':')[0];
+        const authToken = currentServer?.authToken;
 
-      if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
-        // Upload to server's file server — server handles transcoding
-        try {
-          const timeout = new Promise<null>(r => setTimeout(r, 60000, null));
-          const result = await Promise.race([
-            window.electronAPI.uploadFile(serverHost, fileServerPort, authToken, fName, fMime, fData),
-            timeout,
-          ]);
-          if (result?.fileId) {
-            // Send a file reference message (the file lives on the server's HTTP endpoint)
-            const refBody = `__FILE_REF__:${result.fileId}:${result.fileName}:${result.mimeType}`;
-            if (e2eeKeyRef.current) {
-              const encrypted = await e2eeEncryptText(refBody);
-              sendToServer(`MSG:${currentTextRoom}:${encrypted}`);
-            } else {
-              sendToServer(`MSG:${currentTextRoom}:${refBody}`);
+        if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
+          // Upload to server's file server — server handles transcoding
+          try {
+            setFileUploadStatus('Uploading…');
+            const timeout = new Promise<null>(r => setTimeout(r, 60000, null));
+            const result = await Promise.race([
+              window.electronAPI.uploadFile(serverHost, fileServerPort, authToken, fName, fMime, fData),
+              timeout,
+            ]);
+            if (result?.fileId) {
+              // Send a file reference message (the file lives on the server's HTTP endpoint)
+              const refBody = `__FILE_REF__:${result.fileId}:${result.fileName}:${result.mimeType}`;
+              if (e2eeKeyRef.current) {
+                const encrypted = await e2eeEncryptText(refBody);
+                sendToServer(`MSG:${currentTextRoom}:${encrypted}`);
+              } else {
+                sendToServer(`MSG:${currentTextRoom}:${refBody}`);
+              }
+              setPendingFile(null);
+              setFileUploadStatus(null);
+              if (input.trim()) {
+                const body = await e2eeEncryptText(input);
+                sendToServer(`MSG:${currentTextRoom}:${body}`);
+                setInput('');
+              }
+              return;
             }
-            setPendingFile(null);
-            if (input.trim()) {
-              const body = await e2eeEncryptText(input);
-              sendToServer(`MSG:${currentTextRoom}:${body}`);
-              setInput('');
-            }
-            return;
-          }
-          // Upload failed — fall through to inline path
-        } catch {}
-      }
+            // Upload failed — fall through to inline path
+          } catch { setFileUploadStatus(null); }
+        }
 
-      if (e2eeKeyRef.current) {
-        const fileBody = `__FILE__:${fName}:${fMime}:${fData}`;
-        const encrypted = await e2eeEncryptText(fileBody);
-        sendToServer(`MSG:${currentTextRoom}:${encrypted}`);
-      } else {
-        sendToServer(`FILE:${currentTextRoom}:${fName}:${fMime}:${fData}`);
+        if (e2eeKeyRef.current) {
+          const fileBody = `__FILE__:${fName}:${fMime}:${fData}`;
+          const encrypted = await e2eeEncryptText(fileBody);
+          sendToServer(`MSG:${currentTextRoom}:${encrypted}`);
+          setFileUploadStatus(null);
+        } else {
+          sendToServer(`FILE:${currentTextRoom}:${fName}:${fMime}:${fData}`);
+          // Status will be cleared by FILE_PROGRESS:done from server
+        }
+        setPendingFile(null);
       }
-      setPendingFile(null);
-    }
-    if (input.trim()) {
-      const body = await e2eeEncryptText(input);
-      sendToServer(`MSG:${currentTextRoom}:${body}`);
-      setInput('');
+      if (input.trim()) {
+        const body = await e2eeEncryptText(input);
+        sendToServer(`MSG:${currentTextRoom}:${body}`);
+        setInput('');
+      }
+    } catch (err: any) {
+      console.error('[Chat] Send failed:', err);
+      setStatus(`⚠ Send failed: ${err?.message || 'unknown error'}`);
+      setFileUploadStatus(null);
     }
   };
 
@@ -2839,6 +2930,7 @@ export function TerminalForum() {
   };
 
   const joinVoice = async (room: VoiceRoom) => {
+    if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId, view: 'voice' });
     setViewModeTracked('voice');
     if (room.name === currentVoiceRoom && voiceServerIdRef.current === connectedServerIdRef.current) return;
     await ensureVoiceOnCurrentServer();
@@ -2847,6 +2939,7 @@ export function TerminalForum() {
   };
 
   const joinText = (room: TextRoom) => {
+    if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId, view: 'text', textRoom: room.name });
     setViewModeTracked('text');
     if (joinedTextRooms.has(room.name)) { setCurrentText(room.name); return; }
     if (room.hasPassword) { setPwDialog({ room: room.name, type: 'text' }); setPwInput(''); }
@@ -2908,6 +3001,14 @@ export function TerminalForum() {
     setShowSoundboard(false);
     setCustomEmojis({});
     stopAudio();
+    // Clean nav history: remove entries for the disconnected server
+    if (sid) {
+      const filtered = navHistoryRef.current.filter(e => !(e.type === 'server' && e.serverId === sid));
+      if (filtered.length === 0) filtered.push({ type: 'home' });
+      navHistoryRef.current = filtered;
+      navIndexRef.current = Math.min(navIndexRef.current, filtered.length - 1);
+      updateNavButtons();
+    }
   };
 
   // ═════════════════════════════════════════════════════════
@@ -3006,7 +3107,7 @@ export function TerminalForum() {
                 }}
                 onDragEnd={() => { setDragTabId(null); setDragOverTabId(null); }}
                 onClick={() => {
-                  pushNav({ type: 'server', serverId: server.id });
+                  pushNav({ type: 'server', serverId: server.id, view: 'text', textRoom: null });
                   setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; });
                   connectToPinnedServer(server);
                 }}
@@ -3066,7 +3167,7 @@ export function TerminalForum() {
                   const mentions = serverMentions[server.id] || 0;
                   return (
                   <button key={server.id}
-                    onClick={() => { pushNav({ type: 'server', serverId: server.id }); setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; }); connectToPinnedServer(server); }}
+                    onClick={() => { pushNav({ type: 'server', serverId: server.id, view: 'text', textRoom: null }); setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; }); connectToPinnedServer(server); }}
                     onContextMenu={(e) => { e.preventDefault(); setServerContextMenu({ serverId: server.id, x: e.clientX, y: e.clientY }); }}
                     disabled={connecting}
                     className="group flex flex-col items-center gap-2 transition-all disabled:opacity-50">
@@ -3132,7 +3233,7 @@ export function TerminalForum() {
             <Volume2 className="w-4 h-4 text-green-500 animate-pulse" />
             <span className="text-sm text-green-400 font-bold">{currentVoiceRoom}</span>
             <span className="text-xs text-green-700 font-mono">{fmt(callDuration)}</span>
-            <button onClick={() => { if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId }); setShowHome(false); }}
+            <button onClick={() => { if (connectedServerId) pushNav(serverNavEntry(connectedServerId)); setShowHome(false); }}
               className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-xs transition-all font-bold">
               Tilbage
             </button>
@@ -3477,7 +3578,7 @@ export function TerminalForum() {
              onClick={() => {
                setActiveDmTab(null);
                if (isActiveTab) return;
-               pushNav({ type: 'server', serverId: server.id });
+               pushNav({ type: 'server', serverId: server.id, view: 'text', textRoom: null });
                setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; });
                connectToPinnedServer(server);
              }}
@@ -4208,6 +4309,7 @@ export function TerminalForum() {
                                 watchingStreamsRef.current.add(u.name);
                                 setWatchingStreams(new Set(watchingStreamsRef.current));
                                 sendToVoice(`CMD:WATCH_STREAM:${u.name}`);
+                                if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId, view: 'voice' });
                                 setViewModeTracked('voice');
                               }}
                               className="mt-2 px-3 py-1.5 rounded-lg bg-green-600/20 text-green-400 hover:bg-green-600/30 transition-all text-xs font-bold flex items-center gap-1.5">
@@ -4301,6 +4403,7 @@ export function TerminalForum() {
                           <button onClick={() => {
                               unwatched.forEach(u => { watchingStreamsRef.current.add(u); sendToVoice(`CMD:WATCH_STREAM:${u}`); });
                               setWatchingStreams(new Set(watchingStreamsRef.current));
+                              if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId, view: 'voice' });
                               setViewModeTracked('voice');
                             }}
                             className="ml-2 px-2.5 py-1 rounded-md bg-green-600/20 text-green-400 hover:bg-green-600/30 transition-all flex items-center gap-1.5 font-bold animate-pulse">
@@ -4308,7 +4411,7 @@ export function TerminalForum() {
                           </button>
                         );
                       })()}
-                      <button onClick={() => setViewModeTracked('voice')} className="ml-auto text-green-600 hover:text-green-400 transition-colors">
+                      <button onClick={() => { if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId, view: 'voice' }); setViewModeTracked('voice'); }} className="ml-auto text-green-600 hover:text-green-400 transition-colors">
                         Vis voice
                       </button>
                       <button onClick={leaveVoice} className="text-red-500 hover:text-red-400 transition-colors ml-2">
@@ -4433,9 +4536,21 @@ export function TerminalForum() {
                         <div className="text-[10px] text-green-700">{pendingFile.mimeType}</div>
                       </div>
                       <button type="button" onClick={() => setPendingFile(null)}
-                        className="p-1 rounded text-green-700 hover:text-red-400 hover:bg-red-900/20 transition-all flex-shrink-0">
+                        className="p-1 rounded text-green-700 hover:text-red-400 hover:bg-red-900/20 transition-all flex-shrink-0"
+                        disabled={!!fileUploadStatus}>
                         <X className="w-3.5 h-3.5" />
                       </button>
+                    </div>
+                  </div>
+                )}
+                {fileUploadStatus && (
+                  <div className="px-4 pt-2 pb-1">
+                    <div className="flex items-center gap-2">
+                      <Upload className="w-3.5 h-3.5 text-green-500 animate-pulse flex-shrink-0" />
+                      <span className="text-xs text-green-500">{fileUploadStatus}</span>
+                    </div>
+                    <div className="mt-1 h-1 bg-green-900/30 rounded-full overflow-hidden">
+                      <div className="h-full bg-green-500 rounded-full animate-[progress-indeterminate_1.5s_ease-in-out_infinite]" style={{ width: '40%' }} />
                     </div>
                   </div>
                 )}
@@ -4637,8 +4752,8 @@ export function TerminalForum() {
                     </div>
                   )}
                   <button type="submit"
-                    className={`p-2 rounded-lg transition-all ${input.trim() || pendingFile ? 'text-green-400 hover:bg-green-900/30' : 'text-green-800 cursor-default'}`}
-                    disabled={!input.trim() && !pendingFile}
+                    className={`p-2 rounded-lg transition-all ${(input.trim() || pendingFile) && !fileUploadStatus ? 'text-green-400 hover:bg-green-900/30' : 'text-green-800 cursor-default'}`}
+                    disabled={(!input.trim() && !pendingFile) || !!fileUploadStatus}
                     title="Send besked">
                     <Send className="w-4 h-4" />
                   </button>

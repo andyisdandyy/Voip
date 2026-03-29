@@ -243,6 +243,7 @@ public class NotificationServer
         catch (Exception) { }
         finally
         {
+            bag.TryRemove(client, out _);
             cts.Cancel();
             _log?.Invoke($"[SSE] '{username}' disconnected from notifications");
             try { writer.Dispose(); } catch { }

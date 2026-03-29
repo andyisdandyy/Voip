@@ -103,6 +103,8 @@ for real-time mention notifications without requiring a full TCP session.
 - **Heartbeat**: A `: heartbeat` comment is sent every 25 seconds to keep connections alive.
 - **Subscriber tracking**: Uses `ConcurrentDictionary<SseClient, byte>` per user for
   correct dead-client removal (avoids the ConcurrentBag arbitrary-remove pitfall).
+  Clients are eagerly removed from the subscriber bag on disconnect (in the `finally`
+  block) and lazily cleaned during `PushMentionAsync` if a write fails.
 - **Retry**: The server sends `retry: 15000\n\n` on connect so clients auto-reconnect after 15s.
 - **Port**: Configured via `SsePort` in `server-config.json` (defaults to `TcpPort + 2`).
 
@@ -173,8 +175,8 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `CREATE_TEXT_ROOM:<name>:<password>` | Create a text room (requires `create_rooms`) |
 | `EDIT_VOICE_ROOM:<oldName>:<newName>:<password>:<bitrate>` | Edit a voice room — rename, change password/bitrate (requires `create_rooms`). Migrates user tracking and broadcasts updated room list. |
 | `EDIT_TEXT_ROOM:<oldName>:<newName>:<password>` | Edit a text room — rename, change password (requires `create_rooms`). Migrates user tracking and chat history on rename. |
-| `DELETE_VOICE_ROOM:<name>` | Delete a voice room (requires `delete_rooms`) |
-| `DELETE_TEXT_ROOM:<name>` | Delete a text room (requires `delete_rooms`) |
+| `DELETE_VOICE_ROOM:<name>` | Delete a voice room (requires `delete_rooms`). Cascades: kicks all users, cleans camera/screen active state, clears stream watchers, broadcasts `CAMERA_OFF`/`SCREEN_OFF` for affected users. |
+| `DELETE_TEXT_ROOM:<name>` | Delete a text room (requires `delete_rooms`). Cascades: kicks all users, permanently deletes all chat history and pinned messages for the room. |
 | `REORDER_VOICE_ROOMS:<name1>,<name2>,...` | Reorder voice rooms (requires `reorder_rooms`) |
 | `REORDER_TEXT_ROOMS:<name1>,<name2>,...` | Reorder text rooms (requires `reorder_rooms`) |
 | `UPDATE_SERVER_CONFIG:<json>` | Update safe server settings (requires `server_settings`) — saves to disk and re-broadcasts `SERVER_INFO`. Values are parsed via `TryGetInt64` and clamped to safe ranges to prevent overflow. |
@@ -351,15 +353,21 @@ accent bottom border.
   home-screen server cards (autoconnect toggle, logout, remove).
 
 ### Back / Forward Navigation
-Browser-style back/forward navigation lets users move through their view history
-(home screen, server tabs, DM tabs). A navigation history stack (`navHistoryRef`)
-and a position index (`navIndexRef`) track visited views. Each entry is a
-discriminated union: `{ type: 'home' }`, `{ type: 'server', serverId }`, or
-`{ type: 'dm', username }`.
+Browser-style back/forward navigation lets users move through their entire view
+history — including switching between home, servers, DM tabs, **and** in-server
+sub-views (voice panel ↔ text channels). A navigation history stack
+(`navHistoryRef`) and a position index (`navIndexRef`) track visited views. Each
+entry is a discriminated union:
 
-- **Triggers**: every user-initiated view switch (clicking a server tab, opening a DM,
-  pressing the Home button, connecting to a server from the home screen) pushes a new
-  entry. Duplicate consecutive entries are de-duplicated.
+- `{ type: 'home' }` — home / connect screen
+- `{ type: 'server', serverId, view: 'voice' | 'text', textRoom? }` — a specific
+  sub-view inside a server (voice panel or a text channel)
+- `{ type: 'dm', username }` — a DM tab
+
+- **Triggers**: every user-initiated view switch pushes a new entry — clicking a
+  server tab, opening a DM, pressing the Home button, connecting from the home
+  screen, joining a voice room, clicking a text channel, pressing "Vis voice",
+  joining a stream, etc. Duplicate consecutive entries are de-duplicated.
 - **Back / Forward buttons**: `ChevronLeft` / `ChevronRight` buttons in the titlebar
   (both home and main UI, macOS and non-macOS layouts). Disabled when at the
   start/end of the history stack.
@@ -368,6 +376,15 @@ discriminated union: `{ type: 'home' }`, `{ type: 'server', serverId }`, or
 - **Restore guard**: `isNavRestoreRef` prevents `pushNav` from firing while
   `applyNavEntry` is programmatically switching views, avoiding recursive history
   entries.
+- **Helper**: `serverNavEntry(serverId)` builds a server entry from the current
+  `viewModeRef` and `currentTextRoomRef` refs (both kept in sync via `useEffect`).
+- **Snapshot on navigate away**: navigating to `home` saves the current server's
+  state snapshot so it can be restored when navigating back.
+- **Disconnect cleanup**: `disconnect()` removes all nav history entries for the
+  disconnected server to prevent stale back/forward targets.
+- **Null-safe text room restore**: `applyNavEntry` always sets `currentTextRoom`
+  (including `null`) when restoring a text-view entry, rather than skipping falsy
+  values.
 
 ### Main Process — `electron/main.js`
 
@@ -568,6 +585,12 @@ The server relays the body as-is. File size is limited by `serverInfo.maxFileSiz
 
 The entire UI lives in a single React component (`TerminalForum`). Key sections:
 
+#### Performance Optimizations
+- **`memo`**: `BlobMedia` is wrapped with `React.memo` to prevent re-renders when props are unchanged.
+- **`useMemo`**: Expensive derived values are memoized — `currentMessages`, `usersInRoom`, `onlineUsersList`, `awayUsersList`, `offlineUsersList`, `myPermissions`, and `myAvatar`.
+- **`useCallback`**: `hasPermission` is wrapped with `useCallback` keyed on the memoized `myPermissions` set.
+- **Mic level throttling**: The mic-level monitoring interval runs at 100 ms (instead of 50 ms) and only triggers a React state update when the level changes by more than 2%, reducing re-renders during voice calls.
+
 | Section | Lines (approx) | Purpose |
 |---------|----------------|---------|
 | Types & constants | 1–95 | Interfaces, resolution presets, color themes, custom theme helpers (`hexToHsl`, `hslToHex`, `generateScale`). Custom theme has 7 user-configurable colors: `accent` (buttons/links/active), `bg` (main content area), `surface` (headers/inputs/modals), `sidebar` (channel/user list panels), `border` (dividers/outlines), `text` (primary), `textSecondary` (timestamps/hints). CSS vars are set on `<html>` and consumed by `[data-theme="custom"]` rules in `index.css`. |
@@ -694,6 +717,7 @@ Server → Client:
   PINS:<room>:<json>                             (list of pinned messages sent on room join)
   MSG_PINNED:<room>:<msgId>                      (broadcast when a message is pinned)
   MSG_UNPINNED:<room>:<msgId>                    (broadcast when a message is unpinned)
+  FILE_PROGRESS:<room>:<stage>                   (upload progress: received | transcoding | broadcasting | done)
   KICKED
   PONG
   ERROR:<message>
@@ -806,6 +830,19 @@ Copy `VoipServer/deploy/update.sh` next to the `VoipServer` binary on the Linux 
 ./update.sh v1.2.0       # update to specific version
 ```
 The script downloads the binary from GitHub Releases, swaps it in place, and prints a message to restart. JSON data files are untouched.
+
+---
+
+## Known Fixes
+
+### E2EE Large-File Encryption (terminal-forum.tsx)
+
+**Problem:** Sending files larger than ~64 KB with end-to-end encryption active silently failed.
+`e2eeEncryptText` used `String.fromCharCode(...combined)` to convert the encrypted `Uint8Array` to a binary string. The spread operator passes every byte as a separate function argument, exceeding V8's ~65 536 argument limit and throwing a `RangeError`. Because `handleSubmit` is async with no error handling, the exception was swallowed—the file stayed staged and nothing was sent.
+
+**Fix:**
+- **Chunked encoding** — replaced the spread with a loop using `String.fromCharCode.apply(null, combined.subarray(i, i + 8192))` in 8 KB chunks, avoiding call-stack overflow for arbitrarily large payloads.
+- **Error visibility** — wrapped the entire `handleSubmit` body in a `try/catch` that logs to console and calls `setStatus('⚠ Send failed: …')` so future errors are surfaced in the UI.
 
 ---
 

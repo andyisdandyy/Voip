@@ -809,6 +809,21 @@ public class ChatServer
             }
             // Kick all users from that voice room first
             var kicked = _rooms.KickVoiceRoom(roomName);
+            foreach (var kickedUser in kicked)
+            {
+                // Clean up camera/screen state for kicked users
+                if (_cameraActive.TryRemove(kickedUser, out _))
+                {
+                    _rooms.ClearStreamWatchers(kickedUser);
+                    await BroadcastAsync($"CAMERA_OFF:{kickedUser}").ConfigureAwait(false);
+                }
+                if (_screenActive.TryRemove(kickedUser, out _))
+                {
+                    _rooms.ClearStreamWatchers(kickedUser);
+                    await BroadcastAsync($"SCREEN_OFF:{kickedUser}").ConfigureAwait(false);
+                }
+                _rooms.RemoveAllStreamWatching(kickedUser);
+            }
             foreach (var kv in _clients)
             {
                 if (kicked.Contains(kv.Value.name, StringComparer.OrdinalIgnoreCase))
@@ -845,6 +860,7 @@ public class ChatServer
             _rooms.RemoveTextRoom(roomName);
             if (_rooms.Config.DeleteTextRoom(roomName))
             {
+                _history.DeleteRoom(roomName);
                 _log?.Invoke($"[Rooms] {name} deleted text room '{roomName}'");
                 await BroadcastRoomListAsync().ConfigureAwait(false);
             }
@@ -1081,7 +1097,14 @@ public class ChatServer
             return;
         }
 
+        await writer.WriteLineAsync($"FILE_PROGRESS:{roomName}:received").ConfigureAwait(false);
+
         // Transcode HEVC → H.264 if FFmpeg is configured
+        var needsTranscode = !string.IsNullOrWhiteSpace(_serverConfig.FfmpegPath)
+            && mimeType.StartsWith("video/", StringComparison.OrdinalIgnoreCase);
+        if (needsTranscode)
+            await writer.WriteLineAsync($"FILE_PROGRESS:{roomName}:transcoding").ConfigureAwait(false);
+
         var transcoded = await VideoTranscoder.TryTranscodeAsync(
             _serverConfig.FfmpegPath, fileName, mimeType, base64Data, _log).ConfigureAwait(false);
         if (transcoded != null)
@@ -1091,10 +1114,14 @@ public class ChatServer
             base64Data = transcoded.Value.base64;
         }
 
+        await writer.WriteLineAsync($"FILE_PROGRESS:{roomName}:broadcasting").ConfigureAwait(false);
+
         var text = $"__FILE__:{fileName}:{mimeType}:{base64Data}";
         var id = _history.AddMessage(roomName, name, text);
         await BroadcastToTextRoomAsync(roomName, $"MSG:{roomName}:{id}:{name}:{text}").ConfigureAwait(false);
         _log?.Invoke($"[Chat] File '{fileName}' ({estimatedBytes / 1024}KB) from '{name}' in '{roomName}'");
+
+        await writer.WriteLineAsync($"FILE_PROGRESS:{roomName}:done").ConfigureAwait(false);
     }
 
     private async Task SendHistoryAsync(StreamWriter writer, string roomName)

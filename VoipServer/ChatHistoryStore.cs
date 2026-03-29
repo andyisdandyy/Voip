@@ -171,6 +171,14 @@ public class ChatHistoryStore
         ScheduleSave();
     }
 
+    /// <summary>Permanently deletes all history and pins for the given room.</summary>
+    public void DeleteRoom(string roomName)
+    {
+        bool changed = _history.TryRemove(roomName, out _);
+        changed |= _pins.TryRemove(roomName, out _);
+        if (changed) ScheduleSave();
+    }
+
     private void Load()
     {
         try
