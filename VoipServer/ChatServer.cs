@@ -1229,11 +1229,11 @@ public class ChatServer
         if (!string.IsNullOrEmpty(_serverConfig.GiphyApiKey))
             info["GiphyApiKey"] = _serverConfig.GiphyApiKey;
         var ssePort = _serverConfig.SsePort > 0 ? _serverConfig.SsePort : _serverConfig.TcpPort + 2;
-        info["SsePort"] = ssePort;
+        info["SsePort"] = _serverConfig.PublicSsePort is > 0 ? _serverConfig.PublicSsePort.Value : ssePort;
         if (_serverConfig.FileServerEnabled)
         {
             var filePort = _serverConfig.FileServerPort > 0 ? _serverConfig.FileServerPort : _serverConfig.TcpPort + 3;
-            info["FileServerPort"] = filePort;
+            info["FileServerPort"] = _serverConfig.PublicFileServerPort is > 0 ? _serverConfig.PublicFileServerPort.Value : filePort;
         }
         var json = JsonSerializer.Serialize(info);
         await writer.WriteLineAsync($"SERVER_INFO:{json}").ConfigureAwait(false);

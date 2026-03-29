@@ -139,6 +139,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('popout:closed', handler);
   },
 
+  // ── Native Notifications ─────────────────────────────────────
+  showNotification: (title, body) => ipcRenderer.send('notify:show', title, body),
+
   // ── Direct Messages (inline in renderer) ───────────────────
   sendDm: (serverId, target, text) => ipcRenderer.send('dm:send-inline', serverId, target, text),
 

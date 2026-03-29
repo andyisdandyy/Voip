@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, systemPreferences, Notification } = require('electron');
 const path = require('path');
 const net = require('net');
 const tls = require('tls');
@@ -304,6 +304,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('get-platform', () => process.platform);
   ipcMain.on('window:fullscreen', () => {
     if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen());
+  });
+
+  // ── Native Notifications (uses correct app icon on macOS) ──
+  ipcMain.on('notify:show', (_event, title, body) => {
+    const n = new Notification({ title, body: body || '' });
+    n.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
+    n.show();
   });
 
   app.on('activate', () => {

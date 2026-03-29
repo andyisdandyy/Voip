@@ -1454,7 +1454,7 @@ export function TerminalForum() {
         const rawBody = line.substring(i2 + 1);
         const notifBody = rawBody && !rawBody.startsWith('ENC:') ? rawBody.substring(0, 100) : undefined;
         playUiSound('message');
-        new Notification(`@${sender} i #${room}`, { body: notifBody });
+        window.electronAPI.showNotification(`@${sender} i #${room}`, notifBody);
       }
     } else if (line.startsWith('DM:')) {
       // DM:<fromUser>:<text> — incoming direct message (already decrypted by main process)
@@ -1470,7 +1470,7 @@ export function TerminalForum() {
           return [...prev, { username: fromUser, serverId }];
         });
         if (notificationSoundsRef.current) playUiSound('message');
-        new Notification(`DM from ${fromUser}`, { body: text.substring(0, 100) });
+        window.electronAPI.showNotification(`DM from ${fromUser}`, text.substring(0, 100));
       }
     } else if (line.startsWith('DM_SENT:')) {
       // DM_SENT:<target>:<text> — our sent DM echoed back (already decrypted by main process)
@@ -1626,12 +1626,19 @@ export function TerminalForum() {
           const copy = new Uint8Array(data).buffer;
           pipeline.playback.port.postMessage(copy, [copy]);
         }
-        // Track speaking state
-        setSpeakingUsers(prev => { if (prev.has(senderName)) return prev; const s = new Set(prev); s.add(senderName); return s; });
-        if (speakingTimeoutsRef.current[senderName]) clearTimeout(speakingTimeoutsRef.current[senderName]);
-        speakingTimeoutsRef.current[senderName] = setTimeout(() => {
-          setSpeakingUsers(prev => { if (!prev.has(senderName)) return prev; const s = new Set(prev); s.delete(senderName); return s; });
-        }, 300);
+        // Track speaking state — only show the green ring when the received
+        // audio has significant energy (avoids permanent ring from silence frames)
+        const pcm = new Int16Array(new Uint8Array(data).buffer);
+        let sumSq = 0;
+        for (let i = 0; i < pcm.length; i++) sumSq += pcm[i] * pcm[i];
+        const rms = Math.sqrt(sumSq / pcm.length) / 32768;
+        if (rms > 0.01) {
+          setSpeakingUsers(prev => { if (prev.has(senderName)) return prev; const s = new Set(prev); s.add(senderName); return s; });
+          if (speakingTimeoutsRef.current[senderName]) clearTimeout(speakingTimeoutsRef.current[senderName]);
+          speakingTimeoutsRef.current[senderName] = setTimeout(() => {
+            setSpeakingUsers(prev => { if (!prev.has(senderName)) return prev; const s = new Set(prev); s.delete(senderName); return s; });
+          }, 300);
+        }
       }),
       window.electronAPI.onScreenAudioReceived((senderName, data) => {
         if (isDeafenedRef.current || !audioCtxRef.current) return;
@@ -1726,10 +1733,7 @@ export function TerminalForum() {
       setServerMentions(prev => ({ ...prev, [serverId]: (prev[serverId] || 0) + 1 }));
       const server = pinnedServers.find(s => s.id === serverId);
       const title = server ? server.name : 'Echo';
-      new Notification(`${title} — @${sender} i #${room}`, {
-        body: text.substring(0, 100),
-        icon: server?.logo || undefined,
-      });
+      window.electronAPI.showNotification(`${title} — @${sender} i #${room}`, text.substring(0, 100));
     });
     return unsub;
   }, [pinnedServers]);

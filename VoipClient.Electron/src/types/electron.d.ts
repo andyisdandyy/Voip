@@ -54,6 +54,9 @@ interface ElectronAPI {
   closePopout: (username: string) => void;
   onPopoutClosed: (callback: (username: string) => void) => () => void;
 
+  // Native Notifications
+  showNotification: (title: string, body?: string) => void;
+
   // Direct Messages (inline)
   sendDm: (serverId: string, target: string, text: string) => void;
 

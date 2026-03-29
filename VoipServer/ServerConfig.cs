@@ -51,6 +51,13 @@ public class ServerConfig
     public int SsePort { get; set; } = 0;
 
     /// <summary>
+    /// The SSE port advertised to clients. Use this when running behind a reverse proxy
+    /// (e.g. NGINX) that forwards a public port to the internal <see cref="SsePort"/>.
+    /// When null or 0, the computed SSE port is advertised instead.
+    /// </summary>
+    public int? PublicSsePort { get; set; }
+
+    /// <summary>
     /// When true, TCP listens only on 127.0.0.1 (for use behind NGINX/reverse proxy).
     /// When false, listens on 0.0.0.0 (direct exposure — only for local dev or LAN).
     /// </summary>
@@ -96,6 +103,13 @@ public class ServerConfig
     /// Only used when <see cref="FileServerEnabled"/> is true.
     /// </summary>
     public int FileServerPort { get; set; } = 0;
+
+    /// <summary>
+    /// The file server port advertised to clients. Use this when running behind a reverse proxy
+    /// (e.g. NGINX) that forwards a public port to the internal <see cref="FileServerPort"/>.
+    /// When null or 0, the computed file server port is advertised instead.
+    /// </summary>
+    public int? PublicFileServerPort { get; set; }
 
     /// <summary>
     /// GIPHY API key for GIF search. When set, clients can search and send GIFs.

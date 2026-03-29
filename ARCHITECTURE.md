@@ -589,6 +589,7 @@ The server relays the body as-is. File size is limited by `serverInfo.maxFileSiz
 | IPC Channel           | Direction      | Description                          |
 |-----------------------|----------------|--------------------------------------|
 | `dm:send-inline`      | send → main    | Send a DM (main encrypts + TCP send) |
+| `notify:show`         | send → main    | Show a native OS notification (title, body). Uses Electron's `Notification` module so macOS displays the correct app icon instead of the Chromium default. Clicking the notification focuses the main window. |
 | `file:upload`         | invoke → main  | Upload a file to the server's HTTP file server. Sends raw binary via `POST /upload`. Returns `{fileId, fileName, mimeType}` or `null`. Used for video uploads when `FileServerPort` is advertised in `SERVER_INFO`. |
 
 ### Renderer — `terminal-forum.tsx`
@@ -614,7 +615,7 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | Video capture | 778–970 | Camera and screen share encoding |
 | Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload (object URLs are revoked after image load to prevent memory leaks) |
 | Connect screen | 1410+ | Server list, login dialogs |
-| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage), per-user screenshare mute (right-click context menu), right-click context menu on voice channel sidebar users and call UI tiles, voice activity indicator (green ring around profile picture when speaking). Footer status bar removed; compact panel spacing (1.5 units padding/gap) with 3 px resize handles. Inline DM tabs in tab bar (bubble-style chat, full content area). Voice channel bitrate label hidden from sidebar (bitrate is still stored internally and used for Opus encoding). Lazy-loaded chat history: server sends last 50 messages on join, client loads 50 more on scroll-to-top via `CMD:FETCH_HISTORY`. Font family selector in Appearance settings (`voip-font-family` in localStorage) — applies to all text via `document.body.style.fontFamily`; defaults to the monospace stack from `index.css` when empty. |
+voice activity indicator (green ring around profile picture when speaking — remote users are gated by RMS energy threshold on received PCM to avoid false positives from silence frames).
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:
@@ -797,6 +798,7 @@ Created automatically with defaults on first run if missing. The server logs the
   "PublicUdpPort": null,            // For reverse proxy setups
   "BindLocalhost": false,           // true = 127.0.0.1 (behind NGINX)
   "SsePort": 0,                     // SSE notification port (0 = TcpPort + 2)
+  "PublicSsePort": null,            // Public SSE port for reverse proxy setups
   "MaxCameraWidth": 1920,
   "MaxCameraHeight": 1080,
   "MaxScreenWidth": 1920,
@@ -811,7 +813,8 @@ Created automatically with defaults on first run if missing. The server logs the
   "GiphyApiKey": null,              // GIPHY API key (enables GIF picker)
   "FfmpegPath": null,               // Path to FFmpeg binary for server-side transcoding
   "FileServerEnabled": false,       // Enable HTTP file server for video uploads
-  "FileServerPort": 0               // File server port (0 = TcpPort + 3)
+  "FileServerPort": 0,              // File server port (0 = TcpPort + 3)
+  "PublicFileServerPort": null      // Public file server port for reverse proxy setups
 }
 ```
 
