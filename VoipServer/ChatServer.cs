@@ -234,7 +234,8 @@ public class ChatServer
             {
                 _rooms.JoinTextRoom(name, firstRoom.Name, null);
                 await writer.WriteLineAsync($"JOINED_TEXT:{firstRoom.Name}").ConfigureAwait(false);
-                await SendHistoryAsync(writer, firstRoom.Name).ConfigureAwait(false);
+                try { await SendHistoryAsync(writer, firstRoom.Name).ConfigureAwait(false); }
+                catch (Exception ex) { _log?.Invoke($"[Chat] Failed to send history for '{firstRoom.Name}': {ex.GetType().Name}: {ex.Message}"); }
             }
 
             // Broadcast updated users list
@@ -255,20 +256,33 @@ public class ChatServer
             {
                 // Reject oversized messages to prevent memory exhaustion
                 if (line.Length > maxLineLength) continue;
-                if (line.StartsWith("VIDEO:"))
-                    await RelayVideoAsync(name, line).ConfigureAwait(false);
-                else if (line.StartsWith("CMD:"))
-                    await HandleCommandAsync(writer, name, line.Substring(4), client).ConfigureAwait(false);
-                else if (line.StartsWith("FILE:"))
-                    await HandleFileAsync(writer, name, line.Substring(5)).ConfigureAwait(false);
-                else if (line.StartsWith("MSG:"))
-                    await HandleMessageAsync(writer, name, line.Substring(4)).ConfigureAwait(false);
-                else if (line.StartsWith("DM:"))
-                    await HandleDirectMessageAsync(writer, name, line.Substring(3)).ConfigureAwait(false);
+                try
+                {
+                    if (line.StartsWith("VIDEO:"))
+                        await RelayVideoAsync(name, line).ConfigureAwait(false);
+                    else if (line.StartsWith("CMD:"))
+                        await HandleCommandAsync(writer, name, line.Substring(4), client).ConfigureAwait(false);
+                    else if (line.StartsWith("FILE:"))
+                        await HandleFileAsync(writer, name, line.Substring(5)).ConfigureAwait(false);
+                    else if (line.StartsWith("MSG:"))
+                        await HandleMessageAsync(writer, name, line.Substring(4)).ConfigureAwait(false);
+                    else if (line.StartsWith("DM:"))
+                        await HandleDirectMessageAsync(writer, name, line.Substring(3)).ConfigureAwait(false);
+                }
+                catch (IOException) { throw; }
+                catch (ObjectDisposedException) { throw; }
+                catch (Exception ex)
+                {
+                    _log?.Invoke($"[Chat] Error processing message from '{name}': {ex.GetType().Name}: {ex.Message}");
+                }
             }
         }
         catch (IOException) { }
         catch (ObjectDisposedException) { }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[Chat] Unhandled error for '{name}': {ex.GetType().Name}: {ex.Message}");
+        }
         finally
         {
             _clients.TryRemove(client, out _);

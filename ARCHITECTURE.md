@@ -144,8 +144,9 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 1. **Server password gate** — if `ServerPassword` is configured, the client must send it first
 2. **User authentication** — `AUTH:user:pass` or `REGISTER:user:pass`
 3. **Auth token** — on success, sends `AUTH_TOKEN:<token>` (HMAC-SHA256 signed, used for SSE notifications)
-4. **Post-auth setup** — sends `SERVER_INFO` (includes `SsePort`), room list, role list, auto-joins first text room
+4. **Post-auth setup** — sends `SERVER_INFO` (includes `SsePort`), room list, role list, auto-joins first text room. History loading (`SendHistoryAsync`) is wrapped in a try/catch so SQLite errors do not disconnect the client.
 5. **Message loop** — dispatches `CMD:`, `MSG:`, `FILE:`, `DM:`, and `VIDEO:` prefixed lines
+6. **Exception resilience** — the inner read loop catches non-fatal exceptions per iteration (logging and continuing), while only re-throwing `IOException` and `ObjectDisposedException` to signal a broken connection. The outer handler catches all remaining exceptions to prevent silent disconnects from e.g. `SqliteException`.
 
 #### Command Protocol (CMD:)
 | Command | Description |
@@ -216,10 +217,9 @@ Private 1-to-1 messages between users, relayed through the server.
 | `UserStore` | `users.json` | Usernames → PBKDF2 password hashes |
 | `RoleStore` | `roles.json` | Role definitions + user-role mapping |
 | `AvatarStore` | `avatars.json` | Username → base64 JPEG |
-| `ChatHistoryStore` | `chat_history.json` | Room → last 200 messages (debounced save) |
+| `ChatHistoryStore` | `chat_history.db` | Room → messages + pinned message IDs (SQLite, WAL mode). Migrates from legacy `chat_history.json` / `pinned_messages.json` on first run. |
 | `SoundboardStore` | `soundboard.json` | Sound name → base64 audio data |
 | `EmojiStore` | `emojis.json` | Emoji name → base64 image data |
-| `ChatHistoryStore` | `pinned_messages.json` | Room → set of pinned message IDs |
 | `ServerConfig` | `server-config.json` | Network, encryption, quality config |
 | `RoomsConfig` | `rooms.json` | Voice/text room definitions (CRUD + reorder) |
 
@@ -426,10 +426,13 @@ prefix, and error messages containing `ssl`/`SSL`/`wrong version`/`alert`/`routi
 When falling back, all listeners are removed from the old TLS socket before destroying
 it to prevent its `close` event from racing with the new plain-TCP connection.
 
-Additionally, if a TLS handshake succeeds but the server closes the connection before
-sending any protocol data (`READY`/`SERVER_PASSWORD_REQUIRED`), the client assumes TLS
-was accepted by a middlebox (e.g. NGINX) while the actual VoIP server is plain TCP,
-and retries the connection without TLS.
+Additionally, if a TLS connection closes before the server sends any protocol data
+(`READY`/`SERVER_PASSWORD_REQUIRED`), the client retries as plain TCP. A `pendingTls`
+flag tracks whether a TLS attempt is in progress (set `true` before `tls.connect`,
+cleared in `onConnected` or the error fallback). The `close` handler checks
+`(tlsActive || pendingTls)` to trigger the retry — this ensures the fallback fires
+even when the TLS socket is rejected before the `secureConnect` callback sets
+`tlsActive = true` (e.g. a plain-TCP server that RSTs the TLS ClientHello).
 
 #### E2EE
 - Key derived via PBKDF2 (100k iterations, SHA-256, salt `voip-e2ee-v1`)

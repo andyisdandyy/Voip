@@ -665,6 +665,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
     let serverPwDone = false; // Phase 1 complete
     let settled = false;      // Promise already resolved/rejected
     let tlsActive = false;    // True while connected via TLS (for close-fallback)
+    let pendingTls = false;   // True during initial TLS attempt (before success or fallback)
 
     const settle = (fn) => {
       if (settled) return;
@@ -680,6 +681,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
 
     const onConnected = (isTls) => {
       tlsActive = isTls;
+      pendingTls = false;
       sock.setNoDelay(true);
       sock.setKeepAlive(true, 30000);
       console.log(`[TCP:${serverId}] Connected to ${host}:${port}${isTls ? ' (TLS)' : ''}, waiting for server handshake`);
@@ -805,7 +807,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
 
     sock.on('close', () => {
       console.log(`[TCP:${serverId}] Disconnected`);
-      if (tlsActive && !serverPwDone && !settled) {
+      if ((tlsActive || pendingTls) && !serverPwDone && !settled) {
         console.log(`[TCP:${serverId}] TLS session closed before server handshake, retrying as plain TCP`);
         _tlsCapable.set(`${host}:${port}`, false);
         tlsActive = false;
@@ -838,6 +840,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
       setupEvents();
       sock.connect(port, host, () => onConnected(false));
     } else {
+      pendingTls = true;
       sock = tls.connect({ host, port, rejectUnauthorized: false }, () => {
         _tlsCapable.set(key, true);
         onConnected(true);
@@ -855,6 +858,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
         if (isTlsError) {
           console.log(`[TCP:${serverId}] TLS handshake failed (${err.code || err.message}), falling back to plain TCP`);
           _tlsCapable.set(key, false);
+          pendingTls = false;
           try { sock.removeAllListeners(); sock.destroy(); } catch {}
           buffer = '';
           utf8Decoder = new StringDecoder('utf8');
