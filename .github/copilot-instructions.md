@@ -12,3 +12,4 @@
 
 ## Interaction Guidelines
 - When the user explicitly requests no code (e.g., "Du skal ikke lave noget kode"), avoid providing code and only give conceptual guidance or instructions.
+- When the user asks a question, answer the question only — do not make code changes or take actions unless explicitly asked.

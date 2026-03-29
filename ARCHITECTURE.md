@@ -173,7 +173,10 @@ Private 1-to-1 messages between users, relayed through the server.
 - **Echo**: Server sends `DM_SENT:<targetUser>:<text>` back to the sender for delivery confirmation
 - **Encryption**: When E2EE is active, DM text is encrypted with AES-256-GCM in the main process using the same PBKDF2-derived key as audio/video. The encrypted payload uses the `ENC:<base64>` format (same as room chat messages). Decryption also happens in the main process before forwarding to the renderer.
 - **UI**: Double-click a user in the sidebar or click "Direct Message" in the user context menu to open an inline DM tab in the tab bar. The DM chat replaces the server content area while the tab is active. Incoming DMs auto-open a tab if one isn't already open for that user. DM messages support file uploads (paperclip button) — files are embedded as `__FILE__:<name>:<mime>:<base64>` in the DM body text. Video and audio files are rendered with inline `<video>` / `<audio>` players.
-- **Video transcoding**: When `FfmpegPath` is set in `server-config.json`, the server automatically transcodes HEVC (H.265) video uploads to H.264/MP4 before relaying. Applies to both channel file uploads and DM file attachments. Uses `VideoTranscoder.TryTranscodeAsync` — probes codec with `ffprobe`, re-encodes with `libx264` (fast preset, CRF 23). Non-HEVC videos pass through unchanged.
+- **Video transcoding**: HEVC (H.265) video uploads are transcoded to H.264/MP4 at two levels:
+  - *Client-side* (always runs first): The Electron main process probes the file with `ffprobe` and transcodes with `ffmpeg` **before** encryption — ensures transcoding works even with E2EE active. Silently skipped if FFmpeg is not on PATH.
+  - *Server-side* (fallback for non-E2EE): When `FfmpegPath` is set in `server-config.json` and the file arrives via the `FILE:` protocol (E2EE off), the server transcodes via `VideoTranscoder.TryTranscodeAsync`.
+  Both use the same parameters: `libx264`, fast preset, CRF 23, AAC audio, `+faststart`. Applies to channel uploads and DM attachments. Non-HEVC videos pass through unchanged.
 - **Offline**: If the target user is not connected, the server responds with `ERROR:User is not online`
 - DMs are **not persisted** on the server or client — they exist only in the renderer's in-memory state
 
@@ -197,9 +200,28 @@ Private 1-to-1 messages between users, relayed through the server.
 - **Server password**: Compared with `CryptographicOperations.FixedTimeEquals` (timing-safe)
 - **Username matching**: All username comparisons in `ChatServer` use
   `StringComparison.OrdinalIgnoreCase` for consistent case-insensitive behaviour
+- **Message size guard**: Incoming TCP lines are rejected if they exceed
+  `max(10 MB, MaxFileSizeKB × 1400)` characters — the dynamic limit ensures large
+  file uploads permitted by `MaxFileSizeKB` are not silently dropped while still
+  preventing memory exhaustion from malicious payloads
 - **E2EE modes**:
   - *Server-managed*: Server distributes a key to all clients (convenience)
   - *True E2EE*: Clients share a passphrase out-of-band; server never sees the key
+- **E2EE file uploads**: When E2EE is active, channel file uploads are encrypted as
+  `MSG:` messages (the entire `__FILE__:<name>:<mime>:<base64>` body is wrapped with
+  `e2eeEncryptText`) so the server never sees the plaintext file data. This bypasses
+  the `FILE:` protocol path (no server-side size validation). When E2EE is off, files
+  use the `FILE:` protocol for server-side validation and transcoding. DM file
+  attachments are always encrypted via the main-process `e2eeEncryptText` applied to
+  the full DM body.
+- **Client-side video transcoding**: Video file uploads (both channel and DM) are
+  probed for HEVC/H.265 codec via `ffprobe` and transcoded to H.264/MP4 via `ffmpeg`
+  in the Electron main process **before** encryption and sending. This ensures HEVC
+  transcoding works even with E2EE active (the server never needs to see the plaintext).
+  Uses the same parameters as the server-side `VideoTranscoder` (fast preset, CRF 23,
+  AAC audio, `+faststart`). FFmpeg and FFprobe binaries are **bundled** with the app
+  via `ffmpeg-static` and `ffprobe-static` npm packages (unpacked from asar at runtime).
+  Non-HEVC videos pass through unchanged.
 
 ### Roles & Permissions
 Default roles:
@@ -230,6 +252,7 @@ Available permissions:
 - **React 19** + **TypeScript 5.7** + **Tailwind CSS 4.1** (Vite)
 - **opusscript** for Opus audio encoding/decoding (runs in main process)
 - **WebCodecs API** (`VideoEncoder`/`VideoDecoder`) for H.264/VP8 video
+- **ffmpeg-static** + **ffprobe-static** — bundled FFmpeg/FFprobe binaries for client-side HEVC → H.264 transcoding of video file uploads
 
 ### Platform Support
 - **Windows** — frameless window with custom titlebar buttons; WGC (Windows Graphics
@@ -500,6 +523,7 @@ The server relays the body as-is. File size is limited by `serverInfo.maxFileSiz
 | IPC Channel           | Direction      | Description                          |
 |-----------------------|----------------|--------------------------------------|
 | `dm:send-inline`      | send → main    | Send a DM (main encrypts + TCP send) |
+| `file:transcode`      | invoke → main  | HEVC → H.264 transcode via system FFmpeg (returns `{fileName, mimeType, base64}` or `null`) |
 
 ### Renderer — `terminal-forum.tsx`
 
@@ -533,6 +557,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Auto-updater (version, check, install, progress/status listeners)
 - Video pop-out (open, close, closed listener)
 - Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows)
+- Video transcoding — `transcodeVideo(fileName, mimeType, base64)` (HEVC → H.264 via system FFmpeg)
 
 ### AudioWorklet Processors
 - **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Supports an **input sensitivity gate**: the main thread sends `{ sensitivity: 0..1 }` via `port.postMessage`; when the RMS level of a 960-sample block (scaled ×3 to match the UI meter) falls below the threshold the gate closes with a smooth exponential release (~300 ms fade-out, 0.75× per block) to avoid hard cuts, and re-opens instantly when the level exceeds the threshold. Used for voice capture.

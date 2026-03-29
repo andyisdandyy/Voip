@@ -53,6 +53,8 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/opusscript/**",
+      "node_modules/ffmpeg-static/**",
+      "node_modules/ffprobe-static/**",
       "native/audio-loopback/**"
     ],
     "files": [

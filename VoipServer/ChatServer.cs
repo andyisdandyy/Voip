@@ -246,11 +246,15 @@ public class ChatServer
             // Send custom emoji list
             await SendEmojiListAsync(writer).ConfigureAwait(false);
 
+            // Dynamic max line length: accommodate MaxFileSizeKB (base64 ≈ 4/3 overhead) + prefix,
+            // with a floor of 10 MB for video frames.
+            long maxLineLength = Math.Max(10_000_000, (long)_serverConfig.MaxFileSizeKB * 1400);
+
             string? line;
             while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
             {
-                // Reject oversized messages to prevent memory exhaustion (10 MB max for video frames)
-                if (line.Length > 10_000_000) continue;
+                // Reject oversized messages to prevent memory exhaustion
+                if (line.Length > maxLineLength) continue;
                 if (line.StartsWith("VIDEO:"))
                     await RelayVideoAsync(name, line).ConfigureAwait(false);
                 else if (line.StartsWith("CMD:"))

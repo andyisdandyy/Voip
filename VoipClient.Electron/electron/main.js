@@ -6,6 +6,17 @@ const dgram = require('dgram');
 const nodeCrypto = require('crypto');
 const { StringDecoder } = require('string_decoder');
 const { autoUpdater } = require('electron-updater');
+const fs = require('fs');
+const { execFile } = require('child_process');
+const os = require('os');
+
+// ── Bundled FFmpeg/FFprobe binaries ─────────────────────────
+// ffmpeg-static / ffprobe-static provide platform-specific binaries.
+// In production the asar path must be fixed to the unpacked copy.
+function asarFix(p) { return p ? p.replace('app.asar', 'app.asar.unpacked') : p; }
+let _ffmpegPath, _ffprobePath;
+try { _ffmpegPath = asarFix(require('ffmpeg-static')); } catch { _ffmpegPath = null; }
+try { _ffprobePath = asarFix(require('ffprobe-static').path); } catch { _ffprobePath = null; }
 
 // ── Native WASAPI loopback (Windows 10 2004+) ───────────────
 // Window share → INCLUDE mode: captures only the shared app's audio.
@@ -141,6 +152,82 @@ function e2eeDecryptText(data, key) {
     return data;
   }
 }
+
+// ── Client-side HEVC → H.264 transcoding ────────────────────
+// Mirrors server-side VideoTranscoder logic using bundled FFmpeg binaries.
+const _videoMimes = new Set([
+  'video/mp4', 'video/quicktime', 'video/x-matroska', 'video/webm',
+  'video/x-m4v', 'video/3gpp', 'video/3gpp2',
+]);
+
+function _execAsync(cmd, args) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(Object.assign(err, { stderr }));
+      else resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function transcodeHevcToH264(fileName, mimeType, base64Data) {
+  // Skip if binaries not available
+  if (!_ffmpegPath) return null;
+
+  // Skip non-video files
+  if (!mimeType.startsWith('video/') || !_videoMimes.has(mimeType.toLowerCase())) return null;
+
+  let tempDir = null;
+  try {
+    tempDir = path.join(os.tmpdir(), 'echo-transcode-' + nodeCrypto.randomBytes(4).toString('hex'));
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    const ext = path.extname(fileName) || '.mp4';
+    const inputPath = path.join(tempDir, 'input' + ext);
+    const outputPath = path.join(tempDir, 'output.mp4');
+
+    fs.writeFileSync(inputPath, Buffer.from(base64Data, 'base64'));
+
+    // Probe codec with ffprobe (if available)
+    if (_ffprobePath) {
+      try {
+        const { stdout } = await _execAsync(_ffprobePath, [
+          '-v', 'quiet', '-select_streams', 'v:0',
+          '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', inputPath,
+        ]);
+        const codec = stdout.trim().toLowerCase();
+        if (codec !== 'hevc' && codec !== 'h265') {
+          console.log('[Transcode] Video is not HEVC — skipping');
+          return null;
+        }
+      } catch {
+        // ffprobe failed — assume HEVC and try anyway
+      }
+    }
+
+    console.log(`[Transcode] HEVC detected in '${fileName}', transcoding to H.264...`);
+
+    await _execAsync(_ffmpegPath, [
+      '-i', inputPath, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+      '-c:a', 'aac', '-movflags', '+faststart', '-y', outputPath,
+    ]);
+
+    if (!fs.existsSync(outputPath)) {
+      console.log('[Transcode] FFmpeg produced no output file');
+      return null;
+    }
+
+    const outputBuf = fs.readFileSync(outputPath);
+    const newFileName = path.basename(fileName, ext) + '.mp4';
+    console.log(`[Transcode] Done: ${Math.round(base64Data.length * 3 / 4 / 1024)}KB → ${Math.round(outputBuf.length / 1024)}KB`);
+    return { fileName: newFileName, mimeType: 'video/mp4', base64: outputBuf.toString('base64') };
+  } catch (err) {
+    console.log(`[Transcode] Skipped (ffmpeg not available): ${err.message}`);
+    return null;
+  } finally {
+    if (tempDir) try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 const autoConnectSockets = new Map(); // serverId → { socket, reconnectTimer }
 let _audioSendCount = 0;
 let _audioRecvCount = 0;
@@ -595,6 +682,11 @@ function setupIPC() {
       const encrypted = e2eeEncryptText(text, conn.e2eeKey);
       conn.socket.write(`DM:${targetUsername}:${encrypted}\n`);
     }
+  });
+
+  // ── Client-side video transcoding (HEVC → H.264) ───────────
+  ipcMain.handle('file:transcode', async (_event, fileName, mimeType, base64Data) => {
+    return transcodeHevcToH264(fileName, mimeType, base64Data);
   });
 }
 

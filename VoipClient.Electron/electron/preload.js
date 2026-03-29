@@ -141,4 +141,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── Direct Messages (inline in renderer) ───────────────────
   sendDm: (serverId, target, text) => ipcRenderer.send('dm:send-inline', serverId, target, text),
+
+  // ── Client-side video transcoding (HEVC → H.264) ──────────
+  transcodeVideo: (fileName, mimeType, base64) => ipcRenderer.invoke('file:transcode', fileName, mimeType, base64),
 });

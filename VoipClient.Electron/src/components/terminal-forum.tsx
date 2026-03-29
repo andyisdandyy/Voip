@@ -119,6 +119,32 @@ const EMOJI_SHORTCODES: Record<string, string> = {
   '+1': '👍', '-1': '👎', 'thumbs_up': '👍', 'thumbs_down': '👎',
 };
 
+// ── Blob URL media player ─────────────────────────────────
+// Converts base64 data to a Blob URL for reliable <video>/<audio> playback.
+// Data URLs fail for large media and Chromium doesn't recognise video/quicktime.
+function BlobMedia({ type, base64, mimeType, className }: { type: 'video' | 'audio'; base64: string; mimeType: string; className?: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      // Normalise MIME: Chromium only accepts video/mp4, not video/quicktime
+      let normalized = mimeType;
+      if (normalized === 'video/quicktime' || normalized === 'video/x-m4v') normalized = 'video/mp4';
+      const blob = new Blob([bytes], { type: normalized });
+      const url = URL.createObjectURL(blob);
+      setSrc(url);
+      return () => URL.revokeObjectURL(url);
+    } catch {
+      setSrc(`data:${mimeType};base64,${base64}`);
+    }
+  }, [base64, mimeType]);
+  if (!src) return null;
+  if (type === 'video') return <video src={src} controls preload="metadata" className={className} />;
+  return <audio src={src} controls preload="metadata" className={className} />;
+}
+
 // ── Component ───────────────────────────────────────────────
 
 export function TerminalForum() {
@@ -2201,7 +2227,7 @@ export function TerminalForum() {
       if (mimeType.startsWith('video/')) {
         return (
           <div className="mt-1">
-            <video src={dataUrl} controls preload="metadata"
+            <BlobMedia type="video" base64={base64Data} mimeType={mimeType}
               className="max-w-sm max-h-80 rounded-lg border border-green-900/30" />
             <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
               <Play className="w-3 h-3" />
@@ -2213,7 +2239,7 @@ export function TerminalForum() {
       if (mimeType.startsWith('audio/')) {
         return (
           <div className="mt-1">
-            <audio src={dataUrl} controls preload="metadata"
+            <BlobMedia type="audio" base64={base64Data} mimeType={mimeType}
               className="max-w-sm rounded-lg" />
             <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
               <Music className="w-3 h-3" />
@@ -2583,7 +2609,23 @@ export function TerminalForum() {
     if (!currentTextRoom) return;
     if (!input.trim() && !pendingFile) return;
     if (pendingFile) {
-      sendToServer(`FILE:${currentTextRoom}:${pendingFile.name}:${pendingFile.mimeType}:${pendingFile.base64}`);
+      // Client-side HEVC → H.264 transcoding (works with or without E2EE)
+      let { name: fName, mimeType: fMime, base64: fData } = pendingFile;
+      if (fMime.startsWith('video/')) {
+        try {
+          const result = await window.electronAPI.transcodeVideo(fName, fMime, fData);
+          if (result) { fName = result.fileName; fMime = result.mimeType; fData = result.base64; }
+        } catch {}
+      }
+      if (e2eeKeyRef.current) {
+        // E2EE active: encrypt entire file body and send as MSG so server never sees plaintext
+        const fileBody = `__FILE__:${fName}:${fMime}:${fData}`;
+        const encrypted = await e2eeEncryptText(fileBody);
+        sendToServer(`MSG:${currentTextRoom}:${encrypted}`);
+      } else {
+        // No E2EE: use FILE: protocol for server-side validation + transcoding
+        sendToServer(`FILE:${currentTextRoom}:${fName}:${fMime}:${fData}`);
+      }
       setPendingFile(null);
     }
     if (input.trim()) {
@@ -3349,11 +3391,18 @@ export function TerminalForum() {
                   </div>
                 </div>
               )}
-              <form onSubmit={(e) => {
+              <form onSubmit={async (e) => {
                 e.preventDefault();
                 if (!dmInput.trim() && !pendingDmFile) return;
                 if (pendingDmFile) {
-                  const fileBody = `__FILE__:${pendingDmFile.name}:${pendingDmFile.mimeType}:${pendingDmFile.base64}`;
+                  let { name: fName, mimeType: fMime, base64: fData } = pendingDmFile;
+                  if (fMime.startsWith('video/')) {
+                    try {
+                      const result = await window.electronAPI.transcodeVideo(fName, fMime, fData);
+                      if (result) { fName = result.fileName; fMime = result.mimeType; fData = result.base64; }
+                    } catch {}
+                  }
+                  const fileBody = `__FILE__:${fName}:${fMime}:${fData}`;
                   window.electronAPI.sendDm(dmTab.serverId, dmTab.username, fileBody);
                   setPendingDmFile(null);
                 }

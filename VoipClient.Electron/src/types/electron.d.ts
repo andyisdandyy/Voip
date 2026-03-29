@@ -56,6 +56,9 @@ interface ElectronAPI {
 
   // Direct Messages (inline)
   sendDm: (serverId: string, target: string, text: string) => void;
+
+  // Client-side video transcoding (HEVC → H.264)
+  transcodeVideo: (fileName: string, mimeType: string, base64: string) => Promise<{ fileName: string; mimeType: string; base64: string } | null>;
 }
 
 declare global {
