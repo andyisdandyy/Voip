@@ -616,6 +616,37 @@ public class ChatServer
             else _userDeafened.TryRemove(name, out _);
             await BroadcastUserListAsync().ConfigureAwait(false);
         }
+        else if (cmd.StartsWith("NOTIFY_MENTIONS:"))
+        {
+            // NOTIFY_MENTIONS:<room>:<user1>,<user2>,...
+            // Sent by E2EE clients so the server can relay mention notifications
+            // even though it cannot read the encrypted message text.
+            var args = cmd.Substring("NOTIFY_MENTIONS:".Length).Split(':', 2);
+            if (args.Length >= 2)
+            {
+                var roomName = args[0];
+                var targets = args[1].Split(',', StringSplitOptions.RemoveEmptyEntries);
+                foreach (var target in targets)
+                {
+                    if (string.Equals(target, name, StringComparison.OrdinalIgnoreCase)) continue;
+                    foreach (var kv in _clients)
+                    {
+                        if (string.Equals(kv.Value.name, target, StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                await kv.Value.writer.WriteLineAsync($"MENTION:{roomName}:{name}:").ConfigureAwait(false);
+                            }
+                            catch { }
+                        }
+                    }
+                    if (_notificationServer != null)
+                    {
+                        _ = _notificationServer.PushMentionAsync(target, roomName, name, "");
+                    }
+                }
+            }
+        }
         else if (cmd == "PING")
         {
             await writer.WriteLineAsync("PONG").ConfigureAwait(false);
@@ -1057,7 +1088,10 @@ public class ChatServer
                 foreach (var uname in _userStore.GetAllUsernames())
                 {
                     if (uname != name && !connectedNames.Contains(uname) && text.Contains($"@{uname}", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _log?.Invoke($"[Chat] Pushing SSE mention to '{uname}' (from '{name}')");
                         _ = _notificationServer.PushMentionAsync(uname, roomName, name, text);
+                    }
                 }
             }
         }

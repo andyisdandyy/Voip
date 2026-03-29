@@ -24,7 +24,7 @@ Echo/
 │   ├── UserStore.cs         # User credentials — PBKDF2-SHA512 hashed (users.json)
 │   ├── RoleStore.cs         # Role definitions + user-role assignments (roles.json)
 │   ├── AvatarStore.cs       # Per-user avatar images as base64 (avatars.json)
-│   ├── ChatHistoryStore.cs  # Last 200 messages per text room (chat_history.json)
+│   ├── ChatHistoryStore.cs  # Chat messages & pins per text room (chat_history.db via SQLite)
 │   ├── SoundboardStore.cs   # Soundboard sound entries — name → base64 audio (soundboard.json)
 │   ├── EmojiStore.cs        # Custom emoji entries — name → base64 image (emojis.json)
 │   ├── VideoTranscoder.cs   # HEVC → H.264 transcoding via FFmpeg (server-side)
@@ -71,8 +71,8 @@ Echo/
 
 ### Technology
 - **.NET 10** console app (top-level statements in `Program.cs`)
-- No external NuGet dependencies — uses only BCL
-- All data is stored as flat JSON files in the working directory
+- NuGet dependency: `Microsoft.Data.Sqlite` for chat history storage
+- Most data is stored as flat JSON files; chat history and pins use SQLite (`chat_history.db`)
 
 ### Entry Point — `Program.cs`
 1. Loads `ServerConfig` and `RoomsConfig` from JSON files
@@ -100,7 +100,13 @@ for real-time mention notifications without requiring a full TCP session.
 - **SSE endpoint**: `GET /events?token=<token>` — validates the token, holds the
   response open with `Content-Type: text/event-stream`, and pushes mention events.
 - **Event format**: `event: mention\ndata: {"room":"General","sender":"alice","text":"@bob hey"}\n\n`
+- **Chunked transfer**: Response uses `SendChunked = true` so each `Flush` pushes data
+  to the wire immediately (required for SSE — without it, `HttpListener` may buffer
+  until `Close()`).
 - **Heartbeat**: A `: heartbeat` comment is sent every 25 seconds to keep connections alive.
+- **Write safety**: Each `SseClient` holds a `SemaphoreSlim` write lock. Both the
+  heartbeat loop and `PushMentionAsync` acquire it before writing, preventing
+  interleaved / corrupted SSE frames.
 - **Subscriber tracking**: Uses `ConcurrentDictionary<SseClient, byte>` per user for
   correct dead-client removal (avoids the ConcurrentBag arbitrary-remove pitfall).
   Clients are eagerly removed from the subscriber bag on disconnect (in the `finally`
@@ -622,7 +628,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - HTTP file upload — `uploadFile(host, port, token, fileName, mimeType, base64)` (upload to server's file server for server-side transcoding)
 
 ### AudioWorklet Processors
-- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Supports an **input sensitivity gate**: the main thread sends `{ sensitivity: 0..1 }` via `port.postMessage`; when the RMS level of a 960-sample block (scaled ×3 to match the UI meter) falls below the threshold the gate closes with a smooth exponential release (~300 ms fade-out, 0.75× per block) to avoid hard cuts, and re-opens instantly when the level exceeds the threshold. Used for voice capture.
+- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Supports an **input sensitivity gate** with configurable **attack**, **hold**, and **release** timing: the main thread sends `{ sensitivity: 0..1, attackMs, holdMs, releaseMs }` via `port.postMessage`; when the RMS level of a 960-sample block (scaled ×3 to match the UI meter) exceeds the threshold the gate ramps open over `attackMs` (default 20 ms); once the level drops below the threshold the gate stays open for `holdMs` (default 100 ms) then fades to silence over `releaseMs` (default 300 ms) using a linear per-block ramp. Used for voice capture.
 - **`audio-screen-capture-processor.js`**: Buffers Float32 stereo samples into 960-frame stereo blocks (20 ms at 48 kHz), interleaves L/R channels into Int16 (1920 samples per message), and posts to main thread. Used for screen-share system audio.
 - **`audio-playback-processor.js`**: Receives interleaved stereo Int16 PCM buffers, de-interleaves to separate L/R Float32 arrays, and plays them back through the stereo output channels. Used by both voice and screen audio playback pipelines.
 
@@ -684,6 +690,7 @@ Client → Server:
   REGISTER:<username>:<password>
   CMD:<command>
   CMD:FETCH_HISTORY:<room>:<beforeId>:<count>   (load older messages, max 50)
+  CMD:NOTIFY_MENTIONS:<room>:<user1>,<user2>,...  (client-side mention hints for E2EE; server relays MENTION to listed users)
   MSG:<room>:<text>
   FILE:<room>:<filename>:<mimeType>:<base64>
   VIDEO:<flagsHex>:<base64>
@@ -710,7 +717,7 @@ Server → Client:
   SCREEN_ON:<user> | SCREEN_OFF:<user>
   REQUEST_KEYFRAME                                (tells streamer to emit a keyframe for new joiners)
   AVATAR:<user>:<base64>
-  MENTION:<room>:<sender>:<text>
+  MENTION:<room>:<sender>:<text>                (text may be empty when triggered via NOTIFY_MENTIONS under E2EE)
   SOUNDBOARD:<json>                              (list of sound names)
   SOUNDBOARD_PLAY:<sender>:<name>:<base64data>   (sound played in voice room)
   EMOJIS:<json>                                  (name → base64 image data for custom emojis)

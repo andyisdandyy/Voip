@@ -330,6 +330,9 @@ export function TerminalForum() {
   const noiseSuppressionRef = useRef(localStorage.getItem('voip-noise-suppression') !== 'false');
   const autoGainControlRef = useRef(localStorage.getItem('voip-auto-gain') !== 'false');
   const inputSensitivityRef = useRef(parseInt(localStorage.getItem('voip-input-sensitivity') || '0'));
+  const gateAttackRef = useRef(parseInt(localStorage.getItem('voip-gate-attack') || '20'));
+  const gateHoldRef = useRef(parseInt(localStorage.getItem('voip-gate-hold') || '100'));
+  const gateReleaseRef = useRef(parseInt(localStorage.getItem('voip-gate-release') || '300'));
   const analyserRef = useRef<AnalyserNode | null>(null);
   const micLevelIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -541,6 +544,9 @@ export function TerminalForum() {
   const [autoGainControl, setAutoGainControl] = useState(() => { try { return localStorage.getItem('voip-auto-gain') !== 'false'; } catch { return true; } });
   const [micLevel, setMicLevel] = useState(0);
   const [inputSensitivity, setInputSensitivity] = useState(() => { try { return parseInt(localStorage.getItem('voip-input-sensitivity') || '0'); } catch { return 0; } });
+  const [gateAttack, setGateAttack] = useState(() => { try { return parseInt(localStorage.getItem('voip-gate-attack') || '20'); } catch { return 20; } });
+  const [gateHold, setGateHold] = useState(() => { try { return parseInt(localStorage.getItem('voip-gate-hold') || '100'); } catch { return 100; } });
+  const [gateRelease, setGateRelease] = useState(() => { try { return parseInt(localStorage.getItem('voip-gate-release') || '300'); } catch { return 300; } });
   const [userContextMenu, setUserContextMenu] = useState<UserContextMenu | null>(null);
   const [perUserSettings, setPerUserSettings] = useState<Record<string, UserSetting>>({});
   const [uiScale, setUiScale] = useState(() => {
@@ -922,6 +928,9 @@ export function TerminalForum() {
   useEffect(() => { noiseSuppressionRef.current = noiseSuppression; try { localStorage.setItem('voip-noise-suppression', String(noiseSuppression)); } catch {} }, [noiseSuppression]);
   useEffect(() => { autoGainControlRef.current = autoGainControl; try { localStorage.setItem('voip-auto-gain', String(autoGainControl)); } catch {} }, [autoGainControl]);
   useEffect(() => { inputSensitivityRef.current = inputSensitivity; if (captureRef.current) captureRef.current.port.postMessage({ sensitivity: inputSensitivity / 100 }); try { localStorage.setItem('voip-input-sensitivity', String(inputSensitivity)); } catch {} }, [inputSensitivity]);
+  useEffect(() => { gateAttackRef.current = gateAttack; if (captureRef.current) captureRef.current.port.postMessage({ attackMs: gateAttack }); try { localStorage.setItem('voip-gate-attack', String(gateAttack)); } catch {} }, [gateAttack]);
+  useEffect(() => { gateHoldRef.current = gateHold; if (captureRef.current) captureRef.current.port.postMessage({ holdMs: gateHold }); try { localStorage.setItem('voip-gate-hold', String(gateHold)); } catch {} }, [gateHold]);
+  useEffect(() => { gateReleaseRef.current = gateRelease; if (captureRef.current) captureRef.current.port.postMessage({ releaseMs: gateRelease }); try { localStorage.setItem('voip-gate-release', String(gateRelease)); } catch {} }, [gateRelease]);
   useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
   useEffect(() => { connectedServerIdRef.current = connectedServerId; }, [connectedServerId]);
   useEffect(() => { currentVoiceRoomRef.current = currentVoiceRoom; }, [currentVoiceRoom]);
@@ -1442,7 +1451,10 @@ export function TerminalForum() {
       if (i1 >= 0 && i2 >= 0) {
         const room = line.substring(8, i1);
         const sender = line.substring(i1 + 1, i2);
-        new Notification(`@${sender} i #${room}`, { body: line.substring(i2 + 1).substring(0, 100) });
+        const rawBody = line.substring(i2 + 1);
+        const notifBody = rawBody && !rawBody.startsWith('ENC:') ? rawBody.substring(0, 100) : undefined;
+        playUiSound('message');
+        new Notification(`@${sender} i #${room}`, { body: notifBody });
       }
     } else if (line.startsWith('DM:')) {
       // DM:<fromUser>:<text> — incoming direct message (already decrypted by main process)
@@ -1809,7 +1821,7 @@ export function TerminalForum() {
         if (!isMutedRef.current) window.electronAPI.sendAudio(e.data);
       };
       source.connect(capture);
-      capture.port.postMessage({ sensitivity: inputSensitivityRef.current / 100 });
+      capture.port.postMessage({ sensitivity: inputSensitivityRef.current / 100, attackMs: gateAttackRef.current, holdMs: gateHoldRef.current, releaseMs: gateReleaseRef.current });
       const silent = ctx.createGain();
       silent.gain.value = 0;
       capture.connect(silent);
@@ -2889,8 +2901,12 @@ export function TerminalForum() {
         setPendingFile(null);
       }
       if (input.trim()) {
+        const mentions = e2eeKeyRef.current ? [...new Set((input.match(/@(\w+)/g) || []).map(m => m.substring(1)))] : [];
         const body = await e2eeEncryptText(input);
         sendToServer(`MSG:${currentTextRoom}:${body}`);
+        if (mentions.length > 0) {
+          sendToServer(`CMD:NOTIFY_MENTIONS:${currentTextRoom}:${mentions.join(',')}`);
+        }
         setInput('');
       }
     } catch (err: any) {
@@ -4939,6 +4955,40 @@ export function TerminalForum() {
                       {inputSensitivity === 0 ? 'No gate — all audio passes through' : 'Audio below this level will be silenced'}
                     </span>
                   </div>
+                  {inputSensitivity > 0 && (
+                    <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
+                      <div>
+                        <label className="text-xs text-green-600 block mb-1">Attack Time</label>
+                        <div className="flex items-center gap-3">
+                          <input type="range" min={5} max={200} step={5} value={gateAttack}
+                            onChange={e => setGateAttack(parseInt(e.target.value))}
+                            className="flex-1 accent-green-500 h-1.5" />
+                          <span className="text-xs text-green-600 w-12 text-right">{gateAttack} ms</span>
+                        </div>
+                        <span className="text-[10px] text-green-800 block">How fast the gate opens when you speak</span>
+                      </div>
+                      <div>
+                        <label className="text-xs text-green-600 block mb-1">Hold Time</label>
+                        <div className="flex items-center gap-3">
+                          <input type="range" min={0} max={500} step={10} value={gateHold}
+                            onChange={e => setGateHold(parseInt(e.target.value))}
+                            className="flex-1 accent-green-500 h-1.5" />
+                          <span className="text-xs text-green-600 w-12 text-right">{gateHold} ms</span>
+                        </div>
+                        <span className="text-[10px] text-green-800 block">How long the gate stays open after you stop</span>
+                      </div>
+                      <div>
+                        <label className="text-xs text-green-600 block mb-1">Release Time</label>
+                        <div className="flex items-center gap-3">
+                          <input type="range" min={20} max={1000} step={10} value={gateRelease}
+                            onChange={e => setGateRelease(parseInt(e.target.value))}
+                            className="flex-1 accent-green-500 h-1.5" />
+                          <span className="text-xs text-green-600 w-12 text-right">{gateRelease} ms</span>
+                        </div>
+                        <span className="text-[10px] text-green-800 block">How fast the gate fades to silence</span>
+                      </div>
+                    </div>
+                  )}
                   <div className="pt-3 border-t border-green-900/20">
                     <label className="text-xs text-green-600 block mb-2">Audio Processing</label>
                     <div className="space-y-2">

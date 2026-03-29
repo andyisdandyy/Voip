@@ -4,11 +4,24 @@ class CaptureProcessor extends AudioWorkletProcessor {
     this.buffer = new Float32Array(960);
     this.pos = 0;
     this.sensitivity = 0;
-    this.gateGain = 1;
-    this.releaseRate = 0.75; // per 20ms block — ~300ms fade to silence
+    this.gateGain = 0;
+    // Gate timing (in 20ms blocks)
+    this.attackBlocks = 1;   // blocks to ramp from 0→1 (default ~20ms)
+    this.holdBlocks = 5;     // blocks to keep open after level drops (default ~100ms)
+    this.releaseBlocks = 15; // blocks to ramp from 1→0 (default ~300ms)
+    this.holdCounter = 0;
     this.port.onmessage = (e) => {
       if (e.data && typeof e.data.sensitivity === 'number') {
         this.sensitivity = e.data.sensitivity;
+      }
+      if (e.data && typeof e.data.attackMs === 'number') {
+        this.attackBlocks = Math.max(1, Math.round(e.data.attackMs / 20));
+      }
+      if (e.data && typeof e.data.holdMs === 'number') {
+        this.holdBlocks = Math.max(0, Math.round(e.data.holdMs / 20));
+      }
+      if (e.data && typeof e.data.releaseMs === 'number') {
+        this.releaseBlocks = Math.max(1, Math.round(e.data.releaseMs / 20));
       }
     };
   }
@@ -29,14 +42,24 @@ class CaptureProcessor extends AudioWorkletProcessor {
           for (let j = 0; j < 960; j++) sum += this.buffer[j] * this.buffer[j];
           const level = Math.min(1, Math.sqrt(sum / 960) * 3);
           if (level >= this.sensitivity) {
-            this.gateGain = 1;
+            // Signal above threshold — attack (ramp up) and reset hold
+            this.gateGain = Math.min(1, this.gateGain + 1 / this.attackBlocks);
+            this.holdCounter = this.holdBlocks;
+          } else if (this.holdCounter > 0) {
+            // Below threshold but still in hold period — stay open
+            this.holdCounter--;
+            this.gateGain = Math.min(1, this.gateGain + 1 / this.attackBlocks);
           } else {
-            this.gateGain *= this.releaseRate;
-            if (this.gateGain < 0.001) this.gateGain = 0;
+            // Release (ramp down)
+            this.gateGain = Math.max(0, this.gateGain - 1 / this.releaseBlocks);
           }
           if (this.gateGain < 1) {
             for (let j = 0; j < 960; j++) this.buffer[j] *= this.gateGain;
           }
+        } else {
+          // No gate — ensure gain is fully open
+          this.gateGain = 1;
+          this.holdCounter = 0;
         }
         const int16 = new Int16Array(960);
         for (let j = 0; j < 960; j++) {

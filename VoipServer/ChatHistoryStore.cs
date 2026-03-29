@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using Microsoft.Data.Sqlite;
 using System.Text.Json;
 
 /// <summary>
@@ -13,82 +13,70 @@ public class ChatMessage
 }
 
 /// <summary>
-/// Persists the last <see cref="MaxPerRoom"/> messages per text room to a JSON file.
-/// Thread-safe: room message lists are individually locked during mutation.
-/// Disk writes are debounced to avoid I/O on every message.
+/// Persists chat messages and pins in a SQLite database.
+/// Thread-safe: uses WAL mode and connection pooling.
+/// On first run, automatically imports data from legacy JSON files if they exist.
 /// </summary>
 public class ChatHistoryStore
 {
-    private static readonly JsonSerializerOptions _jsonOpts = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        WriteIndented = true,
-    };
-
-    private readonly string _filePath;
-    private readonly ConcurrentDictionary<string, List<ChatMessage>> _history = new();
-    private readonly ConcurrentDictionary<string, HashSet<string>> _pins = new();
-    private readonly string _pinsFilePath;
-    private readonly object _saveLock = new();
-    private const int MaxPerRoom = 200;
-    private Timer? _saveTimer;
-    private volatile bool _dirty;
+    private readonly string _connectionString;
+    private readonly string _dbPath;
 
     public ChatHistoryStore(string? filePath = null)
     {
-        _filePath = filePath ?? Path.Combine(AppContext.BaseDirectory, "chat_history.json");
-        _pinsFilePath = Path.Combine(Path.GetDirectoryName(_filePath)!, "pinned_messages.json");
-        Load();
+        // Accept the legacy .json path for compatibility — derive the .db path from it
+        var basePath = filePath ?? Path.Combine(AppContext.BaseDirectory, "chat_history.json");
+        _dbPath = Path.ChangeExtension(basePath, ".db");
+        _connectionString = $"Data Source={_dbPath}";
+        InitializeDatabase();
+        MigrateFromJson(basePath);
     }
+
+    // ── Public API (unchanged signatures) ───────────────────
 
     public string AddMessage(string room, string user, string text)
     {
         var id = Guid.NewGuid().ToString("N")[..12];
-        var msgs = _history.GetOrAdd(room, _ => new List<ChatMessage>());
-        lock (msgs)
-        {
-            msgs.Add(new ChatMessage { Id = id, User = user, Text = text, Time = DateTime.UtcNow });
-            if (msgs.Count > MaxPerRoom)
-                msgs.RemoveRange(0, msgs.Count - MaxPerRoom);
-        }
-        ScheduleSave();
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT INTO messages (id, room, user, text, time) VALUES ($id, $room, $user, $text, $time)";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$user", user);
+        cmd.Parameters.AddWithValue("$text", text);
+        cmd.Parameters.AddWithValue("$time", DateTime.UtcNow.ToString("O"));
+        cmd.ExecuteNonQuery();
         return id;
     }
 
     public bool DeleteMessage(string room, string id, string username)
     {
-        if (!_history.TryGetValue(room, out var msgs)) return false;
-        lock (msgs)
-        {
-            var msg = msgs.FirstOrDefault(m => m.Id == id);
-            if (msg == null || msg.User != username) return false;
-            msgs.Remove(msg);
-        }
-        ScheduleSave();
-        return true;
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM messages WHERE id = $id AND room = $room AND user = $user";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$user", username);
+        return cmd.ExecuteNonQuery() > 0;
     }
 
     public bool DeleteMessageAdmin(string room, string id)
     {
-        if (!_history.TryGetValue(room, out var msgs)) return false;
-        lock (msgs)
-        {
-            var msg = msgs.FirstOrDefault(m => m.Id == id);
-            if (msg == null) return false;
-            msgs.Remove(msg);
-        }
-        ScheduleSave();
-        return true;
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM messages WHERE id = $id AND room = $room";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$room", room);
+        return cmd.ExecuteNonQuery() > 0;
     }
 
     public List<ChatMessage> GetHistory(string room)
     {
-        if (_history.TryGetValue(room, out var msgs))
-        {
-            lock (msgs)
-                return new List<ChatMessage>(msgs);
-        }
-        return new();
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id, user, text, time FROM messages WHERE room = $room ORDER BY rowid ASC";
+        cmd.Parameters.AddWithValue("$room", room);
+        return ReadMessages(cmd);
     }
 
     /// <summary>
@@ -98,156 +86,263 @@ public class ChatHistoryStore
     /// </summary>
     public List<ChatMessage> GetHistory(string room, int count, string? beforeId)
     {
-        if (!_history.TryGetValue(room, out var msgs))
-            return new();
-
-        lock (msgs)
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        if (string.IsNullOrEmpty(beforeId))
         {
-            int endIndex = msgs.Count;
-            if (!string.IsNullOrEmpty(beforeId))
-            {
-                var idx = msgs.FindIndex(m => m.Id == beforeId);
-                if (idx >= 0) endIndex = idx;
-            }
-            int startIndex = Math.Max(0, endIndex - count);
-            return msgs.GetRange(startIndex, endIndex - startIndex);
+            cmd.CommandText = """
+                SELECT id, user, text, time FROM (
+                    SELECT id, user, text, time, rowid FROM messages
+                    WHERE room = $room ORDER BY rowid DESC LIMIT $count
+                ) sub ORDER BY rowid ASC
+                """;
         }
+        else
+        {
+            cmd.CommandText = """
+                SELECT id, user, text, time FROM (
+                    SELECT m.id, m.user, m.text, m.time, m.rowid FROM messages m
+                    WHERE m.room = $room AND m.rowid < (SELECT rowid FROM messages WHERE id = $bid AND room = $room)
+                    ORDER BY m.rowid DESC LIMIT $count
+                ) sub ORDER BY rowid ASC
+                """;
+            cmd.Parameters.AddWithValue("$bid", beforeId);
+        }
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$count", count);
+        return ReadMessages(cmd);
     }
 
     public int GetMessageCount(string room)
     {
-        if (_history.TryGetValue(room, out var msgs))
-        {
-            lock (msgs)
-                return msgs.Count;
-        }
-        return 0;
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE room = $room";
+        cmd.Parameters.AddWithValue("$room", room);
+        return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
     // ── Pin support ─────────────────────────────────────────
 
     public bool PinMessage(string room, string msgId)
     {
-        var pins = _pins.GetOrAdd(room, _ => new HashSet<string>());
-        lock (pins)
+        try
         {
-            if (!pins.Add(msgId)) return false;
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "INSERT INTO pins (room, msg_id) VALUES ($room, $mid)";
+            cmd.Parameters.AddWithValue("$room", room);
+            cmd.Parameters.AddWithValue("$mid", msgId);
+            cmd.ExecuteNonQuery();
+            return true;
         }
-        ScheduleSave();
-        return true;
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19) // UNIQUE constraint
+        {
+            return false;
+        }
     }
 
     public bool UnpinMessage(string room, string msgId)
     {
-        if (!_pins.TryGetValue(room, out var pins)) return false;
-        lock (pins)
-        {
-            if (!pins.Remove(msgId)) return false;
-        }
-        ScheduleSave();
-        return true;
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM pins WHERE room = $room AND msg_id = $mid";
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$mid", msgId);
+        return cmd.ExecuteNonQuery() > 0;
     }
 
     public List<ChatMessage> GetPinnedMessages(string room)
     {
-        if (!_pins.TryGetValue(room, out var pins)) return new();
-        HashSet<string> pinIds;
-        lock (pins) pinIds = new HashSet<string>(pins);
-        if (pinIds.Count == 0) return new();
-
-        if (!_history.TryGetValue(room, out var msgs)) return new();
-        lock (msgs)
-            return msgs.Where(m => pinIds.Contains(m.Id)).ToList();
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT m.id, m.user, m.text, m.time FROM messages m
+            INNER JOIN pins p ON p.msg_id = m.id AND p.room = m.room
+            WHERE m.room = $room ORDER BY m.rowid ASC
+            """;
+        cmd.Parameters.AddWithValue("$room", room);
+        return ReadMessages(cmd);
     }
 
     /// <summary>Renames a room key in history and pins (used when a channel is renamed).</summary>
     public void RenameRoom(string oldName, string newName)
     {
         if (string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase)) return;
-        if (_history.TryRemove(oldName, out var msgs))
-            _history[newName] = msgs;
-        if (_pins.TryRemove(oldName, out var pins))
-            _pins[newName] = pins;
-        ScheduleSave();
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "UPDATE messages SET room = $new WHERE room = $old";
+            cmd.Parameters.AddWithValue("$new", newName);
+            cmd.Parameters.AddWithValue("$old", oldName);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "UPDATE pins SET room = $new WHERE room = $old";
+            cmd.Parameters.AddWithValue("$new", newName);
+            cmd.Parameters.AddWithValue("$old", oldName);
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
     }
 
     /// <summary>Permanently deletes all history and pins for the given room.</summary>
     public void DeleteRoom(string roomName)
     {
-        bool changed = _history.TryRemove(roomName, out _);
-        changed |= _pins.TryRemove(roomName, out _);
-        if (changed) ScheduleSave();
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM pins WHERE room = $room";
+            cmd.Parameters.AddWithValue("$room", roomName);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM messages WHERE room = $room";
+            cmd.Parameters.AddWithValue("$room", roomName);
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
     }
 
-    private void Load()
+    // ── Private helpers ─────────────────────────────────────
+
+    private SqliteConnection Open()
     {
+        var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        return conn;
+    }
+
+    private void InitializeDatabase()
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id   TEXT NOT NULL,
+                room TEXT NOT NULL,
+                user TEXT NOT NULL,
+                text TEXT NOT NULL,
+                time TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room, rowid);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_id_room ON messages (id, room);
+
+            CREATE TABLE IF NOT EXISTS pins (
+                room   TEXT NOT NULL,
+                msg_id TEXT NOT NULL,
+                UNIQUE(room, msg_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pins_room ON pins (room);
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// One-time migration: imports data from the legacy JSON files into SQLite,
+    /// then renames them to .bak so the migration doesn't run again.
+    /// </summary>
+    private void MigrateFromJson(string jsonPath)
+    {
+        var pinsJsonPath = Path.Combine(Path.GetDirectoryName(jsonPath)!, "pinned_messages.json");
+        if (!File.Exists(jsonPath) && !File.Exists(pinsJsonPath)) return;
+
+        var jsonOpts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+
         try
         {
-            if (File.Exists(_filePath))
+            if (File.Exists(jsonPath))
             {
-                var json = File.ReadAllText(_filePath);
-                var data = JsonSerializer.Deserialize<Dictionary<string, List<ChatMessage>>>(json, _jsonOpts);
+                var json = File.ReadAllText(jsonPath);
+                var data = JsonSerializer.Deserialize<Dictionary<string, List<ChatMessage>>>(json, jsonOpts);
                 if (data != null)
-                    foreach (var kv in data)
-                        _history[kv.Key] = kv.Value;
-            }
-        }
-        catch { }
+                {
+                    using var cmd = conn.CreateCommand();
+                    cmd.CommandText = "INSERT OR IGNORE INTO messages (id, room, user, text, time) VALUES ($id, $room, $user, $text, $time)";
+                    var pId = cmd.Parameters.Add("$id", SqliteType.Text);
+                    var pRoom = cmd.Parameters.Add("$room", SqliteType.Text);
+                    var pUser = cmd.Parameters.Add("$user", SqliteType.Text);
+                    var pText = cmd.Parameters.Add("$text", SqliteType.Text);
+                    var pTime = cmd.Parameters.Add("$time", SqliteType.Text);
 
-        try
-        {
-            if (File.Exists(_pinsFilePath))
-            {
-                var json = File.ReadAllText(_pinsFilePath);
-                var data = JsonSerializer.Deserialize<Dictionary<string, HashSet<string>>>(json, _jsonOpts);
-                if (data != null)
-                    foreach (var kv in data)
-                        _pins[kv.Key] = kv.Value;
+                    foreach (var (room, msgs) in data)
+                    {
+                        foreach (var msg in msgs)
+                        {
+                            pId.Value = msg.Id;
+                            pRoom.Value = room;
+                            pUser.Value = msg.User;
+                            pText.Value = msg.Text;
+                            pTime.Value = msg.Time.ToString("O");
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+                }
             }
+
+            if (File.Exists(pinsJsonPath))
+            {
+                var pinsJson = File.ReadAllText(pinsJsonPath);
+                var pinsData = JsonSerializer.Deserialize<Dictionary<string, HashSet<string>>>(pinsJson, jsonOpts);
+                if (pinsData != null)
+                {
+                    using var cmd = conn.CreateCommand();
+                    cmd.CommandText = "INSERT OR IGNORE INTO pins (room, msg_id) VALUES ($room, $mid)";
+                    var pRoom = cmd.Parameters.Add("$room", SqliteType.Text);
+                    var pMid = cmd.Parameters.Add("$mid", SqliteType.Text);
+
+                    foreach (var (room, ids) in pinsData)
+                    {
+                        foreach (var id in ids)
+                        {
+                            pRoom.Value = room;
+                            pMid.Value = id;
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+                }
+            }
+
+            tx.Commit();
+
+            // Rename legacy files so migration doesn't run again
+            if (File.Exists(jsonPath))
+                File.Move(jsonPath, jsonPath + ".bak", overwrite: true);
+            if (File.Exists(pinsJsonPath))
+                File.Move(pinsJsonPath, pinsJsonPath + ".bak", overwrite: true);
         }
-        catch { }
+        catch
+        {
+            try { tx.Rollback(); } catch { }
+        }
     }
 
-    private void ScheduleSave()
+    private static List<ChatMessage> ReadMessages(SqliteCommand cmd)
     {
-        _dirty = true;
-        if (_saveTimer != null) return;
-        var timer = new Timer(_ => FlushSave(), null, 2000, 2000);
-        if (Interlocked.CompareExchange(ref _saveTimer, timer, null) != null)
-            timer.Dispose();
-    }
-
-    private void FlushSave()
-    {
-        if (!_dirty) return;
-        _dirty = false;
-        lock (_saveLock)
+        var list = new List<ChatMessage>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
         {
-            try
+            list.Add(new ChatMessage
             {
-                var snapshot = new Dictionary<string, List<ChatMessage>>();
-                foreach (var kv in _history)
-                {
-                    lock (kv.Value)
-                        snapshot[kv.Key] = new List<ChatMessage>(kv.Value);
-                }
-                var json = JsonSerializer.Serialize(snapshot, _jsonOpts);
-                File.WriteAllText(_filePath, json);
-            }
-            catch { }
-
-            try
-            {
-                var pinSnapshot = new Dictionary<string, HashSet<string>>();
-                foreach (var kv in _pins)
-                {
-                    lock (kv.Value)
-                        pinSnapshot[kv.Key] = new HashSet<string>(kv.Value);
-                }
-                var pinsJson = JsonSerializer.Serialize(pinSnapshot, _jsonOpts);
-                File.WriteAllText(_pinsFilePath, pinsJson);
-            }
-            catch { }
+                Id = reader.GetString(0),
+                User = reader.GetString(1),
+                Text = reader.GetString(2),
+                Time = DateTime.Parse(reader.GetString(3)).ToUniversalTime(),
+            });
         }
+        return list;
     }
 }

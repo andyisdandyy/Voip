@@ -24,7 +24,7 @@ public class NotificationServer
 
     private static readonly TimeSpan TokenLifetime = TimeSpan.FromDays(7);
 
-    private record SseClient(StreamWriter Writer, CancellationTokenSource Cts);
+    private record SseClient(StreamWriter Writer, CancellationTokenSource Cts, SemaphoreSlim WriteLock);
 
     public NotificationServer(int port, bool bindLocalhost, Action<string>? log = null)
     {
@@ -116,10 +116,16 @@ public class NotificationServer
     /// </summary>
     public async Task PushMentionAsync(string targetUsername, string room, string sender, string text)
     {
-        if (!_subscribers.TryGetValue(targetUsername, out var clients)) return;
+        if (!_subscribers.TryGetValue(targetUsername, out var clients))
+        {
+            _log?.Invoke($"[SSE] No subscribers for '{targetUsername}' — skipping mention push");
+            return;
+        }
 
         var data = JsonSerializer.Serialize(new { room, sender, text, timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
         var ssePayload = $"event: mention\ndata: {data}\n\n";
+
+        _log?.Invoke($"[SSE] Pushing mention to '{targetUsername}' ({clients.Count} client(s))");
 
         var dead = new List<SseClient>();
         foreach (var kv in clients)
@@ -128,11 +134,17 @@ public class NotificationServer
             try
             {
                 if (client.Cts.IsCancellationRequested) { dead.Add(client); continue; }
-                await client.Writer.WriteAsync(ssePayload).ConfigureAwait(false);
-                await client.Writer.FlushAsync().ConfigureAwait(false);
+                await client.WriteLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    await client.Writer.WriteAsync(ssePayload).ConfigureAwait(false);
+                    await client.Writer.FlushAsync().ConfigureAwait(false);
+                }
+                finally { client.WriteLock.Release(); }
             }
-            catch
+            catch (Exception ex)
             {
+                _log?.Invoke($"[SSE] Write failed for '{targetUsername}': {ex.Message}");
                 dead.Add(client);
             }
         }
@@ -211,6 +223,7 @@ public class NotificationServer
 
         // Set SSE headers
         response.ContentType = "text/event-stream";
+        response.SendChunked = true;
         response.Headers.Add("Cache-Control", "no-cache");
         response.Headers.Add("Connection", "keep-alive");
         response.Headers.Add("Access-Control-Allow-Origin", "*");
@@ -218,7 +231,7 @@ public class NotificationServer
 
         var cts = new CancellationTokenSource();
         var writer = new StreamWriter(response.OutputStream, new UTF8Encoding(false)) { AutoFlush = false };
-        var client = new SseClient(writer, cts);
+        var client = new SseClient(writer, cts, new SemaphoreSlim(1, 1));
 
         var bag = _subscribers.GetOrAdd(username, _ => new ConcurrentDictionary<SseClient, byte>());
         bag.TryAdd(client, 0);
@@ -235,8 +248,13 @@ public class NotificationServer
             while (!cts.IsCancellationRequested)
             {
                 await Task.Delay(25_000, cts.Token).ConfigureAwait(false);
-                await writer.WriteAsync(": heartbeat\n\n").ConfigureAwait(false);
-                await writer.FlushAsync().ConfigureAwait(false);
+                await client.WriteLock.WaitAsync(cts.Token).ConfigureAwait(false);
+                try
+                {
+                    await writer.WriteAsync(": heartbeat\n\n").ConfigureAwait(false);
+                    await writer.FlushAsync().ConfigureAwait(false);
+                }
+                finally { client.WriteLock.Release(); }
             }
         }
         catch (OperationCanceledException) { }
