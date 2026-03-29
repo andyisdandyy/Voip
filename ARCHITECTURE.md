@@ -511,7 +511,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows)
 
 ### AudioWorklet Processors
-- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Used for voice capture.
+- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Supports an **input sensitivity gate**: the main thread sends `{ sensitivity: 0..1 }` via `port.postMessage`; when the RMS level of a 960-sample block (scaled ×3 to match the UI meter) falls below the threshold the block is zeroed before encoding. Used for voice capture.
 - **`audio-screen-capture-processor.js`**: Buffers Float32 stereo samples into 960-frame stereo blocks (20 ms at 48 kHz), interleaves L/R channels into Int16 (1920 samples per message), and posts to main thread. Used for screen-share system audio.
 - **`audio-playback-processor.js`**: Receives interleaved stereo Int16 PCM buffers, de-interleaves to separate L/R Float32 arrays, and plays them back through the stereo output channels. Used by both voice and screen audio playback pipelines.
 

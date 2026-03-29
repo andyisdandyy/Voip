@@ -285,6 +285,7 @@ export function TerminalForum() {
   const echoCancellationRef = useRef(localStorage.getItem('voip-echo-cancellation') !== 'false');
   const noiseSuppressionRef = useRef(localStorage.getItem('voip-noise-suppression') !== 'false');
   const autoGainControlRef = useRef(localStorage.getItem('voip-auto-gain') !== 'false');
+  const inputSensitivityRef = useRef(parseInt(localStorage.getItem('voip-input-sensitivity') || '0'));
   const analyserRef = useRef<AnalyserNode | null>(null);
   const micLevelIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -398,6 +399,7 @@ export function TerminalForum() {
   const [noiseSuppression, setNoiseSuppression] = useState(() => { try { return localStorage.getItem('voip-noise-suppression') !== 'false'; } catch { return true; } });
   const [autoGainControl, setAutoGainControl] = useState(() => { try { return localStorage.getItem('voip-auto-gain') !== 'false'; } catch { return true; } });
   const [micLevel, setMicLevel] = useState(0);
+  const [inputSensitivity, setInputSensitivity] = useState(() => { try { return parseInt(localStorage.getItem('voip-input-sensitivity') || '0'); } catch { return 0; } });
   const [userContextMenu, setUserContextMenu] = useState<UserContextMenu | null>(null);
   const [perUserSettings, setPerUserSettings] = useState<Record<string, UserSetting>>({});
   const [uiScale, setUiScale] = useState(() => {
@@ -768,6 +770,7 @@ export function TerminalForum() {
   useEffect(() => { echoCancellationRef.current = echoCancellation; try { localStorage.setItem('voip-echo-cancellation', String(echoCancellation)); } catch {} }, [echoCancellation]);
   useEffect(() => { noiseSuppressionRef.current = noiseSuppression; try { localStorage.setItem('voip-noise-suppression', String(noiseSuppression)); } catch {} }, [noiseSuppression]);
   useEffect(() => { autoGainControlRef.current = autoGainControl; try { localStorage.setItem('voip-auto-gain', String(autoGainControl)); } catch {} }, [autoGainControl]);
+  useEffect(() => { inputSensitivityRef.current = inputSensitivity; if (captureRef.current) captureRef.current.port.postMessage({ sensitivity: inputSensitivity / 100 }); try { localStorage.setItem('voip-input-sensitivity', String(inputSensitivity)); } catch {} }, [inputSensitivity]);
   useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
   useEffect(() => { connectedServerIdRef.current = connectedServerId; }, [connectedServerId]);
   useEffect(() => { currentVoiceRoomRef.current = currentVoiceRoom; }, [currentVoiceRoom]);
@@ -1598,6 +1601,7 @@ export function TerminalForum() {
         if (!isMutedRef.current) window.electronAPI.sendAudio(e.data);
       };
       source.connect(capture);
+      capture.port.postMessage({ sensitivity: inputSensitivityRef.current / 100 });
       const silent = ctx.createGain();
       silent.gain.value = 0;
       capture.connect(silent);
@@ -3967,7 +3971,7 @@ export function TerminalForum() {
                   const senderUser = onlineUsers.find(u => u.name === msg.sender);
                   const senderColor = senderUser?.roleColor || undefined;
                   const isMention = nickname && !msg.body.startsWith('__FILE__:') && msg.body.toLowerCase().includes(`@${nickname.toLowerCase()}`);
-                  const mentionBg = isMention ? 'bg-yellow-500/10 border-l-2 border-yellow-500/50 pl-2' : '';
+                  const mentionBg = isMention ? 'bg-yellow-500/10 border-l-2 border-yellow-500/50' : '';
                   return (
                   <div key={msg.id} className={`group ${mentionBg}`}
                     onContextMenu={(e) => {
@@ -4370,17 +4374,36 @@ export function TerminalForum() {
                     <label className="text-xs text-green-600 block mb-2">Microphone Activity</label>
                     {currentVoiceRoom ? (
                       <>
-                        <div className="w-full h-3 bg-green-900/30 rounded-full overflow-hidden">
+                        <div className="w-full h-3 bg-green-900/30 rounded-full overflow-hidden relative">
                           <div className={`h-full rounded-full transition-all duration-75 ${micLevel > 0.6 ? 'bg-yellow-500' : 'bg-green-500'}`}
                             style={{ width: `${micLevel * 100}%` }} />
+                          {inputSensitivity > 0 && (
+                            <div className="absolute top-0 h-full w-0.5 bg-red-500/70" style={{ left: `${inputSensitivity}%` }} />
+                          )}
                         </div>
                         <span className="text-xs text-green-700 mt-1 block">
-                          {micLevel > 0.05 ? '● Capturing audio' : '○ No audio'}
+                          {micLevel > 0.05
+                            ? (inputSensitivity > 0 && micLevel < inputSensitivity / 100
+                              ? '○ Below threshold — gated'
+                              : '● Capturing audio')
+                            : '○ No audio'}
                         </span>
                       </>
                     ) : (
                       <span className="text-xs text-green-800">Join a voice channel to test microphone</span>
                     )}
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Input Sensitivity</label>
+                    <div className="flex items-center gap-3">
+                      <input type="range" min={0} max={100} value={inputSensitivity}
+                        onChange={e => setInputSensitivity(parseInt(e.target.value))}
+                        className="flex-1 accent-green-500 h-1.5" />
+                      <span className="text-xs text-green-600 w-8 text-right">{inputSensitivity}%</span>
+                    </div>
+                    <span className="text-[10px] text-green-800 mt-1 block">
+                      {inputSensitivity === 0 ? 'No gate — all audio passes through' : 'Audio below this level will be silenced'}
+                    </span>
                   </div>
                   <div className="pt-3 border-t border-green-900/20">
                     <label className="text-xs text-green-600 block mb-2">Audio Processing</label>
