@@ -5,11 +5,17 @@
    Base
    ═══════════════════════════════════════════════════════════ */
 
+html {
+  border-radius: 10px;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   padding: 0;
   overflow: hidden;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  border-radius: 10px;
 }
 
 
@@ -57,16 +63,88 @@ body {
   --color-green-900: var(--custom-green-900, #0c4a6e);
   --color-green-950: var(--custom-green-950, #082f49);
 }
+
+/* ── Backgrounds ─────────────────────────────────────────── */
+/* Main background (#0a0e0a) → --custom-bg */
 [data-theme="custom"] .bg-\[\#0a0e0a\]       { background-color: var(--custom-bg, #1a1a1a) !important; }
 [data-theme="custom"].bg-\[\#0a0e0a\]        { background-color: var(--custom-bg, #1a1a1a) !important; }
+[data-theme="custom"] .bg-\[\#0a0e0a\\/60\]  { background-color: color-mix(in srgb, var(--custom-bg, #1a1a1a) 60%, transparent) !important; }
+/* Surface / panels / headers (#0d120d) → --custom-surface */
 [data-theme="custom"] .bg-\[\#0d120d\]       { background-color: var(--custom-surface, #242424) !important; }
+[data-theme="custom"] .bg-\[\#0d120d\]\/40   { background-color: color-mix(in srgb, var(--custom-surface, #242424) 40%, transparent) !important; }
 [data-theme="custom"] .bg-\[\#0d120d\]\/60   { background-color: color-mix(in srgb, var(--custom-surface, #242424) 60%, transparent) !important; }
 [data-theme="custom"] .bg-\[\#0d120d\]\/80   { background-color: color-mix(in srgb, var(--custom-surface, #242424) 80%, transparent) !important; }
 [data-theme="custom"] .bg-\[\#0d120d\]\/95   { background-color: color-mix(in srgb, var(--custom-surface, #242424) 95%, transparent) !important; }
-[data-theme="custom"] .bg-\[\#0a0e0a\\/60\]  { background-color: color-mix(in srgb, var(--custom-bg, #1a1a1a) 60%, transparent) !important; }
+
+/* ── Sidebar backgrounds (green-900/* tinted) → --custom-sidebar blended */
+[data-theme="custom"] .bg-green-900\/10   { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 10%, transparent) !important; }
+[data-theme="custom"] .bg-green-900\/20   { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 20%, transparent) !important; }
+[data-theme="custom"] .bg-green-900\/30   { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 30%, transparent) !important; }
+[data-theme="custom"] .bg-green-900\/40   { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 40%, transparent) !important; }
+[data-theme="custom"] .bg-green-900\/50   { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 50%, transparent) !important; }
+[data-theme="custom"] .hover\:bg-green-900\/10:hover { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 15%, transparent) !important; }
+[data-theme="custom"] .hover\:bg-green-900\/20:hover { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 25%, transparent) !important; }
+[data-theme="custom"] .hover\:bg-green-900\/30:hover { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 35%, transparent) !important; }
+[data-theme="custom"] .hover\:bg-green-900\/40:hover { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 45%, transparent) !important; }
+[data-theme="custom"] .hover\:bg-green-900\/50:hover { background-color: color-mix(in srgb, var(--custom-sidebar, #1e1e1e) 55%, transparent) !important; }
+
+/* ── Borders → --custom-border ───────────────────────────── */
+[data-theme="custom"] .border-green-900\/30 { border-color: rgba(var(--custom-border-rgb, 51, 51, 51), 0.50) !important; }
+[data-theme="custom"] .border-green-900\/40 { border-color: rgba(var(--custom-border-rgb, 51, 51, 51), 0.60) !important; }
+[data-theme="custom"] .border-green-900\/50 { border-color: rgba(var(--custom-border-rgb, 51, 51, 51), 0.75) !important; }
+
+/* ── Shadows ─────────────────────────────────────────────── */
+[data-theme="custom"] .shadow-green-900\/10 { --tw-shadow-color: rgba(0, 0, 0, 0.15) !important; }
+[data-theme="custom"] .shadow-green-900\/20 { --tw-shadow-color: rgba(0, 0, 0, 0.20) !important; }
+[data-theme="custom"] .shadow-green-900\/30 { --tw-shadow-color: rgba(0, 0, 0, 0.25) !important; }
+[data-theme="custom"] .shadow-black\/40     { --tw-shadow-color: rgba(0, 0, 0, 0.30) !important; }
+
+/* ── Text → --custom-text + --custom-text-secondary ──────── */
 [data-theme="custom"] .text-green-400         { color: var(--custom-text, #e0e0e0) !important; }
 [data-theme="custom"] .text-green-500         { color: var(--custom-text, #e0e0e0) !important; }
+[data-theme="custom"] .text-green-600         { color: var(--custom-text-secondary, #888888) !important; }
+[data-theme="custom"] .text-green-700         { color: color-mix(in srgb, var(--custom-text-secondary, #888888) 80%, transparent) !important; }
+[data-theme="custom"] .text-green-800         { color: color-mix(in srgb, var(--custom-text-secondary, #888888) 60%, transparent) !important; }
+
+/* ── Active green states (mic/voice indicators stay green) ── */
+[data-theme="custom"] .fill-green-500                  { fill: #22c55e !important; }
+[data-theme="custom"] .text-green-500.fill-green-500   { color: #22c55e !important; }
+[data-theme="custom"] .bg-green-600                    { background-color: #16a34a !important; }
+[data-theme="custom"] .bg-green-600\/20                { background-color: rgba(22, 163, 74, 0.2) !important; }
+[data-theme="custom"] .bg-green-600\/30                { background-color: rgba(22, 163, 74, 0.3) !important; }
+[data-theme="custom"] .bg-green-600\/50                { background-color: rgba(22, 163, 74, 0.5) !important; }
+[data-theme="custom"] .bg-green-600\/20.text-green-400 { color: #4ade80 !important; }
+[data-theme="custom"] .bg-green-600\/30.text-green-400 { color: #4ade80 !important; }
+[data-theme="custom"] .hover\:bg-green-600\/50:hover   { background-color: rgba(22, 163, 74, 0.5) !important; }
+
+/* ── Red accents stay red ────────────────────────────────── */
+[data-theme="custom"] .text-red-500 { color: #ef4444 !important; }
+[data-theme="custom"] .text-red-400 { color: #f87171 !important; }
+[data-theme="custom"] .bg-red-900\/30 { background-color: rgba(239, 68, 68, 0.15) !important; }
+[data-theme="custom"] .bg-red-900\/40 { background-color: rgba(239, 68, 68, 0.20) !important; }
+[data-theme="custom"] .hover\:bg-red-900\/50:hover { background-color: rgba(239, 68, 68, 0.25) !important; }
+[data-theme="custom"] .hover\:bg-red-900\/60:hover { background-color: rgba(239, 68, 68, 0.30) !important; }
+
+/* ── White overlays (call controls) ──────────────────────── */
+[data-theme="custom"] .bg-white\/10  { background-color: rgba(255, 255, 255, 0.08) !important; }
+[data-theme="custom"] .bg-white\/20  { background-color: rgba(255, 255, 255, 0.14) !important; }
+[data-theme="custom"] .hover\:bg-white\/20:hover { background-color: rgba(255, 255, 255, 0.18) !important; }
+
+/* ── Modal overlays ──────────────────────────────────────── */
+[data-theme="custom"] .bg-black\/60 { background-color: rgba(0, 0, 0, 0.55) !important; }
+[data-theme="custom"] .bg-black\/70 { background-color: rgba(0, 0, 0, 0.65) !important; }
+[data-theme="custom"] .bg-black\/80 { background-color: rgba(0, 0, 0, 0.75) !important; }
+
+/* ── Scrollbar ───────────────────────────────────────────── */
 [data-theme="custom"] ::-webkit-scrollbar-thumb { background: rgba(var(--custom-accent-rgb, 59, 130, 246), 0.3) !important; }
+[data-theme="custom"] ::-webkit-scrollbar-thumb:hover { background: rgba(var(--custom-accent-rgb, 59, 130, 246), 0.5) !important; }
+
+/* ── Selection highlight ─────────────────────────────────── */
+[data-theme="custom"] ::selection { background: rgba(var(--custom-accent-rgb, 59, 130, 246), 0.25); }
+
+/* ── Form accents ────────────────────────────────────────── */
+[data-theme="custom"] .accent-green-500 { accent-color: var(--custom-green-500, #0ea5e9) !important; }
+[data-theme="custom"] .accent-green-600 { accent-color: var(--custom-green-600, #0284c7) !important; }
 
 
 /* ═══════════════════════════════════════════════════════════
@@ -137,7 +215,7 @@ body {
 
 
 /* ═══════════════════════════════════════════════════════════
-   Light theme — white / slate
+   Light theme — clean white with warm slate accents
    ═══════════════════════════════════════════════════════════ */
 
 /* ── Color scale ─────────────────────────────────────────── */
@@ -149,60 +227,65 @@ body {
   --color-green-400: #1e293b;
   --color-green-500: #334155;
   --color-green-600: #475569;
-  --color-green-700: #94a3b8;
-  --color-green-800: #cbd5e1;
-  --color-green-900: #64748b;
+  --color-green-700: #64748b;
+  --color-green-800: #94a3b8;
+  --color-green-900: #475569;
   --color-green-950: #e2e8f0;
 }
 
 /* ── Backgrounds ─────────────────────────────────────────── */
-/* Descendant elements */
-[data-theme="light"] .bg-\[\#0a0e0a\]       { background-color: #f0f1f3 !important; }
+[data-theme="light"] .bg-\[\#0a0e0a\]       { background-color: #f4f6f8 !important; }
 [data-theme="light"] .bg-\[\#0d120d\]       { background-color: #ffffff !important; }
-[data-theme="light"] .bg-\[\#0d120d\]\/60   { background-color: #f7f8f9 !important; }
-[data-theme="light"] .bg-\[\#0d120d\]\/80   { background-color: #fafbfc !important; }
-[data-theme="light"] .bg-\[\#0d120d\]\/95   { background-color: #fdfdfe !important; }
-[data-theme="light"] .bg-\[\#0a0e0a\\/60\]  { background-color: rgba(240, 241, 243, 0.85) !important; }
-/* Root element (data-theme + bg class on same element) */
-[data-theme="light"].bg-\[\#0a0e0a\]        { background-color: #f0f1f3 !important; }
+[data-theme="light"] .bg-\[\#0d120d\]\/40   { background-color: rgba(255, 255, 255, 0.65) !important; }
+[data-theme="light"] .bg-\[\#0d120d\]\/60   { background-color: rgba(255, 255, 255, 0.80) !important; }
+[data-theme="light"] .bg-\[\#0d120d\]\/80   { background-color: rgba(255, 255, 255, 0.92) !important; }
+[data-theme="light"] .bg-\[\#0d120d\]\/95   { background-color: rgba(255, 255, 255, 0.98) !important; }
+[data-theme="light"] .bg-\[\#0a0e0a\\/60\]  { background-color: rgba(244, 246, 248, 0.85) !important; }
+/* Root element */
+[data-theme="light"].bg-\[\#0a0e0a\]        { background-color: #f4f6f8 !important; }
 /* Ring offset + border referencing #0a0e0a */
-[data-theme="light"] .ring-offset-\[\#0a0e0a\] { --tw-ring-offset-color: #f0f1f3 !important; }
-[data-theme="light"] .border-\[\#0a0e0a\]      { border-color: #f0f1f3 !important; }
+[data-theme="light"] .ring-offset-\[\#0a0e0a\] { --tw-ring-offset-color: #f4f6f8 !important; }
+[data-theme="light"] .ring-\[\#0a0e0a\]        { --tw-ring-color: #e2e8f0 !important; }
+[data-theme="light"] .border-\[\#0a0e0a\]      { border-color: #e2e8f0 !important; }
 
-/* ── Borders ─────────────────────────────────────────────── */
-[data-theme="light"] .border-green-900\/30 { border-color: rgba(100, 116, 139, 0.18) !important; }
-[data-theme="light"] .border-green-900\/40 { border-color: rgba(100, 116, 139, 0.22) !important; }
-[data-theme="light"] .border-green-900\/50 { border-color: rgba(100, 116, 139, 0.28) !important; }
+/* ── Borders (stronger definition) ───────────────────────── */
+[data-theme="light"] .border-green-900\/30 { border-color: rgba(71, 85, 105, 0.15) !important; }
+[data-theme="light"] .border-green-900\/40 { border-color: rgba(71, 85, 105, 0.20) !important; }
+[data-theme="light"] .border-green-900\/50 { border-color: rgba(71, 85, 105, 0.25) !important; }
 
-/* ── Shadows (visible on white) ──────────────────────────── */
-[data-theme="light"] .shadow-green-900\/10 { --tw-shadow-color: rgba(0, 0, 0, 0.06) !important; }
-[data-theme="light"] .shadow-green-900\/20 { --tw-shadow-color: rgba(0, 0, 0, 0.08) !important; }
-[data-theme="light"] .shadow-green-900\/30 { --tw-shadow-color: rgba(0, 0, 0, 0.10) !important; }
-[data-theme="light"] .shadow-black\/40     { --tw-shadow-color: rgba(0, 0, 0, 0.08) !important; }
-[data-theme="light"] .shadow-black\/20     { --tw-shadow-color: rgba(0, 0, 0, 0.06) !important; }
+/* ── Shadows (more depth for panels) ─────────────────────── */
+[data-theme="light"] .shadow-green-900\/10 { --tw-shadow-color: rgba(71, 85, 105, 0.08) !important; }
+[data-theme="light"] .shadow-green-900\/20 { --tw-shadow-color: rgba(71, 85, 105, 0.10) !important; }
+[data-theme="light"] .shadow-green-900\/30 { --tw-shadow-color: rgba(71, 85, 105, 0.14) !important; }
+[data-theme="light"] .shadow-black\/40     { --tw-shadow-color: rgba(0, 0, 0, 0.10) !important; }
+[data-theme="light"] .shadow-black\/20     { --tw-shadow-color: rgba(0, 0, 0, 0.07) !important; }
 
-/* ── Text ────────────────────────────────────────────────── */
+/* ── Text (clear contrast hierarchy) ─────────────────────── */
 [data-theme="light"] .text-green-400 { color: #1e293b !important; }
 [data-theme="light"] .text-green-500 { color: #334155 !important; }
+[data-theme="light"] .text-green-600 { color: #475569 !important; }
+[data-theme="light"] .text-green-700 { color: #64748b !important; }
+[data-theme="light"] .text-green-800 { color: #94a3b8 !important; }
 
 /* ── Red accents (adjusted for light bg) ─────────────────── */
 [data-theme="light"] .text-red-500 { color: #dc2626 !important; }
 [data-theme="light"] .text-red-400 { color: #ef4444 !important; }
-[data-theme="light"] .bg-red-900\/30 { background-color: rgba(220, 38, 38, 0.10) !important; }
-[data-theme="light"] .bg-red-900\/40 { background-color: rgba(220, 38, 38, 0.12) !important; }
-[data-theme="light"] .bg-red-900\/50 { background-color: rgba(220, 38, 38, 0.15) !important; }
-[data-theme="light"] .bg-red-900\/60 { background-color: rgba(220, 38, 38, 0.18) !important; }
-[data-theme="light"] .hover\:bg-red-900\/50:hover { background-color: rgba(220, 38, 38, 0.18) !important; }
-[data-theme="light"] .hover\:bg-red-900\/60:hover { background-color: rgba(220, 38, 38, 0.22) !important; }
-[data-theme="light"] .hover\:bg-red-900\/80:hover { background-color: rgba(220, 38, 38, 0.25) !important; }
+[data-theme="light"] .text-red-700 { color: #b91c1c !important; }
+[data-theme="light"] .bg-red-900\/30 { background-color: rgba(220, 38, 38, 0.08) !important; }
+[data-theme="light"] .bg-red-900\/40 { background-color: rgba(220, 38, 38, 0.10) !important; }
+[data-theme="light"] .bg-red-900\/50 { background-color: rgba(220, 38, 38, 0.13) !important; }
+[data-theme="light"] .bg-red-900\/60 { background-color: rgba(220, 38, 38, 0.16) !important; }
+[data-theme="light"] .hover\:bg-red-900\/50:hover { background-color: rgba(220, 38, 38, 0.16) !important; }
+[data-theme="light"] .hover\:bg-red-900\/60:hover { background-color: rgba(220, 38, 38, 0.20) !important; }
+[data-theme="light"] .hover\:bg-red-900\/80:hover { background-color: rgba(220, 38, 38, 0.24) !important; }
 
 /* ── Active green states (mic on, voice connected) ────────── */
 [data-theme="light"] .fill-green-500                  { fill: #16a34a !important; }
 [data-theme="light"] .text-green-500.fill-green-500   { color: #16a34a !important; }
 [data-theme="light"] .bg-green-600                    { background-color: #16a34a !important; }
-[data-theme="light"] .bg-green-600\/20                { background-color: rgba(22, 163, 74, 0.12) !important; }
-[data-theme="light"] .bg-green-600\/30                { background-color: rgba(22, 163, 74, 0.15) !important; }
-[data-theme="light"] .bg-green-600\/50                { background-color: rgba(22, 163, 74, 0.20) !important; }
+[data-theme="light"] .bg-green-600\/20                { background-color: rgba(22, 163, 74, 0.10) !important; }
+[data-theme="light"] .bg-green-600\/30                { background-color: rgba(22, 163, 74, 0.14) !important; }
+[data-theme="light"] .bg-green-600\/50                { background-color: rgba(22, 163, 74, 0.18) !important; }
 [data-theme="light"] .bg-green-600\/20.text-green-400 { color: #15803d !important; }
 [data-theme="light"] .bg-green-600\/30.text-green-400 { color: #15803d !important; }
 [data-theme="light"] .hover\:bg-green-600\/50:hover   { background-color: rgba(22, 163, 74, 0.22) !important; }
@@ -210,34 +293,53 @@ body {
 /* ── Yellow states (away indicator) ──────────────────────── */
 [data-theme="light"] .text-yellow-500 { color: #ca8a04 !important; }
 
-/* ── Scrollbar ───────────────────────────────────────────── */
-[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.25) !important; }
-[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.40) !important; }
+/* ── Scrollbar (subtle rounded) ──────────────────────────── */
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(71, 85, 105, 0.18) !important; border-radius: 4px !important; }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(71, 85, 105, 0.32) !important; }
 [data-theme="light"] ::-webkit-scrollbar-track { background: transparent !important; }
 
 /* ── Selection highlight ─────────────────────────────────── */
-[data-theme="light"] ::selection { background: rgba(59, 130, 246, 0.20); }
+[data-theme="light"] ::selection { background: rgba(59, 130, 246, 0.18); }
 
-/* ── Modal overlays (lighter backdrop) ───────────────────── */
-[data-theme="light"] .bg-black\/60 { background-color: rgba(0, 0, 0, 0.30) !important; }
-[data-theme="light"] .bg-black\/70 { background-color: rgba(0, 0, 0, 0.35) !important; }
-[data-theme="light"] .bg-black\/80 { background-color: rgba(0, 0, 0, 0.40) !important; }
+/* ── Modal overlays ──────────────────────────────────────── */
+[data-theme="light"] .bg-black\/60 { background-color: rgba(15, 23, 42, 0.25) !important; }
+[data-theme="light"] .bg-black\/70 { background-color: rgba(15, 23, 42, 0.32) !important; }
+[data-theme="light"] .bg-black\/80 { background-color: rgba(15, 23, 42, 0.40) !important; }
 
-/* ── Green-tinted utility backgrounds (header bars, etc.) ── */
-[data-theme="light"] .bg-green-900\/40   { background-color: rgba(100, 116, 139, 0.08) !important; }
-[data-theme="light"] .bg-green-900\/20   { background-color: rgba(100, 116, 139, 0.06) !important; }
-[data-theme="light"] .bg-green-900\/30   { background-color: rgba(100, 116, 139, 0.07) !important; }
-[data-theme="light"] .bg-green-900\/50   { background-color: rgba(100, 116, 139, 0.10) !important; }
-[data-theme="light"] .hover\:bg-green-900\/20:hover { background-color: rgba(100, 116, 139, 0.08) !important; }
-[data-theme="light"] .hover\:bg-green-900\/40:hover { background-color: rgba(100, 116, 139, 0.10) !important; }
-[data-theme="light"] .hover\:bg-green-900\/50:hover { background-color: rgba(100, 116, 139, 0.12) !important; }
+/* ── Utility backgrounds (sidebars, headers, panels) ─────── */
+[data-theme="light"] .bg-green-900\/10   { background-color: rgba(71, 85, 105, 0.04) !important; }
+[data-theme="light"] .bg-green-900\/20   { background-color: rgba(71, 85, 105, 0.06) !important; }
+[data-theme="light"] .bg-green-900\/30   { background-color: rgba(71, 85, 105, 0.08) !important; }
+[data-theme="light"] .bg-green-900\/40   { background-color: rgba(71, 85, 105, 0.10) !important; }
+[data-theme="light"] .bg-green-900\/50   { background-color: rgba(71, 85, 105, 0.13) !important; }
+[data-theme="light"] .hover\:bg-green-900\/10:hover { background-color: rgba(71, 85, 105, 0.06) !important; }
+[data-theme="light"] .hover\:bg-green-900\/20:hover { background-color: rgba(71, 85, 105, 0.09) !important; }
+[data-theme="light"] .hover\:bg-green-900\/40:hover { background-color: rgba(71, 85, 105, 0.13) !important; }
+[data-theme="light"] .hover\:bg-green-900\/50:hover { background-color: rgba(71, 85, 105, 0.16) !important; }
 
 /* ── White-on-dark call controls → dark-on-light ─────────── */
-[data-theme="light"] .bg-white\/10  { background-color: rgba(100, 116, 139, 0.10) !important; }
-[data-theme="light"] .bg-white\/20  { background-color: rgba(100, 116, 139, 0.15) !important; }
+[data-theme="light"] .bg-white\/10  { background-color: rgba(71, 85, 105, 0.08) !important; }
+[data-theme="light"] .bg-white\/20  { background-color: rgba(71, 85, 105, 0.12) !important; }
 [data-theme="light"] .text-white\/80 { color: #334155 !important; }
-[data-theme="light"] .hover\:bg-white\/20:hover { background-color: rgba(100, 116, 139, 0.18) !important; }
+[data-theme="light"] .hover\:bg-white\/20:hover { background-color: rgba(71, 85, 105, 0.16) !important; }
 
 /* ── Accent-color for form controls (checkboxes, sliders) ── */
 [data-theme="light"] .accent-green-500 { accent-color: #16a34a !important; }
 [data-theme="light"] .accent-green-600 { accent-color: #16a34a !important; }
+
+/* ── Form inputs (clean inset look) ──────────────────────── */
+[data-theme="light"] .bg-\[\#0a0e0a\] input,
+[data-theme="light"] .bg-\[\#0a0e0a\] select,
+[data-theme="light"] .bg-\[\#0a0e0a\] textarea {
+  background-color: #ffffff !important;
+  border-color: rgba(71, 85, 105, 0.20) !important;
+}
+[data-theme="light"] .bg-\[\#0a0e0a\] input:focus,
+[data-theme="light"] .bg-\[\#0a0e0a\] select:focus,
+[data-theme="light"] .bg-\[\#0a0e0a\] textarea:focus {
+  border-color: rgba(22, 163, 74, 0.50) !important;
+}
+
+/* ── Mention highlight (warm amber instead of yellow) ────── */
+[data-theme="light"] .bg-yellow-500\/10    { background-color: rgba(245, 158, 11, 0.08) !important; }
+[data-theme="light"] .border-yellow-500\/50 { border-color: rgba(245, 158, 11, 0.35) !important; }

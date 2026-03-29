@@ -4,6 +4,8 @@ class CaptureProcessor extends AudioWorkletProcessor {
     this.buffer = new Float32Array(960);
     this.pos = 0;
     this.sensitivity = 0;
+    this.gateGain = 1;
+    this.releaseRate = 0.75; // per 20ms block — ~300ms fade to silence
     this.port.onmessage = (e) => {
       if (e.data && typeof e.data.sensitivity === 'number') {
         this.sensitivity = e.data.sensitivity;
@@ -26,7 +28,15 @@ class CaptureProcessor extends AudioWorkletProcessor {
           let sum = 0;
           for (let j = 0; j < 960; j++) sum += this.buffer[j] * this.buffer[j];
           const level = Math.min(1, Math.sqrt(sum / 960) * 3);
-          if (level < this.sensitivity) this.buffer.fill(0);
+          if (level >= this.sensitivity) {
+            this.gateGain = 1;
+          } else {
+            this.gateGain *= this.releaseRate;
+            if (this.gateGain < 0.001) this.gateGain = 0;
+          }
+          if (this.gateGain < 1) {
+            for (let j = 0; j < 960; j++) this.buffer[j] *= this.gateGain;
+          }
         }
         const int16 = new Int16Array(960);
         for (let j = 0; j < 960; j++) {

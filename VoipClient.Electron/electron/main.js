@@ -33,6 +33,7 @@ const FRAME_SIZE = 960;
 if (process.platform === 'darwin') {
   app.commandLine.appendSwitch('force-color-profile', 'srgb');
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+  app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport');
 }
 
 // Windows: disable WGC (Windows Graphics Capture) to avoid
@@ -41,6 +42,7 @@ if (process.platform === 'darwin') {
 // which is more stable across GPU drivers.
 if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-features', 'WGCCapturerWin,AllowWgcScreenCapturer,AllowWgcWindowCapturer,AllowWgcDesktopCapturer');
+  app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport');
   app.setAppUserModelId('Echo');
 }
 
@@ -48,7 +50,7 @@ if (process.platform === 'win32') {
 // Also enable PipeWire screen capture (used by Wayland compositors).
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
-  app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer,PipeWireV4L2');
+  app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer,PipeWireV4L2,PlatformHEVCDecoderSupport');
 }
 
 let mainWindow = null;
@@ -167,7 +169,7 @@ function createWindow() {
     icon: path.join(__dirname, '..', 'build-resources', 'icon.png'),
     ...(isMac
       ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 12, y: 12 } }
-      : { frame: false, roundedCorners: false }),
+      : { frame: false, roundedCorners: true }),
     transparent: false,
     show: false,
     webPreferences: {

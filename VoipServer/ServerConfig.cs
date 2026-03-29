@@ -72,6 +72,15 @@ public class ServerConfig
     public int MaxSoundSizeKB { get; set; } = 512;
 
     /// <summary>
+    /// Path to the FFmpeg binary for server-side video transcoding.
+    /// When set, uploaded video files that use HEVC/H.265 are automatically
+    /// transcoded to H.264/MP4 so all clients can play them inline.
+    /// Set to "ffmpeg" if it's on PATH, or an absolute path like "/usr/bin/ffmpeg".
+    /// Null or empty disables transcoding (videos are relayed as-is).
+    /// </summary>
+    public string? FfmpegPath { get; set; }
+
+    /// <summary>
     /// GIPHY API key for GIF search. When set, clients can search and send GIFs.
     /// Get a free key from https://developers.giphy.com/
     /// </summary>

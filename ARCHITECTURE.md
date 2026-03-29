@@ -26,6 +26,7 @@ Echo/
 │   ├── ChatHistoryStore.cs  # Last 200 messages per text room (chat_history.json)
 │   ├── SoundboardStore.cs   # Soundboard sound entries — name → base64 audio (soundboard.json)
 │   ├── EmojiStore.cs        # Custom emoji entries — name → base64 image (emojis.json)
+│   ├── VideoTranscoder.cs   # HEVC → H.264 transcoding via FFmpeg (server-side)
 │   └── deploy/
 │       └── update.sh        # Server-side script — downloads latest GitHub Release binary
 │
@@ -171,7 +172,8 @@ Private 1-to-1 messages between users, relayed through the server.
 - **Receive**: Server relays `DM:<fromUser>:<text>` to the recipient
 - **Echo**: Server sends `DM_SENT:<targetUser>:<text>` back to the sender for delivery confirmation
 - **Encryption**: When E2EE is active, DM text is encrypted with AES-256-GCM in the main process using the same PBKDF2-derived key as audio/video. The encrypted payload uses the `ENC:<base64>` format (same as room chat messages). Decryption also happens in the main process before forwarding to the renderer.
-- **UI**: Double-click a user in the sidebar or click "Direct Message" in the user context menu to open an inline DM tab in the tab bar. The DM chat replaces the server content area while the tab is active. Incoming DMs auto-open a tab if one isn't already open for that user.
+- **UI**: Double-click a user in the sidebar or click "Direct Message" in the user context menu to open an inline DM tab in the tab bar. The DM chat replaces the server content area while the tab is active. Incoming DMs auto-open a tab if one isn't already open for that user. DM messages support file uploads (paperclip button) — files are embedded as `__FILE__:<name>:<mime>:<base64>` in the DM body text. Video and audio files are rendered with inline `<video>` / `<audio>` players.
+- **Video transcoding**: When `FfmpegPath` is set in `server-config.json`, the server automatically transcodes HEVC (H.265) video uploads to H.264/MP4 before relaying. Applies to both channel file uploads and DM file attachments. Uses `VideoTranscoder.TryTranscodeAsync` — probes codec with `ffprobe`, re-encodes with `libx264` (fast preset, CRF 23). Non-HEVC videos pass through unchanged.
 - **Offline**: If the target user is not connected, the server responds with `ERROR:User is not online`
 - DMs are **not persisted** on the server or client — they exist only in the renderer's in-memory state
 
@@ -233,10 +235,13 @@ Available permissions:
 - **Windows** — frameless window with custom titlebar buttons; WGC (Windows Graphics
   Capture) disabled via `--disable-features=WGCCapturerWin,AllowWgcScreenCapturer,AllowWgcWindowCapturer,AllowWgcDesktopCapturer`
   to avoid `ProcessFrame failed` errors — falls back to DXGI Desktop Duplication for
-  more stable screen capture.
-- **macOS** — hidden titlebar with native traffic light buttons, media permission prompts
+  more stable screen capture. HEVC (H.265) hardware decoding enabled via
+  `PlatformHEVCDecoderSupport` — requires HEVC Video Extensions from the Microsoft Store.
+- **macOS** — hidden titlebar with native traffic light buttons, media permission prompts.
+  HEVC hardware decoding enabled via `PlatformHEVCDecoderSupport` (uses VideoToolbox).
 - **Linux** — frameless window with custom titlebar buttons; Ozone auto-detection for
   Wayland support; PipeWire capturer enabled for screen sharing on Wayland compositors.
+  HEVC hardware decoding enabled via `PlatformHEVCDecoderSupport` (requires VA-API support).
   When `desktopCapturer` returns no sources (Wayland), the OS-native PipeWire portal
   handles source selection. Screen share audio is supported via PipeWire.
 
@@ -309,6 +314,8 @@ On Windows, `app.setAppUserModelId('Echo')` is called at startup so that OS
 notifications display the app name **Echo** (instead of the default Electron ID).
 The `BrowserWindow` is also given an explicit `icon` pointing to
 `build-resources/icon.png` so the notification toast shows the correct logo.
+The window uses `roundedCorners: true` (native on Windows 11+) combined with
+CSS `border-radius: 10px` on `html` and `body` for consistent rounded edges.
 
 #### Multi-Server TCP State
 Instead of a single `tcpSocket`, the main process maintains a `tcpConnections` Map
@@ -473,6 +480,23 @@ are encrypted/decrypted in the main process using the same E2EE key as audio/vid
 Incoming DMs from users without an open tab automatically create one. DM message history
 is kept in-memory per username and is lost on reload.
 
+Each message bubble includes the sender's `UserAvatar` (profile picture or initial).
+Own messages are right-aligned with a green tint; other-party messages are left-aligned
+with a slate/blue tint and a blue sender label for easy visual distinction.
+
+DM messages are rendered through `renderMessageBody()`, the same function used for
+channel messages, so all rich content is supported:
+- **Images** — inline preview with lightbox on click
+- **Video files** — inline `<video>` player with native controls
+- **Audio files** — inline `<audio>` player with native controls
+- **Other files** — download card with filename, mime type, and download button
+- **GIFs** — inline animated image
+- **Emojis** — custom server emojis and standard shortcodes
+
+File uploads in DMs use a paperclip button in the input bar. Files are read as base64
+data URLs and sent as the DM body with the `__FILE__:<name>:<mime>:<base64>` prefix.
+The server relays the body as-is. File size is limited by `serverInfo.maxFileSizeKB`.
+
 | IPC Channel           | Direction      | Description                          |
 |-----------------------|----------------|--------------------------------------|
 | `dm:send-inline`      | send → main    | Send a DM (main encrypts + TCP send) |
@@ -483,7 +507,7 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 
 | Section | Lines (approx) | Purpose |
 |---------|----------------|---------|
-| Types & constants | 1–95 | Interfaces, resolution presets, color themes, custom theme helpers (`hexToHsl`, `hslToHex`, `generateScale`) |
+| Types & constants | 1–95 | Interfaces, resolution presets, color themes, custom theme helpers (`hexToHsl`, `hslToHex`, `generateScale`). Custom theme has 7 user-configurable colors: `accent` (buttons/links/active), `bg` (main content area), `surface` (headers/inputs/modals), `sidebar` (channel/user list panels), `border` (dividers/outlines), `text` (primary), `textSecondary` (timestamps/hints). CSS vars are set on `<html>` and consumed by `[data-theme="custom"]` rules in `index.css`. |
 | State declarations | 60–210 | ~60 `useState` hooks + ~40 `useRef` refs, per-server state cache (`serverStatesRef`) |
 | Multi-server helpers | 310–370 | `takeServerSnapshot`, `restoreServerSnapshot`, `resetServerState`, `sendToServer`, `sendToVoice` |
 | E2EE helpers | 208–290 | Key derivation, text encrypt/decrypt, re-decrypt |
@@ -494,7 +518,7 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | Video capture | 778–970 | Camera and screen share encoding |
 | Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload (object URLs are revoked after image load to prevent memory leaks) |
 | Connect screen | 1410+ | Server list, login dialogs |
-| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage), per-user screenshare mute (right-click context menu), right-click context menu on voice channel sidebar users and call UI tiles, voice activity indicator (green ring around profile picture when speaking). Footer status bar removed; compact panel spacing (1.5 units padding/gap) with 3 px resize handles. Inline DM tabs in tab bar (bubble-style chat, full content area). Voice channel bitrate label hidden from sidebar (bitrate is still stored internally and used for Opus encoding). Lazy-loaded chat history: server sends last 50 messages on join, client loads 50 more on scroll-to-top via `CMD:FETCH_HISTORY`. |
+| Main chat UI | 1500+ | Sidebar, message list, voice panel, settings modal, server settings modal (tabbed: General/Roles/Soundboard — admin only), send button, emoji picker, image lightbox, user presence (online/away/offline with status indicators), hide-UI overlay for fullscreen video (auto-hides controls + cursor after 3s mouse idle), resizable channel/user sidebars (drag handle, 180–450 px, persisted to localStorage), collapsible user list (toggle button, persisted to localStorage), per-user screenshare mute (right-click context menu), right-click context menu on voice channel sidebar users and call UI tiles, voice activity indicator (green ring around profile picture when speaking). Footer status bar removed; compact panel spacing (1.5 units padding/gap) with 3 px resize handles. Inline DM tabs in tab bar (bubble-style chat, full content area). Voice channel bitrate label hidden from sidebar (bitrate is still stored internally and used for Opus encoding). Lazy-loaded chat history: server sends last 50 messages on join, client loads 50 more on scroll-to-top via `CMD:FETCH_HISTORY`. Font family selector in Appearance settings (`voip-font-family` in localStorage) — applies to all text via `document.body.style.fontFamily`; defaults to the monospace stack from `index.css` when empty. |
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:
@@ -511,7 +535,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows)
 
 ### AudioWorklet Processors
-- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Supports an **input sensitivity gate**: the main thread sends `{ sensitivity: 0..1 }` via `port.postMessage`; when the RMS level of a 960-sample block (scaled ×3 to match the UI meter) falls below the threshold the block is zeroed before encoding. Used for voice capture.
+- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Supports an **input sensitivity gate**: the main thread sends `{ sensitivity: 0..1 }` via `port.postMessage`; when the RMS level of a 960-sample block (scaled ×3 to match the UI meter) falls below the threshold the gate closes with a smooth exponential release (~300 ms fade-out, 0.75× per block) to avoid hard cuts, and re-opens instantly when the level exceeds the threshold. Used for voice capture.
 - **`audio-screen-capture-processor.js`**: Buffers Float32 stereo samples into 960-frame stereo blocks (20 ms at 48 kHz), interleaves L/R channels into Int16 (1920 samples per message), and posts to main thread. Used for screen-share system audio.
 - **`audio-playback-processor.js`**: Receives interleaved stereo Int16 PCM buffers, de-interleaves to separate L/R Float32 arrays, and plays them back through the stereo output channels. Used by both voice and screen audio playback pipelines.
 

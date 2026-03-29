@@ -44,8 +44,8 @@ function getVideoBitrate(width: number, height: number, fps: number): number {
 
 type ThemeColor = 'mono' | 'light' | 'custom';
 
-interface CustomThemeColors { accent: string; bg: string; surface: string; text: string }
-const DEFAULT_CUSTOM_THEME: CustomThemeColors = { accent: '#3b82f6', bg: '#1a1a1a', surface: '#242424', text: '#e0e0e0' };
+interface CustomThemeColors { accent: string; bg: string; surface: string; sidebar: string; border: string; text: string; textSecondary: string }
+const DEFAULT_CUSTOM_THEME: CustomThemeColors = { accent: '#3b82f6', bg: '#1a1a1a', surface: '#242424', sidebar: '#1e1e1e', border: '#333333', text: '#e0e0e0', textSecondary: '#888888' };
 
 function hexToHsl(hex: string): [number, number, number] {
   const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -267,8 +267,11 @@ export function TerminalForum() {
   const [activeDmTab, setActiveDmTab] = useState<string | null>(null); // username or null
   const [dmMessages, setDmMessages] = useState<Record<string, DmMessage[]>>({});
   const [dmInput, setDmInput] = useState('');
+  const [pendingDmFile, setPendingDmFile] = useState<{ name: string; mimeType: string; base64: string; dataUrl: string } | null>(null);
+  const [dmError, setDmError] = useState<string | null>(null);
   const dmMessagesEndRef = useRef<HTMLDivElement>(null);
   const dmInputRef = useRef<HTMLInputElement>(null);
+  const dmFileInputRef = useRef<HTMLInputElement>(null);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -405,6 +408,10 @@ export function TerminalForum() {
   const [uiScale, setUiScale] = useState(() => {
     try { return parseInt(localStorage.getItem('voip-ui-scale') || '100'); }
     catch { return 100; }
+  });
+  const [fontFamily, setFontFamily] = useState(() => {
+    try { return localStorage.getItem('voip-font-family') || ''; }
+    catch { return ''; }
   });
   const [e2eeActive, setE2eeActive] = useState(false);
   const [e2eePrompt, setE2eePrompt] = useState(false);
@@ -776,25 +783,50 @@ export function TerminalForum() {
   useEffect(() => { currentVoiceRoomRef.current = currentVoiceRoom; }, [currentVoiceRoom]);
   useEffect(() => { voiceServerIdRef.current = voiceServerId; }, [voiceServerId]);
   useEffect(() => { try { localStorage.setItem('voip-theme', theme); } catch {} }, [theme]);
+  const customThemeSaveRef = useRef(0);
+  const colorPickerRafRef = useRef(0);
+  const lastAccentScaleRef = useRef<{ accent: string; scale: Record<string, string> } | null>(null);
+  const applyCustomThemeCssVars = useCallback((t: CustomThemeColors) => {
+    const el = document.documentElement;
+    const cached = lastAccentScaleRef.current;
+    let scale: Record<string, string>;
+    if (cached && cached.accent === t.accent) {
+      scale = cached.scale;
+    } else {
+      scale = generateScale(t.accent);
+      lastAccentScaleRef.current = { accent: t.accent, scale };
+    }
+    for (const [k, v] of Object.entries(scale)) el.style.setProperty(`--custom-green-${k}`, v);
+    el.style.setProperty('--custom-bg', t.bg);
+    el.style.setProperty('--custom-surface', t.surface);
+    el.style.setProperty('--custom-sidebar', t.sidebar);
+    el.style.setProperty('--custom-border', t.border);
+    el.style.setProperty('--custom-text', t.text);
+    el.style.setProperty('--custom-text-secondary', t.textSecondary);
+    el.style.setProperty('--custom-accent-rgb', hexToRgb(t.accent));
+    el.style.setProperty('--custom-border-rgb', hexToRgb(t.border));
+  }, []);
   useEffect(() => {
-    try { localStorage.setItem('voip-custom-theme', JSON.stringify(customTheme)); } catch {}
     const el = document.documentElement;
     if (theme === 'custom') {
-      const scale = generateScale(customTheme.accent);
-      for (const [k, v] of Object.entries(scale)) el.style.setProperty(`--custom-green-${k}`, v);
-      el.style.setProperty('--custom-bg', customTheme.bg);
-      el.style.setProperty('--custom-surface', customTheme.surface);
-      el.style.setProperty('--custom-text', customTheme.text);
-      el.style.setProperty('--custom-accent-rgb', hexToRgb(customTheme.accent));
+      applyCustomThemeCssVars(customTheme);
     } else {
-      ['bg', 'surface', 'text', 'accent-rgb'].forEach(k => el.style.removeProperty(`--custom-${k}`));
+      ['bg', 'surface', 'sidebar', 'border', 'text', 'text-secondary', 'accent-rgb', 'border-rgb'].forEach(k => el.style.removeProperty(`--custom-${k}`));
       ['50','100','200','300','400','500','600','700','800','900','950'].forEach(k => el.style.removeProperty(`--custom-green-${k}`));
     }
-  }, [theme, customTheme]);
+    clearTimeout(customThemeSaveRef.current);
+    customThemeSaveRef.current = window.setTimeout(() => {
+      try { localStorage.setItem('voip-custom-theme', JSON.stringify(customTheme)); } catch {}
+    }, 300);
+  }, [theme, customTheme, applyCustomThemeCssVars]);
   useEffect(() => {
     try { localStorage.setItem('voip-ui-scale', String(uiScale)); } catch {}
     document.documentElement.style.fontSize = `${uiScale}%`;
   }, [uiScale]);
+  useEffect(() => {
+    try { localStorage.setItem('voip-font-family', fontFamily); } catch {}
+    document.body.style.fontFamily = fontFamily || '';
+  }, [fontFamily]);
   useEffect(() => { window.electronAPI.getPlatform().then(p => setPlatform(p)); }, []);
   useEffect(() => { window.electronAPI.getAppVersion().then(v => setAppVersion(v)); }, []);
 
@@ -2166,6 +2198,30 @@ export function TerminalForum() {
           </div>
         );
       }
+      if (mimeType.startsWith('video/')) {
+        return (
+          <div className="mt-1">
+            <video src={dataUrl} controls preload="metadata"
+              className="max-w-sm max-h-80 rounded-lg border border-green-900/30" />
+            <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+              <Play className="w-3 h-3" />
+              {fileName}
+            </div>
+          </div>
+        );
+      }
+      if (mimeType.startsWith('audio/')) {
+        return (
+          <div className="mt-1">
+            <audio src={dataUrl} controls preload="metadata"
+              className="max-w-sm rounded-lg" />
+            <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+              <Music className="w-3 h-3" />
+              {fileName}
+            </div>
+          </div>
+        );
+      }
       return (
         <div className="mt-1 inline-flex items-center gap-3 bg-[#0a0e0a] border border-green-900/30 rounded-lg px-4 py-3 hover:border-green-700/50 transition-all">
           <FileText className="w-8 h-8 text-green-600" />
@@ -3249,10 +3305,11 @@ export function TerminalForum() {
               {msgs.map(msg => {
                 const isMe = msg.sender === nickname;
                 return (
-                  <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[70%] px-3 py-2 rounded-lg ${isMe ? 'bg-green-900/40 text-green-400' : 'bg-[#0a0e0a] text-green-500'}`}>
-                      <div className="text-[10px] text-green-700 mb-0.5">{msg.sender} · {new Date(msg.timestamp).toLocaleTimeString()}</div>
-                      <div className="text-sm break-words whitespace-pre-wrap">{msg.body}</div>
+                  <div key={msg.id} className={`flex items-end gap-2 ${isMe ? 'flex-row-reverse' : ''}`}>
+                    <UserAvatar name={msg.sender} size="sm" />
+                    <div className={`max-w-[70%] px-3 py-2 rounded-xl ${isMe ? 'bg-green-900/40 text-green-400 rounded-br-sm' : 'bg-slate-700/20 border border-slate-600/15 text-slate-300 rounded-bl-sm'}`}>
+                      <div className={`text-[10px] mb-0.5 font-semibold ${isMe ? 'text-green-500/70 text-right' : 'text-blue-400/70'}`}>{msg.sender} · {new Date(msg.timestamp).toLocaleTimeString()}</div>
+                      <div className="text-sm break-words whitespace-pre-wrap">{renderMessageBody(msg.body)}</div>
                     </div>
                   </div>
                 );
@@ -3260,27 +3317,94 @@ export function TerminalForum() {
               <div ref={dmMessagesEndRef} />
             </div>
             {/* Input */}
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              if (!dmInput.trim()) return;
-              window.electronAPI.sendDm(dmTab.serverId, dmTab.username, dmInput);
-              setDmInput('');
-              dmInputRef.current?.focus();
-            }} className="px-4 py-3 border-t border-green-900/30 flex gap-2 shrink-0">
-              <input
-                ref={dmInputRef}
-                type="text"
-                value={dmInput}
-                onChange={e => setDmInput(e.target.value)}
-                placeholder={`Message ${activeDmTab}...`}
-                className="flex-1 bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2.5 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-1 focus:ring-green-900/50 transition-all text-sm"
-                autoFocus
-              />
-              <button type="submit" disabled={!dmInput.trim()}
-                className="px-4 py-2.5 bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:text-green-800 text-green-400 rounded-lg transition-all text-sm font-bold">
-                <Send className="w-4 h-4" />
-              </button>
-            </form>
+            <div className="border-t border-green-900/30 shrink-0">
+              {pendingDmFile && (
+                <div className="px-4 pt-3 pb-1">
+                  <div className="inline-flex items-center gap-3 bg-[#0a0e0a] border border-green-900/40 rounded-lg px-3 py-2 max-w-sm">
+                    {pendingDmFile.mimeType.startsWith('image/') ? (
+                      <img src={pendingDmFile.dataUrl} alt={pendingDmFile.name} className="w-16 h-16 rounded object-cover border border-green-900/30" />
+                    ) : pendingDmFile.mimeType.startsWith('video/') ? (
+                      <Video className="w-8 h-8 text-green-600 flex-shrink-0" />
+                    ) : pendingDmFile.mimeType.startsWith('audio/') ? (
+                      <Music className="w-8 h-8 text-green-600 flex-shrink-0" />
+                    ) : (
+                      <FileText className="w-8 h-8 text-green-600 flex-shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-green-400 truncate">{pendingDmFile.name}</div>
+                      <div className="text-[10px] text-green-700">{pendingDmFile.mimeType}</div>
+                    </div>
+                    <button type="button" onClick={() => setPendingDmFile(null)}
+                      className="p-1 rounded text-green-700 hover:text-red-400 hover:bg-red-900/20 transition-all flex-shrink-0">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+              {dmError && (
+                <div className="px-4 pt-2">
+                  <div className="flex items-center gap-2 bg-red-900/30 border border-red-800/40 rounded-lg px-3 py-2 text-xs text-red-400">
+                    <X className="w-3 h-3 flex-shrink-0 cursor-pointer hover:text-red-300" onClick={() => setDmError(null)} />
+                    {dmError}
+                  </div>
+                </div>
+              )}
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (!dmInput.trim() && !pendingDmFile) return;
+                if (pendingDmFile) {
+                  const fileBody = `__FILE__:${pendingDmFile.name}:${pendingDmFile.mimeType}:${pendingDmFile.base64}`;
+                  window.electronAPI.sendDm(dmTab.serverId, dmTab.username, fileBody);
+                  setPendingDmFile(null);
+                }
+                if (dmInput.trim()) {
+                  window.electronAPI.sendDm(dmTab.serverId, dmTab.username, dmInput);
+                  setDmInput('');
+                }
+                dmInputRef.current?.focus();
+              }} className="px-4 py-3 flex gap-2">
+                <input
+                  ref={dmInputRef}
+                  type="text"
+                  value={dmInput}
+                  onChange={e => setDmInput(e.target.value)}
+                  placeholder={pendingDmFile ? 'Add a message (optional)...' : `Message ${activeDmTab}...`}
+                  className="flex-1 bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2.5 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-1 focus:ring-green-900/50 transition-all text-sm"
+                  autoFocus
+                />
+                <input ref={dmFileInputRef} type="file" className="hidden" onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const maxBytes = (serverInfo?.maxFileSizeKB || 2048) * 1024;
+                  if (file.size > maxBytes) {
+                    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+                    const maxMB = ((serverInfo?.maxFileSizeKB || 2048) / 1024).toFixed(0);
+                    setDmError(`File too large (${sizeMB} MB) — server limit is ${maxMB} MB`);
+                    setTimeout(() => setDmError(null), 5000);
+                    if (dmFileInputRef.current) dmFileInputRef.current.value = '';
+                    return;
+                  }
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const dataUrl = reader.result as string;
+                    const base64 = dataUrl.split(',')[1];
+                    const mimeType = file.type || 'application/octet-stream';
+                    setPendingDmFile({ name: file.name, mimeType, base64, dataUrl });
+                  };
+                  reader.readAsDataURL(file);
+                  if (dmFileInputRef.current) dmFileInputRef.current.value = '';
+                }} />
+                <button type="button" onClick={() => dmFileInputRef.current?.click()}
+                  className={`px-2.5 py-2.5 rounded-lg transition-all ${pendingDmFile ? 'text-green-400 bg-green-900/30' : 'text-green-700 hover:text-green-400 hover:bg-green-900/20'}`}
+                  title={`Upload file (max ${serverInfo?.maxFileSizeKB || 2048} KB)`}>
+                  <Paperclip className="w-4 h-4" />
+                </button>
+                <button type="submit" disabled={!dmInput.trim() && !pendingDmFile}
+                  className="px-4 py-2.5 bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:text-green-800 text-green-400 rounded-lg transition-all text-sm font-bold">
+                  <Send className="w-4 h-4" />
+                </button>
+              </form>
+            </div>
           </div>
         );
       })() : (
@@ -4561,18 +4685,45 @@ export function TerminalForum() {
                   {theme === 'custom' && (
                     <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
                       {([
-                        ['accent', 'Accent Color'],
-                        ['bg', 'Background'],
-                        ['surface', 'Surface / Panels'],
-                        ['text', 'Text Color'],
-                      ] as [keyof CustomThemeColors, string][]).map(([key, label]) => (
+                        ['accent', 'Accent', 'Buttons, links, active states'],
+                        ['bg', 'Background', 'Main content area'],
+                        ['surface', 'Surface', 'Headers, input bar, modals'],
+                        ['sidebar', 'Sidebar', 'Channel list, user list panels'],
+                        ['border', 'Borders', 'Dividers and outlines'],
+                        ['text', 'Primary Text', 'Messages, usernames, labels'],
+                        ['textSecondary', 'Secondary Text', 'Timestamps, hints, muted labels'],
+                      ] as [keyof CustomThemeColors, string, string][]).map(([key, label, hint]) => (
                         <div key={key} className="flex items-center gap-3">
                           <input type="color" value={customTheme[key]}
+                            onInput={e => {
+                              const val = (e.target as HTMLInputElement).value;
+                              const hexSpan = (e.target as HTMLElement).parentElement?.querySelector('.hex-label');
+                              if (hexSpan) hexSpan.textContent = val;
+                              cancelAnimationFrame(colorPickerRafRef.current);
+                              colorPickerRafRef.current = requestAnimationFrame(() => {
+                                const el = document.documentElement;
+                                if (key === 'accent') {
+                                  const scale = generateScale(val);
+                                  lastAccentScaleRef.current = { accent: val, scale };
+                                  for (const [k, v] of Object.entries(scale)) el.style.setProperty(`--custom-green-${k}`, v);
+                                  el.style.setProperty('--custom-accent-rgb', hexToRgb(val));
+                                } else if (key === 'border') {
+                                  el.style.setProperty('--custom-border', val);
+                                  el.style.setProperty('--custom-border-rgb', hexToRgb(val));
+                                } else {
+                                  const varMap: Record<string, string> = { bg: '--custom-bg', surface: '--custom-surface', sidebar: '--custom-sidebar', text: '--custom-text', textSecondary: '--custom-text-secondary' };
+                                  if (varMap[key]) el.style.setProperty(varMap[key], val);
+                                }
+                              });
+                            }}
                             onChange={e => setCustomTheme(prev => ({ ...prev, [key]: e.target.value }))}
                             className="w-8 h-8 rounded cursor-pointer border border-green-900/50 bg-transparent [&::-webkit-color-swatch-wrapper]:p-0.5 [&::-webkit-color-swatch]:rounded" />
                           <div className="flex-1 min-w-0">
-                            <span className="text-xs text-green-600">{label}</span>
-                            <span className="text-[10px] text-green-800 ml-2 font-mono">{customTheme[key]}</span>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-xs text-green-600">{label}</span>
+                              <span className="hex-label text-[10px] text-green-800 font-mono">{customTheme[key]}</span>
+                            </div>
+                            <div className="text-[10px] text-green-800/60">{hint}</div>
                           </div>
                         </div>
                       ))}
@@ -4582,6 +4733,25 @@ export function TerminalForum() {
                       </button>
                     </div>
                   )}
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Font</label>
+                    <select value={fontFamily}
+                      onChange={e => setFontFamily(e.target.value)}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      <option value="">Default (Monospace)</option>
+                      <option value="ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, monospace">Cascadia Code</option>
+                      <option value="'JetBrains Mono', ui-monospace, monospace">JetBrains Mono</option>
+                      <option value="'Fira Code', ui-monospace, monospace">Fira Code</option>
+                      <option value="Consolas, ui-monospace, monospace">Consolas</option>
+                      <option value="'Courier New', Courier, monospace">Courier New</option>
+                      <option value="Inter, system-ui, -apple-system, sans-serif">Inter (Sans-serif)</option>
+                      <option value="system-ui, -apple-system, 'Segoe UI', sans-serif">System UI (Sans-serif)</option>
+                      <option value="'Segoe UI', Tahoma, Geneva, sans-serif">Segoe UI</option>
+                      <option value="Arial, Helvetica, sans-serif">Arial</option>
+                      <option value="Verdana, Geneva, sans-serif">Verdana</option>
+                      <option value="Georgia, 'Times New Roman', serif">Georgia (Serif)</option>
+                    </select>
+                  </div>
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <label className="text-xs text-green-600">UI Scale</label>

@@ -1077,6 +1077,16 @@ public class ChatServer
             return;
         }
 
+        // Transcode HEVC → H.264 if FFmpeg is configured
+        var transcoded = await VideoTranscoder.TryTranscodeAsync(
+            _serverConfig.FfmpegPath, fileName, mimeType, base64Data, _log).ConfigureAwait(false);
+        if (transcoded != null)
+        {
+            fileName = transcoded.Value.fileName;
+            mimeType = transcoded.Value.mimeType;
+            base64Data = transcoded.Value.base64;
+        }
+
         var text = $"__FILE__:{fileName}:{mimeType}:{base64Data}";
         var id = _history.AddMessage(roomName, name, text);
         await BroadcastToTextRoomAsync(roomName, $"MSG:{roomName}:{id}:{name}:{text}").ConfigureAwait(false);
@@ -1355,6 +1365,28 @@ public class ChatServer
         {
             await senderWriter.WriteLineAsync("ERROR:User is not online").ConfigureAwait(false);
             return;
+        }
+
+        // Transcode HEVC → H.264 for DM file attachments
+        if (text.StartsWith("__FILE__:") && !string.IsNullOrWhiteSpace(_serverConfig.FfmpegPath))
+        {
+            var rest = text.Substring("__FILE__:".Length);
+            var fi1 = rest.IndexOf(':');
+            if (fi1 >= 0)
+            {
+                var fileName = rest.Substring(0, fi1);
+                var rest2 = rest.Substring(fi1 + 1);
+                var fi2 = rest2.IndexOf(':');
+                if (fi2 >= 0)
+                {
+                    var mimeType = rest2.Substring(0, fi2);
+                    var base64Data = rest2.Substring(fi2 + 1);
+                    var transcoded = await VideoTranscoder.TryTranscodeAsync(
+                        _serverConfig.FfmpegPath, fileName, mimeType, base64Data, _log).ConfigureAwait(false);
+                    if (transcoded != null)
+                        text = $"__FILE__:{transcoded.Value.fileName}:{transcoded.Value.mimeType}:{transcoded.Value.base64}";
+                }
+            }
         }
 
         // Relay to recipient
