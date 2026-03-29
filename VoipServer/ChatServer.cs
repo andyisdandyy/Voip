@@ -1154,6 +1154,11 @@ public class ChatServer
             info["GiphyApiKey"] = _serverConfig.GiphyApiKey;
         var ssePort = _serverConfig.SsePort > 0 ? _serverConfig.SsePort : _serverConfig.TcpPort + 2;
         info["SsePort"] = ssePort;
+        if (_serverConfig.FileServerEnabled)
+        {
+            var filePort = _serverConfig.FileServerPort > 0 ? _serverConfig.FileServerPort : _serverConfig.TcpPort + 3;
+            info["FileServerPort"] = filePort;
+        }
         var json = JsonSerializer.Serialize(info);
         await writer.WriteLineAsync($"SERVER_INFO:{json}").ConfigureAwait(false);
     }

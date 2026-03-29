@@ -60,6 +60,17 @@ _ = Task.Run(() => notificationServer.StartAsync(chatCts.Token));
 var bindAddr = serverConfig.BindLocalhost ? "127.0.0.1" : "0.0.0.0";
 Log($"Chat server started on {bindAddr}:{serverConfig.TcpPort}{(serverConfig.BindLocalhost ? " (use NGINX for TLS)" : "")}");
 Log($"SSE notification server started on {bindAddr}:{ssePort}");
+
+// ── File server (HTTP upload/download for video transcoding) ──
+if (serverConfig.FileServerEnabled)
+{
+    var filePort = serverConfig.FileServerPort > 0 ? serverConfig.FileServerPort : serverConfig.TcpPort + 3;
+    var fileStorageDir = Path.Combine(exeDir, "files");
+    var fileServer = new FileServer(filePort, serverConfig.BindLocalhost, fileStorageDir, serverConfig, notificationServer.ValidateTokenPublic, Log);
+    _ = Task.Run(() => fileServer.StartAsync(chatCts.Token));
+    Log($"File server started on {bindAddr}:{filePort} (storage: {fileStorageDir})");
+}
+
 var udpPort = serverConfig.UdpPort;
 var udp = new UdpClient(udpPort);
 udp.Client.ReceiveBufferSize = 2 * 1024 * 1024;

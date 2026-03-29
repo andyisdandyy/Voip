@@ -17,6 +17,7 @@ Echo/
 │   ├── Program.cs           # Entry point — starts TCP chat server + UDP voice loop
 │   ├── ChatServer.cs        # TCP client handler (auth, rooms, commands, video relay)
 │   ├── NotificationServer.cs # SSE (Server-Sent Events) endpoint for push mention notifications
+│   ├── FileServer.cs        # HTTP file upload/download server (video transcoding)
 │   ├── ServerConfig.cs      # Server configuration (server-config.json)
 │   ├── RoomsConfig.cs       # Voice/text room definitions (rooms.json) — supports runtime CRUD + reorder
 │   ├── RoomManager.cs       # Tracks user ↔ room membership (voice + text)
@@ -79,8 +80,9 @@ Echo/
 3. Creates `NotificationServer` (SSE endpoint for push mention notifications)
 4. Launches the `ChatServer` on a background task (TCP), passing the notification server
 5. Launches the `NotificationServer` on a background task (HTTP SSE)
-6. Opens a `UdpClient` for voice traffic
-7. Runs the main UDP receive loop:
+6. Optionally launches the `FileServer` on a background task (HTTP upload/download) when `FileServerEnabled` is true
+7. Opens a `UdpClient` for voice traffic
+8. Runs the main UDP receive loop:
    - **Audio packets** (0x01 prefix) — fast-path: skip string parsing, forward to broadcast channel
    - **HELLO** — registers a new voice client with a nonce handshake
    - **GOODBYE** — removes the client
@@ -103,6 +105,28 @@ for real-time mention notifications without requiring a full TCP session.
   correct dead-client removal (avoids the ConcurrentBag arbitrary-remove pitfall).
 - **Retry**: The server sends `retry: 15000\n\n` on connect so clients auto-reconnect after 15s.
 - **Port**: Configured via `SsePort` in `server-config.json` (defaults to `TcpPort + 2`).
+
+### HTTP File Server — `FileServer.cs`
+Optional HTTP endpoint for video file uploads with server-side transcoding. Enabled via
+`FileServerEnabled` in `server-config.json`. This allows video files to bypass E2EE for
+transcoding — the trade-off is that the self-hosted server sees video content temporarily.
+
+- **Upload**: `POST /upload?token=<auth_token>&name=<filename>` — raw binary body, returns
+  `{ "fileId": "...", "fileName": "...", "mimeType": "..." }` as JSON.
+- **Download**: `GET /file/<fileId>` — serves the file with correct MIME type and
+  `Content-Disposition: attachment` header. No auth required (file IDs are unguessable UUIDs).
+- **Auth**: Uses the same HMAC-SHA256 tokens as the SSE notification server (issued during TCP auth).
+  Token can be passed as `?token=` query param or `Authorization: Bearer` header.
+- **Size limit**: Enforced via `MaxFileSizeKB` from server config (same limit as inline uploads).
+- **Transcoding**: After upload, if FFmpeg is configured (`FfmpegPath`) and the file is a video,
+  the server asynchronously transcodes HEVC → H.264 via `VideoTranscoder`. The original file is
+  served immediately; once transcoding completes, the transcoded version replaces it on disk.
+- **Storage**: Files are stored in a `files/` directory next to the server binary. A cleanup task
+  runs hourly and removes files older than 24 hours.
+- **Port**: Configured via `FileServerPort` in `server-config.json` (defaults to `TcpPort + 3`).
+- **CORS**: All responses include `Access-Control-Allow-Origin: *` for Electron renderer access.
+- **Wire protocol**: The `SERVER_INFO` JSON includes `FileServerPort` when the file server is enabled,
+  so clients know the capability is available.
 
 ### TCP Chat — `ChatServer.cs`
 Each connected TCP client gets its own async task (`HandleClientAsync`):
@@ -173,10 +197,7 @@ Private 1-to-1 messages between users, relayed through the server.
 - **Echo**: Server sends `DM_SENT:<targetUser>:<text>` back to the sender for delivery confirmation
 - **Encryption**: When E2EE is active, DM text is encrypted with AES-256-GCM in the main process using the same PBKDF2-derived key as audio/video. The encrypted payload uses the `ENC:<base64>` format (same as room chat messages). Decryption also happens in the main process before forwarding to the renderer.
 - **UI**: Double-click a user in the sidebar or click "Direct Message" in the user context menu to open an inline DM tab in the tab bar. The DM chat replaces the server content area while the tab is active. Incoming DMs auto-open a tab if one isn't already open for that user. DM messages support file uploads (paperclip button) — files are embedded as `__FILE__:<name>:<mime>:<base64>` in the DM body text. Video and audio files are rendered with inline `<video>` / `<audio>` players.
-- **Video transcoding**: HEVC (H.265) video uploads are transcoded to H.264/MP4 at two levels:
-  - *Client-side* (always runs first): The Electron main process probes the file with `ffprobe` and transcodes with `ffmpeg` **before** encryption — ensures transcoding works even with E2EE active. Silently skipped if FFmpeg is not on PATH.
-  - *Server-side* (fallback for non-E2EE): When `FfmpegPath` is set in `server-config.json` and the file arrives via the `FILE:` protocol (E2EE off), the server transcodes via `VideoTranscoder.TryTranscodeAsync`.
-  Both use the same parameters: `libx264`, fast preset, CRF 23, AAC audio, `+faststart`. Applies to channel uploads and DM attachments. Non-HEVC videos pass through unchanged.
+- **Video transcoding**: When `FfmpegPath` is set in `server-config.json` and the file arrives via the `FILE:` protocol (E2EE off), the server transcodes HEVC (H.265) → H.264/MP4 via `VideoTranscoder.TryTranscodeAsync`. Uses `libx264`, fast preset, CRF 23, AAC audio, `+faststart`. Applies to channel uploads and DM attachments. Non-HEVC videos pass through unchanged.
 - **Offline**: If the target user is not connected, the server responds with `ERROR:User is not online`
 - DMs are **not persisted** on the server or client — they exist only in the renderer's in-memory state
 
@@ -214,14 +235,14 @@ Private 1-to-1 messages between users, relayed through the server.
   use the `FILE:` protocol for server-side validation and transcoding. DM file
   attachments are always encrypted via the main-process `e2eeEncryptText` applied to
   the full DM body.
-- **Client-side video transcoding**: Video file uploads (both channel and DM) are
-  probed for HEVC/H.265 codec via `ffprobe` and transcoded to H.264/MP4 via `ffmpeg`
-  in the Electron main process **before** encryption and sending. This ensures HEVC
-  transcoding works even with E2EE active (the server never needs to see the plaintext).
-  Uses the same parameters as the server-side `VideoTranscoder` (fast preset, CRF 23,
-  AAC audio, `+faststart`). FFmpeg and FFprobe binaries are **bundled** with the app
-  via `ffmpeg-static` and `ffprobe-static` npm packages (unpacked from asar at runtime).
-  Non-HEVC videos pass through unchanged.
+- **Server-side file server (opt-in)**: When `FileServerEnabled` is true, video file
+  uploads are sent to the server's HTTP file server instead of being embedded as base64
+  in TCP messages. The server sees video file content (for transcoding), but the **chat
+  message referencing the file** (`__FILE_REF__:…`) is still E2EE-encrypted if a key is
+  active. This is an explicit trade-off: the self-hosted server temporarily sees video
+  content to enable reliable transcoding. Non-video files and text messages remain fully
+  E2EE. The file server requires the same HMAC-SHA256 auth token as the SSE endpoint.
+  File IDs are unguessable UUIDs. Files are auto-cleaned after 24 hours.
 
 ### Roles & Permissions
 Default roles:
@@ -252,7 +273,6 @@ Available permissions:
 - **React 19** + **TypeScript 5.7** + **Tailwind CSS 4.1** (Vite)
 - **opusscript** for Opus audio encoding/decoding (runs in main process)
 - **WebCodecs API** (`VideoEncoder`/`VideoDecoder`) for H.264/VP8 video
-- **ffmpeg-static** + **ffprobe-static** — bundled FFmpeg/FFprobe binaries for client-side HEVC → H.264 transcoding of video file uploads
 
 ### Platform Support
 - **Windows** — frameless window with custom titlebar buttons; WGC (Windows Graphics
@@ -329,6 +349,25 @@ accent bottom border.
   count.
 - **Context menu**: right-clicking a tab opens the same server context menu as the
   home-screen server cards (autoconnect toggle, logout, remove).
+
+### Back / Forward Navigation
+Browser-style back/forward navigation lets users move through their view history
+(home screen, server tabs, DM tabs). A navigation history stack (`navHistoryRef`)
+and a position index (`navIndexRef`) track visited views. Each entry is a
+discriminated union: `{ type: 'home' }`, `{ type: 'server', serverId }`, or
+`{ type: 'dm', username }`.
+
+- **Triggers**: every user-initiated view switch (clicking a server tab, opening a DM,
+  pressing the Home button, connecting to a server from the home screen) pushes a new
+  entry. Duplicate consecutive entries are de-duplicated.
+- **Back / Forward buttons**: `ChevronLeft` / `ChevronRight` buttons in the titlebar
+  (both home and main UI, macOS and non-macOS layouts). Disabled when at the
+  start/end of the history stack.
+- **Mouse buttons 3 / 4**: mapped to back / forward via a `mouseup` listener.
+- **Alt+ArrowLeft / Alt+ArrowRight**: keyboard shortcut (skipped when an input is focused).
+- **Restore guard**: `isNavRestoreRef` prevents `pushNav` from firing while
+  `applyNavEntry` is programmatically switching views, avoiding recursive history
+  entries.
 
 ### Main Process — `electron/main.js`
 
@@ -523,7 +562,7 @@ The server relays the body as-is. File size is limited by `serverInfo.maxFileSiz
 | IPC Channel           | Direction      | Description                          |
 |-----------------------|----------------|--------------------------------------|
 | `dm:send-inline`      | send → main    | Send a DM (main encrypts + TCP send) |
-| `file:transcode`      | invoke → main  | HEVC → H.264 transcode via system FFmpeg (returns `{fileName, mimeType, base64}` or `null`) |
+| `file:upload`         | invoke → main  | Upload a file to the server's HTTP file server. Sends raw binary via `POST /upload`. Returns `{fileId, fileName, mimeType}` or `null`. Used for video uploads when `FileServerPort` is advertised in `SERVER_INFO`. |
 
 ### Renderer — `terminal-forum.tsx`
 
@@ -557,7 +596,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Auto-updater (version, check, install, progress/status listeners)
 - Video pop-out (open, close, closed listener)
 - Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows)
-- Video transcoding — `transcodeVideo(fileName, mimeType, base64)` (HEVC → H.264 via system FFmpeg)
+- HTTP file upload — `uploadFile(host, port, token, fileName, mimeType, base64)` (upload to server's file server for server-side transcoding)
 
 ### AudioWorklet Processors
 - **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Supports an **input sensitivity gate**: the main thread sends `{ sensitivity: 0..1 }` via `port.postMessage`; when the RMS level of a 960-sample block (scaled ×3 to match the UI meter) falls below the threshold the gate closes with a smooth exponential release (~300 ms fade-out, 0.75× per block) to avoid hard cuts, and re-opens instantly when the level exceeds the threshold. Used for voice capture.
@@ -688,6 +727,22 @@ Server → Client:
   data: {"room":"General","sender":"alice","text":"@bob hey","timestamp":1234567890}
 ```
 
+### HTTP File Server (when `FileServerEnabled` is true)
+```
+Client → Server:
+  POST /upload?token=<auth_token>&name=<filename>
+    Body: raw binary file data
+    Content-Type: <mimeType>
+    Response: { "fileId": "abc123", "fileName": "video.mp4", "mimeType": "video/mp4" }
+
+  GET /file/<fileId>
+    Response: raw binary file (Content-Type set, Content-Disposition: attachment)
+
+Client chat message format for file references:
+  MSG:<room>:__FILE_REF__:<fileId>:<fileName>:<mimeType>
+  (the __FILE_REF__ body may be E2EE-encrypted — the reference itself is small text)
+```
+
 ---
 
 ## Configuration Files
@@ -718,7 +773,10 @@ Created automatically with defaults on first run if missing. The server logs the
   "MaxSoundSizeKB": 512,              // Max soundboard sound file size in KB
   "DefaultBitrate": 96000,            // Opus bitrate (bps)
   "TenorApiKey": null,              // DEPRECATED — use GiphyApiKey
-  "GiphyApiKey": null               // GIPHY API key (enables GIF picker)
+  "GiphyApiKey": null,              // GIPHY API key (enables GIF picker)
+  "FfmpegPath": null,               // Path to FFmpeg binary for server-side transcoding
+  "FileServerEnabled": false,       // Enable HTTP file server for video uploads
+  "FileServerPort": 0               // File server port (0 = TcpPort + 3)
 }
 ```
 

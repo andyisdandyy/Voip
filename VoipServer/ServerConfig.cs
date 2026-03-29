@@ -80,6 +80,23 @@ public class ServerConfig
     /// </summary>
     public string? FfmpegPath { get; set; }
 
+    // ── File Server (HTTP upload/download) ──────────────────
+    /// <summary>
+    /// When true, the server hosts an HTTP file server for video uploads.
+    /// Video files are uploaded via HTTP (plaintext to server, protected by TLS in transit),
+    /// transcoded server-side if HEVC, stored on disk, and referenced in chat messages.
+    /// This allows video transcoding to work even when E2EE is active for text messages,
+    /// at the trade-off that the server sees video file content.
+    /// </summary>
+    public bool FileServerEnabled { get; set; } = false;
+
+    /// <summary>
+    /// HTTP port for the file upload/download server.
+    /// Defaults to <see cref="TcpPort"/> + 3 when set to 0.
+    /// Only used when <see cref="FileServerEnabled"/> is true.
+    /// </summary>
+    public int FileServerPort { get; set; } = 0;
+
     /// <summary>
     /// GIPHY API key for GIF search. When set, clients can search and send GIFs.
     /// Get a free key from https://developers.giphy.com/

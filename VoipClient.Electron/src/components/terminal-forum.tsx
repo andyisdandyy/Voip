@@ -4,7 +4,7 @@ import {
   Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, Monitor,
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
   Plus, LogOut, Command, Wifi, WifiOff, Home, Paperclip, Download, FileText, Send, Smile, Moon, Image as ImageIcon,
-  Music, Upload, Play, Trash, ChevronUp, ChevronDown, Eye, EyeOff, Shield, Sliders, Users, Check,
+  Music, Upload, Play, Trash, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Eye, EyeOff, Shield, Sliders, Users, Check,
   PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil,
 } from 'lucide-react';
 
@@ -18,7 +18,7 @@ interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean; screenMuted: boolean; screenVolume: number }
 interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string; authToken?: string; ssePort?: number }
-interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string; ssePort?: number }
+interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string; ssePort?: number; fileServerPort?: number }
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
@@ -160,6 +160,17 @@ export function TerminalForum() {
   const [voiceServerId, setVoiceServerId] = useState<string | null>(null);
   const [connectingToServerId, setConnectingToServerId] = useState<string | null>(null);
   const [showHome, setShowHome] = useState(false);
+  // ── Browser-style back/forward navigation history ─────────
+  type NavEntry = { type: 'home' } | { type: 'server'; serverId: string } | { type: 'dm'; username: string };
+  const navHistoryRef = useRef<NavEntry[]>([{ type: 'home' }]);
+  const navIndexRef = useRef(0);
+  const isNavRestoreRef = useRef(false);  // true while applying a back/forward entry
+  const [canNavBack, setCanNavBack] = useState(false);
+  const [canNavForward, setCanNavForward] = useState(false);
+  const updateNavButtons = () => {
+    setCanNavBack(navIndexRef.current > 0);
+    setCanNavForward(navIndexRef.current < navHistoryRef.current.length - 1);
+  };
   // Multi-server: set of server IDs with active TCP connections
   const [connectedServerIds, setConnectedServerIds] = useState<Set<string>>(new Set());
 
@@ -403,6 +414,56 @@ export function TerminalForum() {
     setE2eeActive(false); setE2eePrompt(false); e2eeKeyRef.current = null;
     setSelectedVideoFeed(null);
   }
+
+  // ── Browser-style back / forward helpers ───────────────────
+  const navEntriesEqual = (a: NavEntry, b: NavEntry): boolean => {
+    if (a.type !== b.type) return false;
+    if (a.type === 'server' && b.type === 'server') return a.serverId === b.serverId;
+    if (a.type === 'dm' && b.type === 'dm') return a.username === b.username;
+    return true;
+  };
+
+  const pushNav = (entry: NavEntry) => {
+    if (isNavRestoreRef.current) return;
+    const cur = navHistoryRef.current[navIndexRef.current];
+    if (cur && navEntriesEqual(cur, entry)) return;
+    navHistoryRef.current = navHistoryRef.current.slice(0, navIndexRef.current + 1);
+    navHistoryRef.current.push(entry);
+    navIndexRef.current = navHistoryRef.current.length - 1;
+    updateNavButtons();
+  };
+
+  const applyNavEntry = (entry: NavEntry) => {
+    isNavRestoreRef.current = true;
+    if (entry.type === 'home') {
+      setActiveDmTab(null);
+      setShowHome(true);
+    } else if (entry.type === 'server') {
+      setActiveDmTab(null);
+      const server = pinnedServers.find(s => s.id === entry.serverId);
+      if (server) {
+        setShowHome(false);
+        connectToPinnedServer(server);
+      }
+    } else if (entry.type === 'dm') {
+      setActiveDmTab(entry.username);
+      setShowHome(false);
+    }
+    isNavRestoreRef.current = false;
+    updateNavButtons();
+  };
+
+  const navBack = () => {
+    if (navIndexRef.current <= 0) return;
+    navIndexRef.current--;
+    applyNavEntry(navHistoryRef.current[navIndexRef.current]);
+  };
+
+  const navForward = () => {
+    if (navIndexRef.current >= navHistoryRef.current.length - 1) return;
+    navIndexRef.current++;
+    applyNavEntry(navHistoryRef.current[navIndexRef.current]);
+  };
 
   // Helper: send a message to the currently viewed server
   const sendToServer = useCallback((message: string) => {
@@ -938,6 +999,22 @@ export function TerminalForum() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // Browser-style back/forward via mouse buttons 3/4 and Alt+Arrow keys
+  useEffect(() => {
+    const onMouse = (e: MouseEvent) => {
+      if (e.button === 3) { e.preventDefault(); navBack(); }
+      else if (e.button === 4) { e.preventDefault(); navForward(); }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+      if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navBack(); }
+      else if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navForward(); }
+    };
+    window.addEventListener('mouseup', onMouse);
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('mouseup', onMouse); window.removeEventListener('keydown', onKey); };
+  }, []);
+
   const getUserSetting = (name: string): UserSetting =>
     perUserSettings[name] || { name, volume: 100, isMuted: false, soundboardMuted: false, screenMuted: false, screenVolume: 100 };
 
@@ -1016,6 +1093,7 @@ export function TerminalForum() {
           defaultBitrate: d.DefaultBitrate || 96000,
           giphyApiKey: d.GiphyApiKey || undefined,
           ssePort: d.SsePort || undefined,
+          fileServerPort: d.FileServerPort || undefined,
         });
 
         // Update the pinned server's name, logo, and SSE port from the server's identity
@@ -2200,6 +2278,71 @@ export function TerminalForum() {
         </div>
       );
     }
+    if (body.startsWith('__FILE_REF__:')) {
+      // Server-hosted file reference: __FILE_REF__:<fileId>:<fileName>:<mimeType>
+      const rest = body.substring('__FILE_REF__:'.length);
+      const parts = rest.split(':');
+      if (parts.length >= 3) {
+        const fileId = parts[0];
+        const fileName = parts[1];
+        const mimeType = parts.slice(2).join(':');
+        const currentServer = pinnedServers.find(s => s.id === connectedServerIdRef.current);
+        const serverHost = currentServer?.address?.split(':')[0] || '';
+        const filePort = serverInfo?.fileServerPort;
+        const fileUrl = filePort ? `http://${serverHost}:${filePort}/file/${fileId}` : '';
+        if (mimeType.startsWith('video/') && fileUrl) {
+          return (
+            <div className="mt-1">
+              <video src={fileUrl} controls preload="metadata"
+                className="max-w-sm max-h-80 rounded-lg border border-green-900/30" />
+              <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+                <Play className="w-3 h-3" />
+                {fileName}
+              </div>
+            </div>
+          );
+        }
+        if (mimeType.startsWith('image/') && fileUrl) {
+          return (
+            <div className="mt-1">
+              <img src={fileUrl} alt={fileName}
+                className="max-w-sm max-h-80 rounded-lg border border-green-900/30 cursor-pointer hover:border-green-700/50 transition-all"
+                onClick={() => setLightboxSrc(fileUrl)} />
+              <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+                <FileText className="w-3 h-3" />
+                {fileName}
+              </div>
+            </div>
+          );
+        }
+        if (mimeType.startsWith('audio/') && fileUrl) {
+          return (
+            <div className="mt-1">
+              <audio src={fileUrl} controls preload="metadata" className="max-w-sm rounded-lg" />
+              <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+                <Music className="w-3 h-3" />
+                {fileName}
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div className="mt-1 inline-flex items-center gap-3 bg-[#0a0e0a] border border-green-900/30 rounded-lg px-4 py-3 hover:border-green-700/50 transition-all">
+            <FileText className="w-8 h-8 text-green-600" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-green-400 truncate">{fileName}</div>
+              <div className="text-xs text-green-700">{mimeType}</div>
+            </div>
+            {fileUrl && (
+              <a href={fileUrl} download={fileName}
+                className="p-2 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all">
+                <Download className="w-4 h-4" />
+              </a>
+            )}
+          </div>
+        );
+      }
+    }
     if (body.startsWith('__FILE__:')) {
       const rest = body.substring('__FILE__:'.length);
       const i1 = rest.indexOf(':');
@@ -2438,6 +2581,7 @@ export function TerminalForum() {
       if (prev.some(t => t.username === username && t.serverId === serverId)) return prev;
       return [...prev, { username, serverId }];
     });
+    pushNav({ type: 'dm', username });
     setActiveDmTab(username);
     setDmInput('');
     setShowHome(false);
@@ -2550,6 +2694,7 @@ export function TerminalForum() {
       setConnectedServerId(loginDialog);
       setIsConnected(true);
       setStatus('Connected');
+      pushNav({ type: 'server', serverId: loginDialog });
       setShowHome(false);
       setLoginDialog(null);
       addToOpenTabs(loginDialog);
@@ -2609,21 +2754,50 @@ export function TerminalForum() {
     if (!currentTextRoom) return;
     if (!input.trim() && !pendingFile) return;
     if (pendingFile) {
-      // Client-side HEVC → H.264 transcoding (works with or without E2EE)
       let { name: fName, mimeType: fMime, base64: fData } = pendingFile;
-      if (fMime.startsWith('video/')) {
+
+      // ── Video file upload strategy ──
+      // 1. If the server has a file server enabled → upload via HTTP (server transcodes, works with E2EE)
+      // 2. Else send inline as base64
+      const fileServerPort = serverInfo?.fileServerPort;
+      const currentServer = pinnedServers.find(s => s.id === connectedServerIdRef.current);
+      const serverHost = currentServer?.address?.split(':')[0];
+      const authToken = currentServer?.authToken;
+
+      if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
+        // Upload to server's file server — server handles transcoding
         try {
-          const result = await window.electronAPI.transcodeVideo(fName, fMime, fData);
-          if (result) { fName = result.fileName; fMime = result.mimeType; fData = result.base64; }
+          const timeout = new Promise<null>(r => setTimeout(r, 60000, null));
+          const result = await Promise.race([
+            window.electronAPI.uploadFile(serverHost, fileServerPort, authToken, fName, fMime, fData),
+            timeout,
+          ]);
+          if (result?.fileId) {
+            // Send a file reference message (the file lives on the server's HTTP endpoint)
+            const refBody = `__FILE_REF__:${result.fileId}:${result.fileName}:${result.mimeType}`;
+            if (e2eeKeyRef.current) {
+              const encrypted = await e2eeEncryptText(refBody);
+              sendToServer(`MSG:${currentTextRoom}:${encrypted}`);
+            } else {
+              sendToServer(`MSG:${currentTextRoom}:${refBody}`);
+            }
+            setPendingFile(null);
+            if (input.trim()) {
+              const body = await e2eeEncryptText(input);
+              sendToServer(`MSG:${currentTextRoom}:${body}`);
+              setInput('');
+            }
+            return;
+          }
+          // Upload failed — fall through to inline path
         } catch {}
       }
+
       if (e2eeKeyRef.current) {
-        // E2EE active: encrypt entire file body and send as MSG so server never sees plaintext
         const fileBody = `__FILE__:${fName}:${fMime}:${fData}`;
         const encrypted = await e2eeEncryptText(fileBody);
         sendToServer(`MSG:${currentTextRoom}:${encrypted}`);
       } else {
-        // No E2EE: use FILE: protocol for server-side validation + transcoding
         sendToServer(`FILE:${currentTextRoom}:${fName}:${fMime}:${fData}`);
       }
       setPendingFile(null);
@@ -2750,7 +2924,19 @@ export function TerminalForum() {
             <>
               <div className="w-[70px]" />
               <div className="flex-1 flex items-center justify-center">
-                <Terminal className="w-4 h-4 shrink-0 mr-2" />
+                <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                  <button onClick={navBack} disabled={!canNavBack}
+                    className="px-1.5 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 disabled:text-green-900 disabled:cursor-default transition-colors"
+                    title="Back">
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button onClick={navForward} disabled={!canNavForward}
+                    className="px-1.5 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 disabled:text-green-900 disabled:cursor-default transition-colors"
+                    title="Forward">
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+                <Terminal className="w-4 h-4 shrink-0 mr-2 ml-2" />
                 <span className="text-xs font-bold">ECHO</span>
               </div>
               <div className="w-[70px]" />
@@ -2758,6 +2944,18 @@ export function TerminalForum() {
           ) : (
             <>
               <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
+                <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                  <button onClick={navBack} disabled={!canNavBack}
+                    className="px-1.5 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 disabled:text-green-900 disabled:cursor-default transition-colors"
+                    title="Back">
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button onClick={navForward} disabled={!canNavForward}
+                    className="px-1.5 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 disabled:text-green-900 disabled:cursor-default transition-colors"
+                    title="Forward">
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
                 <Terminal className="w-4 h-4 shrink-0" />
                 <span className="text-xs font-bold">ECHO</span>
               </div>
@@ -2808,6 +3006,7 @@ export function TerminalForum() {
                 }}
                 onDragEnd={() => { setDragTabId(null); setDragOverTabId(null); }}
                 onClick={() => {
+                  pushNav({ type: 'server', serverId: server.id });
                   setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; });
                   connectToPinnedServer(server);
                 }}
@@ -2867,7 +3066,7 @@ export function TerminalForum() {
                   const mentions = serverMentions[server.id] || 0;
                   return (
                   <button key={server.id}
-                    onClick={() => { setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; }); connectToPinnedServer(server); }}
+                    onClick={() => { pushNav({ type: 'server', serverId: server.id }); setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; }); connectToPinnedServer(server); }}
                     onContextMenu={(e) => { e.preventDefault(); setServerContextMenu({ serverId: server.id, x: e.clientX, y: e.clientY }); }}
                     disabled={connecting}
                     className="group flex flex-col items-center gap-2 transition-all disabled:opacity-50">
@@ -2933,7 +3132,7 @@ export function TerminalForum() {
             <Volume2 className="w-4 h-4 text-green-500 animate-pulse" />
             <span className="text-sm text-green-400 font-bold">{currentVoiceRoom}</span>
             <span className="text-xs text-green-700 font-mono">{fmt(callDuration)}</span>
-            <button onClick={() => setShowHome(false)}
+            <button onClick={() => { if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId }); setShowHome(false); }}
               className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-xs transition-all font-bold">
               Tilbage
             </button>
@@ -3173,28 +3372,52 @@ export function TerminalForum() {
            <div className="flex-1 flex items-center justify-center min-w-0">
              <Terminal className="w-4 h-4 shrink-0 mr-2" />
              <span className="text-xs font-bold truncate">ECHO</span>
-                <span className="text-xs text-green-700 truncate ml-1">— {nickname}</span>
-               </div>
-               <button onClick={() => setShowHome(true)}
-                 className="px-3 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 transition-colors"
-                 style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-                 title="Servere">
-                 <Home className="w-4 h-4" />
-               </button>
-               <button onClick={disconnect}
-                 className="px-3 py-2 text-xs text-red-500 hover:text-red-400 hover:bg-red-900/20 transition-colors"
-                 style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-                 DISCONNECT
-               </button>
-             </>
-       ) : (
+                 <span className="text-xs text-green-700 truncate ml-1">— {nickname}</span>
+                  </div>
+                  <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                    <button onClick={navBack} disabled={!canNavBack}
+                      className="px-1.5 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 disabled:text-green-900 disabled:cursor-default transition-colors"
+                      title="Back">
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <button onClick={navForward} disabled={!canNavForward}
+                      className="px-1.5 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 disabled:text-green-900 disabled:cursor-default transition-colors"
+                      title="Forward">
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <button onClick={() => { pushNav({ type: 'home' }); setShowHome(true); }}
+                    className="px-3 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 transition-colors"
+                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    title="Servere">
+                    <Home className="w-4 h-4" />
+                  </button>
+                  <button onClick={disconnect}
+                    className="px-3 py-2 text-xs text-red-500 hover:text-red-400 hover:bg-red-900/20 transition-colors"
+                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                    DISCONNECT
+                              </button>
+                            </>
+                  ) : (
          <>
            <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
              <Terminal className="w-4 h-4 shrink-0" />
              <span className="text-xs font-bold truncate">ECHO</span>
               <span className="text-xs text-green-700 truncate">— {nickname}</span>
              </div>
-             <button onClick={() => setShowHome(true)}
+             <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+               <button onClick={navBack} disabled={!canNavBack}
+                 className="px-1.5 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 disabled:text-green-900 disabled:cursor-default transition-colors"
+                 title="Back">
+                 <ChevronLeft className="w-4 h-4" />
+               </button>
+               <button onClick={navForward} disabled={!canNavForward}
+                 className="px-1.5 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 disabled:text-green-900 disabled:cursor-default transition-colors"
+                 title="Forward">
+                 <ChevronRight className="w-4 h-4" />
+               </button>
+             </div>
+             <button onClick={() => { pushNav({ type: 'home' }); setShowHome(true); }}
                className="px-3 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 transition-colors"
                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                title="Servere">
@@ -3254,6 +3477,7 @@ export function TerminalForum() {
              onClick={() => {
                setActiveDmTab(null);
                if (isActiveTab) return;
+               pushNav({ type: 'server', serverId: server.id });
                setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; });
                connectToPinnedServer(server);
              }}
@@ -3298,7 +3522,7 @@ export function TerminalForum() {
          const unread = !isActiveDm && (dmMessages[dm.username] || []).some(m => m.sender !== nickname);
          return (
            <div key={`dm-${dm.username}`}
-             onClick={() => { setActiveDmTab(dm.username); setDmInput(''); setShowHome(false); }}
+             onClick={() => { pushNav({ type: 'dm', username: dm.username }); setActiveDmTab(dm.username); setDmInput(''); setShowHome(false); }}
              className={`group flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-xs transition-all shrink-0 max-w-[200px] border-b-2 select-none cursor-pointer ${
                isActiveDm
                  ? 'bg-[#0a0e0a] text-green-400 border-green-500'
@@ -3396,12 +3620,34 @@ export function TerminalForum() {
                 if (!dmInput.trim() && !pendingDmFile) return;
                 if (pendingDmFile) {
                   let { name: fName, mimeType: fMime, base64: fData } = pendingDmFile;
-                  if (fMime.startsWith('video/')) {
+
+                  // Use file server for video uploads in DMs when available
+                  const fileServerPort = serverInfo?.fileServerPort;
+                  const currentServer = pinnedServers.find(s => s.id === dmTab.serverId);
+                  const serverHost = currentServer?.address?.split(':')[0];
+                  const authToken = currentServer?.authToken;
+
+                  if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
                     try {
-                      const result = await window.electronAPI.transcodeVideo(fName, fMime, fData);
-                      if (result) { fName = result.fileName; fMime = result.mimeType; fData = result.base64; }
+                      const timeout = new Promise<null>(r => setTimeout(r, 60000, null));
+                      const result = await Promise.race([
+                        window.electronAPI.uploadFile(serverHost, fileServerPort, authToken, fName, fMime, fData),
+                        timeout,
+                      ]);
+                      if (result?.fileId) {
+                        const refBody = `__FILE_REF__:${result.fileId}:${result.fileName}:${result.mimeType}`;
+                        window.electronAPI.sendDm(dmTab.serverId, dmTab.username, refBody);
+                        setPendingDmFile(null);
+                        if (dmInput.trim()) {
+                          window.electronAPI.sendDm(dmTab.serverId, dmTab.username, dmInput);
+                          setDmInput('');
+                        }
+                        dmInputRef.current?.focus();
+                        return;
+                      }
                     } catch {}
                   }
+
                   const fileBody = `__FILE__:${fName}:${fMime}:${fData}`;
                   window.electronAPI.sendDm(dmTab.serverId, dmTab.username, fileBody);
                   setPendingDmFile(null);

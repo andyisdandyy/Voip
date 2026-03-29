@@ -54,6 +54,12 @@ public class NotificationServer
     }
 
     /// <summary>
+    /// Public token validation for use by other servers (e.g. <see cref="FileServer"/>).
+    /// Returns the username if valid, null otherwise.
+    /// </summary>
+    public string? ValidateTokenPublic(string token) => ValidateToken(token);
+
+    /// <summary>
     /// Validates a token and returns the username if valid.
     /// </summary>
     private string? ValidateToken(string token)
