@@ -24,6 +24,7 @@ interface RoleInfo { name: string; color: string; priority: number; permissions:
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
 interface DmTab { username: string; serverId: string }
 interface DmMessage { id: string; sender: string; body: string; timestamp: number }
+interface Friend { username: string; serverId: string }
 
 const VIDEO_RESOLUTIONS = {
   '720p':  { label: '720p',  width: 1280, height: 720 },
@@ -191,6 +192,7 @@ export function TerminalForum() {
   const [roomHasMore, setRoomHasMore] = useState<Record<string, boolean>>({});
   const [roomLoadingMore, setRoomLoadingMore] = useState<Record<string, boolean>>({});
   const [unreadRooms, setUnreadRooms] = useState<Set<string>>(new Set());
+  const [mentionedRooms, setMentionedRooms] = useState<Record<string, number>>({});
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
   // Users
@@ -284,6 +286,7 @@ export function TerminalForum() {
   });
   const [loginDialog, setLoginDialog] = useState<string | null>(null);
   const [serverContextMenu, setServerContextMenu] = useState<ServerContextMenu | null>(null);
+  const [friendContextMenu, setFriendContextMenu] = useState<{ username: string; serverId: string; x: number; y: number } | null>(null);
   const [addServerDialog, setAddServerDialog] = useState(false);
   const [newServerName, setNewServerName] = useState('');
   const [newServerAddress, setNewServerAddress] = useState('');
@@ -311,9 +314,15 @@ export function TerminalForum() {
   const [dmInput, setDmInput] = useState('');
   const [pendingDmFile, setPendingDmFile] = useState<{ name: string; mimeType: string; base64: string; dataUrl: string } | null>(null);
   const [dmError, setDmError] = useState<string | null>(null);
+  const [dmUnreadCounts, setDmUnreadCounts] = useState<Record<string, number>>({});
+  const [friends, setFriends] = useState<Friend[]>(() => {
+    try { return JSON.parse(localStorage.getItem('voip-friends') || '[]'); }
+    catch { return []; }
+  });
   const dmMessagesEndRef = useRef<HTMLDivElement>(null);
   const dmInputRef = useRef<HTMLInputElement>(null);
   const dmFileInputRef = useRef<HTMLInputElement>(null);
+  const activeDmTabRef = useRef<string | null>(null);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -372,6 +381,12 @@ export function TerminalForum() {
   const [speakingUsers, setSpeakingUsers] = useState<Set<string>>(new Set());
   const speakingTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
+  // ── ECDH DM encryption state ─────────────────────────────
+  const ecdhPrivateKeyRef = useRef<CryptoKey | null>(null);
+  const ecdhPublicKeyB64Ref = useRef<string>('');
+  const dmSharedKeysRef = useRef<Map<string, CryptoKey>>(new Map());
+  const pendingDmKeyCallbacksRef = useRef<Map<string, Array<(key: CryptoKey | null) => void>>>(new Map());
+
   // ── Multi-server state cache ──────────────────────────────
   // Stores per-server state snapshots for background servers.
   // The currently active (viewed) server's state is in the
@@ -383,7 +398,7 @@ export function TerminalForum() {
     serverInfo: ServerInfo | null; voiceRooms: VoiceRoom[]; textRooms: TextRoom[];
     joinedTextRooms: Set<string>; currentTextRoom: string | null; currentVoiceRoom: string | null;
     roomMessages: Record<string, ChatMsg[]>; pinnedMessages: Record<string, ChatMsg[]>;
-    roomHasMore: Record<string, boolean>; unreadRooms: Set<string>;
+    roomHasMore: Record<string, boolean>; unreadRooms: Set<string>; mentionedRooms: Record<string, number>;
     onlineUsers: UserInfo[]; serverRoles: RoleInfo[];
     cameraUsers: Set<string>; screenUsers: Set<string>;
     soundboardSounds: string[]; customEmojis: Record<string, string>; e2eeActive: boolean;
@@ -394,7 +409,7 @@ export function TerminalForum() {
     return {
       nickname, serverIp, tcpPort, serverInfo, voiceRooms, textRooms,
       joinedTextRooms: joinedTextRooms, currentTextRoom: currentTextRoom, currentVoiceRoom: currentVoiceRoom,
-      roomMessages, pinnedMessages, roomHasMore, unreadRooms, onlineUsers, serverRoles,
+      roomMessages, pinnedMessages, roomHasMore, unreadRooms, mentionedRooms, onlineUsers, serverRoles,
       cameraUsers, screenUsers, soundboardSounds, customEmojis, e2eeActive: e2eeActive,
     };
   }
@@ -405,7 +420,7 @@ export function TerminalForum() {
     setJoinedText(snap.joinedTextRooms); setCurrentText(snap.currentTextRoom);
     setCurrentVoice(snap.currentVoiceRoom);
     setRoomMessages(snap.roomMessages); setPinnedMessages(snap.pinnedMessages);
-    setRoomHasMore(snap.roomHasMore); setUnreadRooms(snap.unreadRooms);
+    setRoomHasMore(snap.roomHasMore); setUnreadRooms(snap.unreadRooms); setMentionedRooms(snap.mentionedRooms);
     setOnlineUsers(snap.onlineUsers); setServerRoles(snap.serverRoles);
     setCameraUsers(snap.cameraUsers); setScreenUsers(snap.screenUsers);
     setSoundboardSounds(snap.soundboardSounds); setCustomEmojis(snap.customEmojis);
@@ -416,12 +431,91 @@ export function TerminalForum() {
     setServerInfo(null); setVoiceRooms([]); setTextRooms([]);
     setJoinedText(new Set()); setCurrentText(null); setCurrentVoice(null);
     setRoomMessages({}); setPinnedMessages({}); setShowPins(false);
-    setRoomHasMore({}); setRoomLoadingMore({}); setUnreadRooms(new Set());
+    setRoomHasMore({}); setRoomLoadingMore({}); setUnreadRooms(new Set()); setMentionedRooms({});
     setOnlineUsers([]); setServerRoles([]);
     setCameraUsers(new Set()); setScreenUsers(new Set());
     setSoundboardSounds([]); setCustomEmojis({});
     setE2eeActive(false); setE2eePrompt(false); e2eeKeyRef.current = null;
     setSelectedVideoFeed(null);
+    // Clear ECDH DM state
+    ecdhPrivateKeyRef.current = null;
+    ecdhPublicKeyB64Ref.current = '';
+    dmSharedKeysRef.current.clear();
+    pendingDmKeyCallbacksRef.current.forEach(cbs => cbs.forEach(cb => cb(null)));
+    pendingDmKeyCallbacksRef.current.clear();
+  }
+
+  // ── ECDH DM encryption helpers ───────────────────────────
+
+  async function generateAndPublishEcdhKey() {
+    try {
+      const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+      ecdhPrivateKeyRef.current = pair.privateKey;
+      const spki = await crypto.subtle.exportKey('spki', pair.publicKey);
+      const bytes = new Uint8Array(spki);
+      let binary = '';
+      const CHUNK = 8192;
+      for (let i = 0; i < bytes.length; i += CHUNK)
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)) as unknown as number[]);
+      const b64 = btoa(binary);
+      ecdhPublicKeyB64Ref.current = b64;
+      sendToServer(`CMD:SET_DM_KEY:${b64}`);
+      console.log('[ECDH] DM key pair generated and published');
+    } catch (err) {
+      console.error('[ECDH] Key generation failed:', err);
+    }
+  }
+
+  async function deriveDmSharedKey(theirPubKeyB64: string): Promise<CryptoKey | null> {
+    try {
+      const raw = Uint8Array.from(atob(theirPubKeyB64), c => c.charCodeAt(0));
+      const theirKey = await crypto.subtle.importKey('spki', raw, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+      if (!ecdhPrivateKeyRef.current) return null;
+      return crypto.subtle.deriveKey(
+        { name: 'ECDH', public: theirKey },
+        ecdhPrivateKeyRef.current,
+        { name: 'AES-GCM', length: 256 },
+        false, ['encrypt', 'decrypt']
+      );
+    } catch { return null; }
+  }
+
+  async function getDmSharedKey(username: string): Promise<CryptoKey | null> {
+    const cached = dmSharedKeysRef.current.get(username);
+    if (cached) return cached;
+    sendToServer(`CMD:GET_DM_KEY:${username}`);
+    return new Promise<CryptoKey | null>((resolve) => {
+      let done = false;
+      const cb = (key: CryptoKey | null) => { if (done) return; done = true; resolve(key); };
+      const existing = pendingDmKeyCallbacksRef.current.get(username) || [];
+      existing.push(cb);
+      pendingDmKeyCallbacksRef.current.set(username, existing);
+      setTimeout(() => cb(null), 5000);
+    });
+  }
+
+  async function dmEncrypt(text: string, key: CryptoKey): Promise<string> {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
+    const combined = new Uint8Array(12 + ct.byteLength);
+    combined.set(iv);
+    combined.set(new Uint8Array(ct), 12);
+    let binary = '';
+    const CHUNK = 8192;
+    for (let i = 0; i < combined.length; i += CHUNK)
+      binary += String.fromCharCode.apply(null, combined.subarray(i, Math.min(i + CHUNK, combined.length)) as unknown as number[]);
+    return 'DMENC:' + btoa(binary);
+  }
+
+  async function dmDecrypt(text: string, key: CryptoKey): Promise<string> {
+    if (!text.startsWith('DMENC:')) return text;
+    try {
+      const raw = Uint8Array.from(atob(text.substring(6)), c => c.charCodeAt(0));
+      const iv = raw.slice(0, 12);
+      const ct = raw.slice(12);
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+      return new TextDecoder().decode(pt);
+    } catch { return text; }
   }
 
   // ── Browser-style back / forward helpers ───────────────────
@@ -955,9 +1049,16 @@ export function TerminalForum() {
         s.delete(currentTextRoom);
         return s;
       });
+      setMentionedRooms(prev => {
+        if (!prev[currentTextRoom]) return prev;
+        const n = { ...prev };
+        delete n[currentTextRoom];
+        return n;
+      });
     }
   }, [viewMode, currentTextRoom, activeDmTab]);
   useEffect(() => { voiceServerIdRef.current = voiceServerId; }, [voiceServerId]);
+  useEffect(() => { activeDmTabRef.current = activeDmTab; }, [activeDmTab]);
   useEffect(() => { try { localStorage.setItem('voip-theme', theme); } catch {} }, [theme]);
   const customThemeSaveRef = useRef(0);
   const colorPickerRafRef = useRef(0);
@@ -1016,6 +1117,7 @@ export function TerminalForum() {
   }, []);
   useEffect(() => { try { localStorage.setItem('voip-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
   useEffect(() => { try { localStorage.setItem('voip-open-tabs', JSON.stringify(openTabs)); } catch {} }, [openTabs]);
+  useEffect(() => { try { localStorage.setItem('voip-friends', JSON.stringify(friends)); } catch {} }, [friends]);
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
     perUserSettingsRef.current = perUserSettings;
@@ -1033,15 +1135,15 @@ export function TerminalForum() {
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null);
+      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null);
       if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target as Node)) setShowEmojiPicker(false);
       if (gifPickerRef.current && !gifPickerRef.current.contains(e.target as Node)) { setShowGifPicker(false); setGifQuery(''); setGifResults([]); }
     };
-    if (userContextMenu || msgContextMenu || serverContextMenu || showEmojiPicker) {
+    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || showEmojiPicker) {
       document.addEventListener('click', handleClick);
       return () => document.removeEventListener('click', handleClick);
     }
-  }, [userContextMenu, msgContextMenu, serverContextMenu, showEmojiPicker]);
+  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, showEmojiPicker]);
 
   // Keybind recording
   useEffect(() => {
@@ -1192,6 +1294,9 @@ export function TerminalForum() {
             s.id === sid ? { ...s, name: d.ServerName, logo: d.ServerLogo || undefined, ssePort: d.SsePort || undefined } : s
           ));
         }
+
+        // Generate and publish our ECDH public key for DM encryption
+        generateAndPublishEcdhKey();
 
         // Auto-setup E2EE
         if (d.EncryptionKey) {
@@ -1507,31 +1612,75 @@ export function TerminalForum() {
         const notifBody = rawBody && !rawBody.startsWith('ENC:') ? rawBody.substring(0, 100) : undefined;
         playUiSound('message');
         window.electronAPI.showNotification(`@${sender} i #${room}`, notifBody);
+        if (currentTextRoomRef.current !== room || viewModeRef.current !== 'text') {
+          setMentionedRooms(prev => ({ ...prev, [room]: (prev[room] || 0) + 1 }));
+        }
+      }
+    } else if (line.startsWith('DM_KEY:')) {
+      // DM_KEY:<username>:<spki-base64|empty> — response to our GET_DM_KEY request
+      const i1 = line.indexOf(':', 7);
+      if (i1 >= 0) {
+        const username = line.substring(7, i1);
+        const pubKeyB64 = line.substring(i1 + 1);
+        const callbacks = pendingDmKeyCallbacksRef.current.get(username) || [];
+        pendingDmKeyCallbacksRef.current.delete(username);
+        if (pubKeyB64) {
+          deriveDmSharedKey(pubKeyB64).then(key => {
+            if (key) dmSharedKeysRef.current.set(username, key);
+            callbacks.forEach(cb => cb(key));
+          });
+        } else {
+          callbacks.forEach(cb => cb(null));
+        }
       }
     } else if (line.startsWith('DM:')) {
-      // DM:<fromUser>:<text> — incoming direct message (already decrypted by main process)
+      // DM:<fromUser>:<text> — incoming direct message (ECDH-encrypted by sender)
       const i1 = line.indexOf(':', 3);
       if (i1 >= 0) {
         const fromUser = line.substring(3, i1);
-        const text = line.substring(i1 + 1);
-        const msg: DmMessage = { id: crypto.randomUUID(), sender: fromUser, body: text, timestamp: Date.now() };
-        setDmMessages(prev => ({ ...prev, [fromUser]: [...(prev[fromUser] || []), msg] }));
-        // Auto-open a DM tab if one isn't already open
-        setOpenDmTabs(prev => {
-          if (prev.some(t => t.username === fromUser)) return prev;
-          return [...prev, { username: fromUser, serverId }];
-        });
-        if (notificationSoundsRef.current) playUiSound('message');
-        window.electronAPI.showNotification(`DM from ${fromUser}`, text.substring(0, 100));
+        const rawText = line.substring(i1 + 1);
+        const handleDecrypted = (body: string) => {
+          const msg: DmMessage = { id: crypto.randomUUID(), sender: fromUser, body, timestamp: Date.now() };
+          setDmMessages(prev => ({ ...prev, [fromUser]: [...(prev[fromUser] || []), msg] }));
+          setOpenDmTabs(prev => {
+            if (prev.some(t => t.username === fromUser)) return prev;
+            return [...prev, { username: fromUser, serverId }];
+          });
+          if (activeDmTabRef.current !== fromUser) {
+            setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
+          }
+          if (notificationSoundsRef.current) playUiSound('message');
+          window.electronAPI.showNotification(`DM from ${fromUser}`, body.substring(0, 100));
+        };
+        if (rawText.startsWith('DMENC:')) {
+          const cachedKey = dmSharedKeysRef.current.get(fromUser);
+          if (cachedKey) {
+            dmDecrypt(rawText, cachedKey).then(handleDecrypted);
+          } else {
+            getDmSharedKey(fromUser).then(key => {
+              (key ? dmDecrypt(rawText, key) : Promise.resolve(rawText)).then(handleDecrypted);
+            });
+          }
+        } else {
+          handleDecrypted(rawText);
+        }
       }
     } else if (line.startsWith('DM_SENT:')) {
-      // DM_SENT:<target>:<text> — our sent DM echoed back (already decrypted by main process)
+      // DM_SENT:<target>:<text> — our own sent DM echoed back (ECDH-encrypted)
       const i1 = line.indexOf(':', 8);
       if (i1 >= 0) {
         const target = line.substring(8, i1);
-        const text = line.substring(i1 + 1);
-        const msg: DmMessage = { id: crypto.randomUUID(), sender: nickname, body: text, timestamp: Date.now() };
-        setDmMessages(prev => ({ ...prev, [target]: [...(prev[target] || []), msg] }));
+        const rawText = line.substring(i1 + 1);
+        const handleDecrypted = (body: string) => {
+          const msg: DmMessage = { id: crypto.randomUUID(), sender: nicknameRef.current, body, timestamp: Date.now() };
+          setDmMessages(prev => ({ ...prev, [target]: [...(prev[target] || []), msg] }));
+        };
+        if (rawText.startsWith('DMENC:')) {
+          const cachedKey = dmSharedKeysRef.current.get(target);
+          (cachedKey ? dmDecrypt(rawText, cachedKey) : Promise.resolve(rawText)).then(handleDecrypted);
+        } else {
+          handleDecrypted(rawText);
+        }
       }
     } else if (line === 'REQUEST_KEYFRAME') {
       forceKeyframeRef.current = true;
@@ -1654,6 +1803,12 @@ export function TerminalForum() {
         window.electronAPI.setEncryptionKey(serverId, null);
         setCameraUsers(new Set());
         setScreenUsers(new Set());
+        // Clear ECDH DM state on disconnect
+        ecdhPrivateKeyRef.current = null;
+        ecdhPublicKeyB64Ref.current = '';
+        dmSharedKeysRef.current.clear();
+        pendingDmKeyCallbacksRef.current.forEach(cbs => cbs.forEach(cb => cb(null)));
+        pendingDmKeyCallbacksRef.current.clear();
       }),
       window.electronAPI.onAudioReceived((senderName, data) => {
         if (isDeafenedRef.current || !audioCtxRef.current) return;
@@ -2623,6 +2778,7 @@ export function TerminalForum() {
   // ── Auto‑scroll ───────────────────────────────────────────
 
   const loadingOlderRef = useRef(false);
+  const prevTextRoomRef = useRef<string | null>(null);
 
   useEffect(() => {
     // Don't auto-scroll to bottom when we just prepended older messages
@@ -2630,11 +2786,18 @@ export function TerminalForum() {
       loadingOlderRef.current = false;
       return;
     }
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Instant scroll when switching rooms or on initial load; smooth for new messages
+    const roomChanged = currentTextRoom !== prevTextRoomRef.current;
+    prevTextRoomRef.current = currentTextRoom;
+    messagesEndRef.current?.scrollIntoView({ behavior: roomChanged ? 'instant' : 'smooth' });
   }, [roomMessages, currentTextRoom]);
 
+  const prevDmTabRef = useRef<string | null>(null);
+
   useEffect(() => {
-    dmMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const tabChanged = activeDmTab !== prevDmTabRef.current;
+    prevDmTabRef.current = activeDmTab;
+    dmMessagesEndRef.current?.scrollIntoView({ behavior: tabChanged ? 'instant' : 'smooth' });
   }, [dmMessages, activeDmTab]);
 
   // ── Load older messages on scroll-to-top ──────────────────
@@ -2723,6 +2886,31 @@ export function TerminalForum() {
     setOpenTabs(prev => prev.includes(serverId) ? prev : [...prev, serverId]);
   };
 
+  const isFriend = (username: string, serverId: string) =>
+    friends.some(f => f.username === username && f.serverId === serverId);
+
+  const addFriend = (username: string, serverId: string) => {
+    if (username === nickname) return;
+    setFriends(prev => prev.some(f => f.username === username && f.serverId === serverId) ? prev : [...prev, { username, serverId }]);
+  };
+
+  const removeFriend = (username: string, serverId: string) => {
+    setFriends(prev => prev.filter(f => !(f.username === username && f.serverId === serverId)));
+  };
+
+  const getFriendOnlineStatus = (friend: Friend): { status: 'online' | 'away' | 'offline'; online: boolean } => {
+    if (connectedServerId === friend.serverId) {
+      const u = onlineUsers.find(u => u.name === friend.username);
+      if (u) return { status: u.status, online: u.online };
+    }
+    const snap = serverStatesRef.current[friend.serverId];
+    if (snap) {
+      const u = snap.onlineUsers.find(u => u.name === friend.username);
+      if (u) return { status: u.status, online: u.online };
+    }
+    return { status: 'offline', online: false };
+  };
+
   const openInlineDm = (username: string, serverId: string) => {
     if (username === nickname) return;
     setOpenDmTabs(prev => {
@@ -2733,6 +2921,7 @@ export function TerminalForum() {
     setActiveDmTab(username);
     setDmInput('');
     setShowHome(false);
+    setDmUnreadCounts(prev => { const n = { ...prev }; delete n[username]; return n; });
   };
 
   const connectToPinnedServer = async (server: PinnedServer) => {
@@ -3157,7 +3346,8 @@ export function TerminalForum() {
             const server = pinnedServers.find(s => s.id === tabId);
             if (!server) return null;
             const isActiveTab = isConnected && connectedServerId === server.id;
-            const mentions = (!isActiveTab && serverMentions[server.id]) || 0;
+            const activeMentionTotal = isActiveTab ? Object.values(mentionedRooms).reduce((s, n) => s + n, 0) : 0;
+            const mentions = isActiveTab ? activeMentionTotal : (serverMentions[server.id] || 0);
             return (
               <div key={server.id}
                 draggable
@@ -3236,7 +3426,8 @@ export function TerminalForum() {
               <div className="text-xs text-green-700 mb-6 text-center tracking-widest">YOUR SERVERS</div>
               <div className="flex flex-wrap justify-center gap-6">
                 {pinnedServers.map(server => {
-                  const mentions = serverMentions[server.id] || 0;
+                  const activeMentionTotal = (isConnected && connectedServerId === server.id) ? Object.values(mentionedRooms).reduce((s, n) => s + n, 0) : 0;
+                  const mentions = (serverMentions[server.id] || 0) + activeMentionTotal;
                   return (
                   <button key={server.id}
                     onClick={() => { pushNav({ type: 'server', serverId: server.id, view: 'text', textRoom: null }); setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; }); connectToPinnedServer(server); }}
@@ -3290,6 +3481,65 @@ export function TerminalForum() {
                 </button>
               </div>
             </div>
+
+            {/* Friends */}
+            {friends.length > 0 && (() => {
+              const statusOrder = { online: 0, away: 1, offline: 2 };
+              const sorted = [...friends].sort((a, b) => {
+                const sa = getFriendOnlineStatus(a);
+                const sb = getFriendOnlineStatus(b);
+                return (statusOrder[sa.online ? sa.status : 'offline'] ?? 2) - (statusOrder[sb.online ? sb.status : 'offline'] ?? 2);
+              });
+              return (
+                <div className="mb-10">
+                  <div className="text-xs text-green-700 mb-4 text-center tracking-widest">FRIENDS</div>
+                  <div className="space-y-2 max-w-md mx-auto">
+                    {sorted.map(friend => {
+                      const server = pinnedServers.find(s => s.id === friend.serverId);
+                      const isServerConnected = connectedServerIds.has(friend.serverId);
+                      const { status: friendStatus, online } = getFriendOnlineStatus(friend);
+                      const dotColor = friendStatus === 'away' ? '#eab308' : online ? '#22c55e' : '#6b7280';
+                      return (
+                        <div key={`${friend.username}-${friend.serverId}`}
+                          onClick={() => { if (isServerConnected) openInlineDm(friend.username, friend.serverId); }}
+                          onContextMenu={(e) => { e.preventDefault(); setFriendContextMenu({ username: friend.username, serverId: friend.serverId, x: e.clientX, y: e.clientY }); }}
+                          className={`flex items-center gap-3 bg-[#0d120d]/60 border border-green-900/20 rounded-lg px-4 py-3 hover:border-green-900/40 transition-all select-none ${isServerConnected ? 'cursor-pointer' : 'cursor-default'}`}>
+                          <div className="relative shrink-0">
+                            <div className="w-10 h-10 rounded-full bg-green-900/40 flex items-center justify-center text-sm font-bold text-green-400">
+                              {friend.username.charAt(0).toUpperCase()}
+                            </div>
+                            <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full ring-2 ring-[#0a0e0a]"
+                              style={{ backgroundColor: dotColor }} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-green-400 font-bold truncate">{friend.username}</div>
+                            <div className="text-xs flex items-center gap-1">
+                              <span className="text-green-700 truncate">{server?.name || 'Unknown server'}</span>
+                              <span className="text-green-900 shrink-0">·</span>
+                              <span className={`shrink-0 ${online ? (friendStatus === 'away' ? 'text-yellow-600' : 'text-green-600') : 'text-green-900'}`}>
+                                {online ? (friendStatus === 'away' ? 'Away' : 'Online') : 'Offline'}
+                              </span>
+                            </div>
+                          </div>
+                          {(() => {
+                            const unread = dmUnreadCounts[friend.username] || 0;
+                            if (unread > 0) {
+                              return (
+                                <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 animate-pulse">
+                                  {unread > 9 ? '9+' : unread}
+                                </span>
+                              );
+                            }
+                            if (isServerConnected) return <Send className="w-3.5 h-3.5 text-green-800 shrink-0" />;
+                            return null;
+                          })()}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Status */}
             <div className="text-center text-xs text-green-700 space-y-1">
@@ -3408,6 +3658,26 @@ export function TerminalForum() {
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── Friend Context Menu ── */}
+        {friendContextMenu && (
+          <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[160px] z-50"
+            style={{ left: Math.min(friendContextMenu.x, window.innerWidth - 180), top: Math.min(friendContextMenu.y, window.innerHeight - 100) }}
+            onClick={e => e.stopPropagation()}>
+            {connectedServerIds.has(friendContextMenu.serverId) && (
+              <button onClick={() => { openInlineDm(friendContextMenu.username, friendContextMenu.serverId); setFriendContextMenu(null); }}
+                className="w-full px-4 py-2.5 rounded-lg text-green-400 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
+                <Send className="w-4 h-4" />
+                <span>Send DM</span>
+              </button>
+            )}
+            <button onClick={() => { removeFriend(friendContextMenu.username, friendContextMenu.serverId); setFriendContextMenu(null); }}
+              className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
+              <X className="w-4 h-4" />
+              <span>Remove friend</span>
+            </button>
           </div>
         )}
 
@@ -3626,7 +3896,8 @@ export function TerminalForum() {
          const server = pinnedServers.find(s => s.id === tabId);
          if (!server) return null;
          const isActiveTab = connectedServerId === server.id && !activeDmTab;
-         const mentions = (!isActiveTab && serverMentions[server.id]) || 0;
+         const activeMentionTotal = isActiveTab ? Object.values(mentionedRooms).reduce((s, n) => s + n, 0) : 0;
+         const mentions = isActiveTab ? activeMentionTotal : (serverMentions[server.id] || 0);
          return (
            <div key={server.id}
              draggable
@@ -3692,17 +3963,24 @@ export function TerminalForum() {
        {/* ── DM tabs ──────────────────────────────────────── */}
        {openDmTabs.map(dm => {
          const isActiveDm = activeDmTab === dm.username;
-         const unread = !isActiveDm && (dmMessages[dm.username] || []).some(m => m.sender !== nickname);
+         const dmUnread = dmUnreadCounts[dm.username] || 0;
          return (
            <div key={`dm-${dm.username}`}
-             onClick={() => { pushNav({ type: 'dm', username: dm.username }); setActiveDmTab(dm.username); setDmInput(''); setShowHome(false); }}
+             onClick={() => { pushNav({ type: 'dm', username: dm.username }); setActiveDmTab(dm.username); setDmInput(''); setShowHome(false); setDmUnreadCounts(prev => { const n = { ...prev }; delete n[dm.username]; return n; }); }}
              className={`group flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-xs transition-all shrink-0 max-w-[200px] border-b-2 select-none cursor-pointer ${
                isActiveDm
                  ? 'bg-[#0a0e0a] text-green-400 border-green-500'
-                 : 'text-green-700 hover:text-green-500 hover:bg-green-900/20 border-transparent'
+                 : dmUnread > 0
+                   ? 'bg-red-900/10 text-white font-bold border-transparent hover:bg-red-900/20'
+                   : 'text-green-700 hover:text-green-500 hover:bg-green-900/20 border-transparent'
              }`}>
              <Send className="w-3.5 h-3.5 shrink-0" />
              <span className="truncate">{dm.username}</span>
+             {dmUnread > 0 && (
+               <span className="w-4 h-4 bg-red-500 rounded-full flex items-center justify-center text-[9px] text-white font-bold shrink-0 animate-pulse">
+                 {dmUnread > 9 ? '9+' : dmUnread}
+               </span>
+             )}
              <button
                onClick={(e) => {
                  e.stopPropagation();
@@ -3733,6 +4011,10 @@ export function TerminalForum() {
             <div className="px-4 py-3 border-b border-green-900/30 flex items-center gap-3 shrink-0">
               <Send className="w-4 h-4 text-green-600" />
               <span className="text-sm text-green-400 font-bold">DM — {activeDmTab}</span>
+              <span className="ml-auto flex items-center gap-1 text-[10px] text-green-700" title="End-to-end encrypted with ECDH P-256 + AES-256-GCM">
+                <Lock className="w-3 h-3 text-green-600" />
+                E2EE
+              </span>
             </div>
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -3809,10 +4091,13 @@ export function TerminalForum() {
                       ]);
                       if (result?.fileId) {
                         const refBody = `__FILE_REF__:${result.fileId}:${result.fileName}:${result.mimeType}`;
-                        window.electronAPI.sendDm(dmTab.serverId, dmTab.username, refBody);
+                        const dmKey = await getDmSharedKey(dmTab.username);
+                        const encRefBody = dmKey ? await dmEncrypt(refBody, dmKey) : refBody;
+                        window.electronAPI.sendDm(dmTab.serverId, dmTab.username, encRefBody);
                         setPendingDmFile(null);
                         if (dmInput.trim()) {
-                          window.electronAPI.sendDm(dmTab.serverId, dmTab.username, dmInput);
+                          const encText = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
+                          window.electronAPI.sendDm(dmTab.serverId, dmTab.username, encText);
                           setDmInput('');
                         }
                         dmInputRef.current?.focus();
@@ -3821,12 +4106,15 @@ export function TerminalForum() {
                     } catch {}
                   }
 
+                  // Inline file — send unencrypted so server can transcode if needed
                   const fileBody = `__FILE__:${fName}:${fMime}:${fData}`;
                   window.electronAPI.sendDm(dmTab.serverId, dmTab.username, fileBody);
                   setPendingDmFile(null);
                 }
                 if (dmInput.trim()) {
-                  window.electronAPI.sendDm(dmTab.serverId, dmTab.username, dmInput);
+                  const dmKey = await getDmSharedKey(dmTab.username);
+                  const body = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
+                  window.electronAPI.sendDm(dmTab.serverId, dmTab.username, body);
                   setDmInput('');
                 }
                 dmInputRef.current?.focus();
@@ -3903,14 +4191,21 @@ export function TerminalForum() {
                     className={`flex-1 text-left px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all ${
                       currentTextRoom === r.name && viewMode === 'text' && !activeDmTab
                         ? 'bg-green-900/40 text-green-400 shadow-md shadow-green-900/30'
-                        : unreadRooms.has(r.name)
-                          ? 'text-green-400 font-bold hover:bg-green-900/20'
-                          : joinedTextRooms.has(r.name)
-                            ? 'text-green-500 hover:bg-green-900/20'
+                        : mentionedRooms[r.name]
+                          ? 'bg-red-900/20 text-white font-bold hover:bg-red-900/30'
+                          : unreadRooms.has(r.name)
+                            ? 'text-green-400 font-bold hover:bg-green-900/20'
                             : 'text-green-700 hover:bg-green-900/20'
                     }`}>
                     {r.hasPassword ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
-                    <span className="text-sm truncate">{r.name}</span>
+                    <span className="text-sm truncate flex-1">{r.name}</span>
+                    {mentionedRooms[r.name] ? (
+                      <span className="w-4 h-4 bg-red-500 rounded-full flex items-center justify-center text-[9px] text-white font-bold shrink-0">
+                        {mentionedRooms[r.name] > 9 ? '9+' : mentionedRooms[r.name]}
+                      </span>
+                    ) : unreadRooms.has(r.name) ? (
+                      <span className="w-2 h-2 bg-green-500 rounded-full shrink-0" />
+                    ) : null}
                   </button>
                   {(hasPermission('reorder_rooms') || hasPermission('delete_rooms') || hasPermission('create_rooms')) && (
                     <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
@@ -5865,6 +6160,21 @@ export function TerminalForum() {
                   className="w-full px-4 py-2.5 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all flex items-center gap-2 mb-2">
                   <Send className="w-4 h-4" />
                   <span className="text-sm">Direct Message</span>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const sid = connectedServerId || '';
+                    if (isFriend(userContextMenu.userId, sid)) removeFriend(userContextMenu.userId, sid);
+                    else addFriend(userContextMenu.userId, sid);
+                  }}
+                  className={`w-full px-4 py-2.5 rounded-lg transition-all flex items-center gap-2 mb-2 ${
+                    isFriend(userContextMenu.userId, connectedServerId || '')
+                      ? 'bg-red-900/20 text-red-400 hover:bg-red-900/40'
+                      : 'bg-green-900/20 text-green-500 hover:bg-green-900/40'
+                  }`}>
+                  <UserPlus className="w-4 h-4" />
+                  <span className="text-sm">{isFriend(userContextMenu.userId, connectedServerId || '') ? 'Remove Friend' : 'Add Friend'}</span>
                 </button>
                 <div className="mb-3">
                   <div className="flex items-center gap-2 mb-2">

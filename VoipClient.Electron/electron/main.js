@@ -657,8 +657,8 @@ function setupIPC() {
   ipcMain.on('dm:send-inline', (_event, serverId, targetUsername, text) => {
     const conn = tcpConnections.get(serverId);
     if (conn?.socket && !conn.socket.destroyed) {
-      const encrypted = e2eeEncryptText(text, conn.e2eeKey);
-      conn.socket.write(`DM:${targetUsername}:${encrypted}\n`);
+      // Text is already ECDH-encrypted by the renderer — send as-is
+      conn.socket.write(`DM:${targetUsername}:${text}\n`);
     }
   });
 
@@ -799,19 +799,18 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
           const i1 = line.indexOf(':', 3);
           if (i1 >= 0) {
             const fromUser = line.substring(3, i1);
-            const rawText = line.substring(i1 + 1);
-            const text = e2eeDecryptText(rawText, conn?.e2eeKey);
+            const text = line.substring(i1 + 1);
+            // Pass raw — renderer decrypts with ECDH-derived key
             mainWindow?.webContents.send('tcp:message', serverId, `DM:${fromUser}:${text}`);
           }
           continue;
         }
         if (line.startsWith('DM_SENT:')) {
-          // DM_SENT:<target>:<text> — decrypt the text before forwarding
+          // DM_SENT:<target>:<text> — echo of our sent DM, pass raw to renderer
           const i1 = line.indexOf(':', 8);
           if (i1 >= 0) {
             const target = line.substring(8, i1);
-            const rawText = line.substring(i1 + 1);
-            const text = e2eeDecryptText(rawText, conn?.e2eeKey);
+            const text = line.substring(i1 + 1);
             mainWindow?.webContents.send('tcp:message', serverId, `DM_SENT:${target}:${text}`);
           } else {
             mainWindow?.webContents.send('tcp:message', serverId, line);

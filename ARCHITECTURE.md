@@ -598,6 +598,33 @@ Each message bubble includes the sender's `UserAvatar` (profile picture or initi
 Own messages are right-aligned with a green tint; other-party messages are left-aligned
 with a slate/blue tint and a blue sender label for easy visual distinction.
 
+**Unread DM indicator**: When a DM arrives for a tab that is not currently active, a
+`dmUnreadCounts` state entry is incremented. The DM tab gains a red animated badge
+(identical in style to room mention badges) and a red-tinted background. The count is
+cleared when the tab is clicked or opened via `openInlineDm`.
+
+#### Friends List
+A client-side friends list stored in `localStorage` (`voip-friends`) as an array of
+`{ username, serverId }` pairs. Friends are scoped to a specific server — the
+`serverId` is the pinned server UUID from when the friendship was added.
+
+- **Adding**: right-clicking any online user opens the context menu; an "Add Friend" /
+  "Remove Friend" button toggles the friendship. The button colour changes to red when
+  the user is already a friend.
+- **Home screen panel**: a **FRIENDS** section appears on the home/connect screen (below
+  the server list) when the friends list is non-empty. Each friend card shows:
+  - Coloured avatar circle with status dot (green/yellow/grey for online/away/offline)
+  - Username and the server name the friendship belongs to
+  - Online status label
+  - A **Send DM** button (only visible when the friend's server has an active TCP
+    connection in `connectedServerIds`); clicking it calls `openInlineDm` which
+    navigates away from the home screen and opens the DM tab
+  - A **Remove** button
+- **Sorting**: friends are sorted by status — online first, then away, then offline.
+- **Status resolution**: `getFriendOnlineStatus` checks the active server's `onlineUsers`
+  state if the friend belongs to the active server, or reads from `serverStatesRef`
+  (background server snapshot) otherwise.
+
 DM messages are rendered through `renderMessageBody()`, the same function used for
 channel messages, so all rich content is supported:
 - **Images** — inline preview with lightbox on click
@@ -628,6 +655,7 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 - **Mic level throttling**: The mic-level monitoring interval runs at 100 ms (instead of 50 ms) and only triggers a React state update when the level changes by more than 2%, reducing re-renders during voice calls.
 - **Sidebar resize**: The `mousemove`/`mouseup` listeners for sidebar resizing are registered once (`[]` deps) and use refs for all mutable state. This avoids a race condition where rapid state updates during dragging could tear down and re-register the `mouseup` listener, causing a missed mouseup that leaves `document.body.style.userSelect = 'none'` stuck (making inputs appear uneditable). The effect cleanup also resets body styles as a safety net.
 - **Keybind recording cleanup**: All paths that close the settings modal (`setShowSettings(false)`) also call `setRecordingKeybind(null)` to prevent the capture-phase `keydown` handler from remaining active and eating keystrokes.
+- **Instant scroll on room switch**: When switching text rooms or DM tabs, `scrollIntoView` uses `behavior: 'instant'` so the view starts at the bottom (most recent messages) immediately. New incoming messages in the same room/tab use `behavior: 'smooth'` for a natural animation. Tracked via `prevTextRoomRef` and `prevDmTabRef` refs.
 
 | Section | Lines (approx) | Purpose |
 |---------|----------------|---------|

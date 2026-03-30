@@ -43,6 +43,9 @@ public class ChatServer
     private readonly ConcurrentDictionary<string, DateTime> _soundboardCooldown = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan SoundboardCooldownDuration = TimeSpan.FromSeconds(1);
 
+    // ── ECDH DM public keys (username → SPKI base64) ────────────
+    private readonly ConcurrentDictionary<string, string> _dmPublicKeys = new(StringComparer.OrdinalIgnoreCase);
+
     // ── Auth rate limiting per username ───────────────────────────
     private readonly ConcurrentDictionary<string, (int attempts, DateTime resetAt)> _authRateLimit = new(StringComparer.OrdinalIgnoreCase);
     private const int MaxAuthAttempts = 5;
@@ -1071,6 +1074,7 @@ public class ChatServer
             // Requires the server name as confirmation token
             var confirmName = cmd.Substring("WIPE_SERVER:".Length);
             if (!string.Equals(confirmName, _serverConfig.ServerName, StringComparison.Ordinal))
+
             {
                 await writer.WriteLineAsync("ERROR:Server name mismatch").ConfigureAwait(false);
                 return;
@@ -1124,6 +1128,20 @@ public class ChatServer
                 _log?.Invoke($"[WIPE] Error during wipe: {ex.Message}");
                 await writer.WriteLineAsync("ERROR:Wipe failed").ConfigureAwait(false);
             }
+        }
+        else if (cmd.StartsWith("SET_DM_KEY:"))
+        {
+            // SET_DM_KEY:<spki-base64> — store the sender's ECDH public key
+            var pubKey = cmd.Substring("SET_DM_KEY:".Length).Trim();
+            if (!string.IsNullOrEmpty(pubKey))
+                _dmPublicKeys[name] = pubKey;
+        }
+        else if (cmd.StartsWith("GET_DM_KEY:"))
+        {
+            // GET_DM_KEY:<username> — respond with DM_KEY:<username>:<spki-base64|empty>
+            var targetName = cmd.Substring("GET_DM_KEY:".Length).Trim();
+            _dmPublicKeys.TryGetValue(targetName, out var pubKey);
+            await writer.WriteLineAsync($"DM_KEY:{targetName}:{pubKey ?? string.Empty}").ConfigureAwait(false);
         }
     }
 
