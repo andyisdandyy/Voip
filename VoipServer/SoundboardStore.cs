@@ -49,6 +49,12 @@ public class SoundboardStore
         return true;
     }
 
+    public void WipeAll()
+    {
+        _sounds.Clear();
+        Save();
+    }
+
     private void Load()
     {
         try

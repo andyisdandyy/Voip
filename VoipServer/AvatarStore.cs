@@ -46,6 +46,12 @@ public class AvatarStore
             Save();
     }
 
+    public void WipeAll()
+    {
+        _avatars.Clear();
+        Save();
+    }
+
     private void Load()
     {
         try

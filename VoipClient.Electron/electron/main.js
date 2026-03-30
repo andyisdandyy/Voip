@@ -836,6 +836,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
         console.log(`[TCP:${serverId}] TLS session closed before server handshake, retrying as plain TCP`);
         _tlsCapable.set(`${host}:${port}`, false);
         tlsActive = false;
+        pendingTls = false;
         buffer = '';
         utf8Decoder = new StringDecoder('utf8');
         sock = new net.Socket();

@@ -43,8 +43,8 @@ public class ChatServer
     private readonly ConcurrentDictionary<string, DateTime> _soundboardCooldown = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan SoundboardCooldownDuration = TimeSpan.FromSeconds(1);
 
-    // ── Auth rate limiting per IP ───────────────────────────
-    private readonly ConcurrentDictionary<string, (int attempts, DateTime resetAt)> _authRateLimit = new();
+    // ── Auth rate limiting per username ───────────────────────────
+    private readonly ConcurrentDictionary<string, (int attempts, DateTime resetAt)> _authRateLimit = new(StringComparer.OrdinalIgnoreCase);
     private const int MaxAuthAttempts = 5;
     private static readonly TimeSpan AuthLockoutDuration = TimeSpan.FromMinutes(2);
 
@@ -140,13 +140,6 @@ public class ChatServer
             if (string.IsNullOrEmpty(authLine))
                 return;
 
-            // Rate limiting per IP
-            if (_authRateLimit.TryGetValue(clientIp, out var rl) && rl.attempts >= MaxAuthAttempts && DateTime.UtcNow < rl.resetAt)
-            {
-                await writer.WriteLineAsync("AUTH_FAIL:For mange forsøg — prøv igen senere").ConfigureAwait(false);
-                return;
-            }
-
             if (authLine.StartsWith("REGISTER:"))
             {
                 var parts = authLine.Substring(9).Split(':', 2);
@@ -179,18 +172,25 @@ public class ChatServer
                     await writer.WriteLineAsync("AUTH_FAIL:Invalid format").ConfigureAwait(false);
                     return;
                 }
+                var attemptedUser = parts[0];
+                // Rate limiting per username
+                if (_authRateLimit.TryGetValue(attemptedUser, out var rl) && rl.attempts >= MaxAuthAttempts && DateTime.UtcNow < rl.resetAt)
+                {
+                    await writer.WriteLineAsync("AUTH_FAIL:For mange forsøg — prøv igen senere").ConfigureAwait(false);
+                    return;
+                }
                 var (ok, err) = _userStore.Authenticate(parts[0], parts[1]);
                 if (!ok)
                 {
                     // Track failed attempt for rate limiting
-                    _authRateLimit.AddOrUpdate(clientIp,
+                    _authRateLimit.AddOrUpdate(attemptedUser,
                         _ => (1, DateTime.UtcNow + AuthLockoutDuration),
                         (_, prev) => (prev.attempts + 1, DateTime.UtcNow + AuthLockoutDuration));
                     await writer.WriteLineAsync($"AUTH_FAIL:{err}").ConfigureAwait(false);
                     return;
                 }
                 // Clear rate limit on success
-                _authRateLimit.TryRemove(clientIp, out _);
+                _authRateLimit.TryRemove(attemptedUser, out _);
                 name = _userStore.GetDisplayName(parts[0]);
                 _roleStore.EnsureDefaultRole(name, false);
                 await writer.WriteLineAsync("AUTH_OK").ConfigureAwait(false);
@@ -1059,6 +1059,70 @@ public class ChatServer
             catch
             {
                 await writer.WriteLineAsync("ERROR:Failed to update config").ConfigureAwait(false);
+            }
+        }
+        else if (cmd.StartsWith("WIPE_SERVER:"))
+        {
+            if (!_roleStore.HasPermission(name, "admin"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            // Requires the server name as confirmation token
+            var confirmName = cmd.Substring("WIPE_SERVER:".Length);
+            if (!string.Equals(confirmName, _serverConfig.ServerName, StringComparison.Ordinal))
+            {
+                await writer.WriteLineAsync("ERROR:Server name mismatch").ConfigureAwait(false);
+                return;
+            }
+            try
+            {
+                _log?.Invoke($"[WIPE] {name} initiated full server wipe");
+
+                // 1. Wipe chat history (messages + pins)
+                _history.WipeAll();
+
+                // 2. Wipe avatars
+                _avatarStore.WipeAll();
+
+                // 3. Wipe soundboard sounds
+                _soundboardStore.WipeAll();
+
+                // 4. Wipe custom emojis
+                _emojiStore.WipeAll();
+
+                // 5. Reset roles to defaults
+                _roleStore.WipeCustomRoles();
+                // Re-assign admin to the user who wiped
+                _roleStore.EnsureDefaultRole(name, true);
+
+                // 6. Reset rooms to defaults and rebuild room manager
+                _rooms.Config.ResetToDefaults();
+
+                // 7. Kick everyone from voice rooms
+                foreach (var vr in _rooms.Config.VoiceRooms)
+                    _rooms.KickVoiceRoom(vr.Name);
+
+                // 8. Reset server config to defaults (name, logo)
+                _serverConfig.ServerName = "Echo Server";
+                _serverConfig.ServerLogo = null;
+                _serverConfig.Save();
+
+                _log?.Invoke($"[WIPE] Server wipe completed by {name}");
+
+                // Kick all connected clients so they reconnect with fresh state
+                foreach (var kv in _clients)
+                {
+                    try { await kv.Value.writer.WriteLineAsync("KICKED").ConfigureAwait(false); }
+                    catch { }
+                    try { kv.Key.Close(); }
+                    catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"[WIPE] Error during wipe: {ex.Message}");
+                await writer.WriteLineAsync("ERROR:Wipe failed").ConfigureAwait(false);
             }
         }
     }

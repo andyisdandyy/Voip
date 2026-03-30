@@ -176,4 +176,14 @@ public class RoomsConfig
         VoiceRooms = new() { new() { Name = "Voice 1", Bitrate = 96000 } },
         TextRooms = new() { new() { Name = "General" } }
     };
+
+    /// <summary>Resets rooms to defaults (one voice, one text channel).</summary>
+    public void ResetToDefaults()
+    {
+        VoiceRooms.Clear();
+        VoiceRooms.Add(new RoomDefinition { Name = "Voice 1", Bitrate = 96000 });
+        TextRooms.Clear();
+        TextRooms.Add(new RoomDefinition { Name = "General" });
+        Save();
+    }
 }

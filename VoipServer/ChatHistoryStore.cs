@@ -165,6 +165,16 @@ public class ChatHistoryStore
         return ReadMessages(cmd);
     }
 
+    /// <summary>Permanently deletes ALL messages and pins across every room.</summary>
+    public void WipeAll()
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        Exec(conn, "DELETE FROM pins");
+        Exec(conn, "DELETE FROM messages");
+        tx.Commit();
+    }
+
     /// <summary>Renames a room key in history and pins (used when a channel is renamed).</summary>
     public void RenameRoom(string oldName, string newName)
     {

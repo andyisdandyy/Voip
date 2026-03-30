@@ -227,7 +227,9 @@ Private 1-to-1 messages between users, relayed through the server.
 ### Security
 - **Password hashing**: PBKDF2-SHA512, 100k iterations, 16-byte salt, 32-byte hash
 - **Legacy migration**: SHA-256 hashes are automatically upgraded on next login
-- **Rate limiting**: 5 failed auth attempts per IP → 2-minute lockout
+- **Rate limiting**: 5 failed auth attempts per username → 2-minute lockout (keyed by
+  username, not IP, so reverse-proxy / Docker setups don't lock out all clients sharing
+  a single internal IP)
 - **Server password**: Compared with `CryptographicOperations.FixedTimeEquals` (timing-safe)
 - **Username matching**: All username comparisons in `ChatServer` use
   `StringComparison.OrdinalIgnoreCase` for consistent case-insensitive behaviour
@@ -273,6 +275,13 @@ Available permissions:
 | `manage_soundboard` | Upload/delete soundboard sounds |
 | `manage_emojis` | Upload/delete custom emojis |
 | `server_settings` | Update server configuration |
+
+**Wipe Server** (admin only): `CMD:WIPE_SERVER:<serverName>` permanently deletes all
+chat history, pins, avatars, soundboard sounds, custom emojis, and custom roles. Rooms
+are reset to defaults (one voice, one text). The server name/logo are reset. All connected
+clients are kicked. The command requires the exact server name as a confirmation token.
+The client UI enforces additional safety: the user must type the server name and check an
+"I understand" checkbox before the button becomes active.
 
 ---
 
@@ -623,7 +632,7 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | Section | Lines (approx) | Purpose |
 |---------|----------------|---------|
 | Types & constants | 1–95 | Interfaces, resolution presets, color themes, custom theme helpers (`hexToHsl`, `hslToHex`, `generateScale`). Custom theme has 7 user-configurable colors: `accent` (buttons/links/active), `bg` (main content area), `surface` (headers/inputs/modals), `sidebar` (channel/user list panels), `border` (dividers/outlines), `text` (primary), `textSecondary` (timestamps/hints). CSS vars are set on `<html>` and consumed by `[data-theme="custom"]` rules in `index.css`. |
-| State declarations | 60–210 | ~60 `useState` hooks + ~40 `useRef` refs, per-server state cache (`serverStatesRef`) |
+| State declarations | 60–210 | ~60 `useState` hooks + ~40 `useRef` refs, per-server state cache (`serverStatesRef`), `unreadRooms` set for unseen-message indicators |
 | Multi-server helpers | 310–370 | `takeServerSnapshot`, `restoreServerSnapshot`, `resetServerState`, `sendToServer`, `sendToVoice` |
 | E2EE helpers | 208–290 | Key derivation, text encrypt/decrypt, re-decrypt |
 | UI sound engine | 330–410 | `playUiSound()` — synthesized tones via Web Audio oscillators |
@@ -714,6 +723,7 @@ Client → Server:
   CMD:<command>
   CMD:FETCH_HISTORY:<room>:<beforeId>:<count>   (load older messages, max 50)
   CMD:NOTIFY_MENTIONS:<room>:<user1>,<user2>,...  (client-side mention hints for E2EE; server relays MENTION to listed users)
+  CMD:WIPE_SERVER:<serverName>                   (admin only — permanently deletes all data, resets to defaults, kicks all clients)
   MSG:<room>:<text>
   FILE:<room>:<filename>:<mimeType>:<base64>
   VIDEO:<flagsHex>:<base64>
@@ -866,6 +876,31 @@ The script downloads the binary from GitHub Releases, swaps it in place, and pri
 ---
 
 ## Known Fixes
+
+### Room Deletion Bricking Text Inputs (terminal-forum.tsx)
+
+**Problem:** Deleting a text or voice room caused all chat input fields in the client to become
+unresponsive. Two bugs combined:
+
+1. **Off-by-one in `LEFT_TEXT:` parsing** — `line.substring(9)` was used to extract the room name,
+   but `'LEFT_TEXT:'` is 10 characters long. The extracted name included a leading colon (e.g.
+   `:general` instead of `general`), so every cleanup operation (removing from `joinedTextRooms`,
+   resetting `currentTextRoom`, clearing `roomMessages`, `pinnedMessages`, `roomHasMore`) failed
+   to match and did nothing.
+
+2. **No defensive cleanup in `ROOMS:` handler** — When the server broadcast the updated room list
+   after deletion, the handler only called `setVoiceRooms` / `setTextRooms` without checking whether
+   `currentTextRoom` or `currentVoiceRoom` still existed. The user was left viewing a phantom room
+   that no longer existed on the server.
+
+**Fix:**
+- **Corrected substring index** — changed `line.substring(9)` to `line.substring(10)` in the
+  `LEFT_TEXT:` handler so the room name is extracted correctly.
+- **Defensive cleanup in `ROOMS:` handler** — after updating the room lists, the handler now checks
+  whether `currentTextRoom` / `currentVoiceRoom` still exist in the new lists. If a room was removed,
+  it resets `currentTextRoom` to `null`, removes the room from `joinedTextRooms`, and cleans up
+  `roomMessages`, `pinnedMessages`, and `roomHasMore`. This also handles edge cases where `LEFT_TEXT:`
+  arrives after `ROOMS:` or is lost entirely.
 
 ### E2EE Large-File Encryption (terminal-forum.tsx)
 

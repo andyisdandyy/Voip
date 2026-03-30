@@ -181,6 +181,16 @@ public class RoleStore
         }
     }
 
+    /// <summary>Resets to default roles (Admin + Member) and clears all user assignments.</summary>
+    public void WipeCustomRoles()
+    {
+        lock (_lock)
+        {
+            _data = CreateDefault();
+            SaveUnsafe();
+        }
+    }
+
     // ── Internal helpers (must be called under _lock) ────────
 
     private RoleDefinition? GetRoleUnsafe(string roleName) =>

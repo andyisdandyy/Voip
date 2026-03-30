@@ -190,6 +190,7 @@ export function TerminalForum() {
   const [showPins, setShowPins] = useState(false);
   const [roomHasMore, setRoomHasMore] = useState<Record<string, boolean>>({});
   const [roomLoadingMore, setRoomLoadingMore] = useState<Record<string, boolean>>({});
+  const [unreadRooms, setUnreadRooms] = useState<Set<string>>(new Set());
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
   // Users
@@ -382,7 +383,7 @@ export function TerminalForum() {
     serverInfo: ServerInfo | null; voiceRooms: VoiceRoom[]; textRooms: TextRoom[];
     joinedTextRooms: Set<string>; currentTextRoom: string | null; currentVoiceRoom: string | null;
     roomMessages: Record<string, ChatMsg[]>; pinnedMessages: Record<string, ChatMsg[]>;
-    roomHasMore: Record<string, boolean>;
+    roomHasMore: Record<string, boolean>; unreadRooms: Set<string>;
     onlineUsers: UserInfo[]; serverRoles: RoleInfo[];
     cameraUsers: Set<string>; screenUsers: Set<string>;
     soundboardSounds: string[]; customEmojis: Record<string, string>; e2eeActive: boolean;
@@ -393,7 +394,7 @@ export function TerminalForum() {
     return {
       nickname, serverIp, tcpPort, serverInfo, voiceRooms, textRooms,
       joinedTextRooms: joinedTextRooms, currentTextRoom: currentTextRoom, currentVoiceRoom: currentVoiceRoom,
-      roomMessages, pinnedMessages, roomHasMore, onlineUsers, serverRoles,
+      roomMessages, pinnedMessages, roomHasMore, unreadRooms, onlineUsers, serverRoles,
       cameraUsers, screenUsers, soundboardSounds, customEmojis, e2eeActive: e2eeActive,
     };
   }
@@ -404,7 +405,7 @@ export function TerminalForum() {
     setJoinedText(snap.joinedTextRooms); setCurrentText(snap.currentTextRoom);
     setCurrentVoice(snap.currentVoiceRoom);
     setRoomMessages(snap.roomMessages); setPinnedMessages(snap.pinnedMessages);
-    setRoomHasMore(snap.roomHasMore);
+    setRoomHasMore(snap.roomHasMore); setUnreadRooms(snap.unreadRooms);
     setOnlineUsers(snap.onlineUsers); setServerRoles(snap.serverRoles);
     setCameraUsers(snap.cameraUsers); setScreenUsers(snap.screenUsers);
     setSoundboardSounds(snap.soundboardSounds); setCustomEmojis(snap.customEmojis);
@@ -415,7 +416,7 @@ export function TerminalForum() {
     setServerInfo(null); setVoiceRooms([]); setTextRooms([]);
     setJoinedText(new Set()); setCurrentText(null); setCurrentVoice(null);
     setRoomMessages({}); setPinnedMessages({}); setShowPins(false);
-    setRoomHasMore({}); setRoomLoadingMore({});
+    setRoomHasMore({}); setRoomLoadingMore({}); setUnreadRooms(new Set());
     setOnlineUsers([]); setServerRoles([]);
     setCameraUsers(new Set()); setScreenUsers(new Set());
     setSoundboardSounds([]); setCustomEmojis({});
@@ -591,6 +592,11 @@ export function TerminalForum() {
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomPassword, setNewRoomPassword] = useState('');
   const [newRoomBitrate, setNewRoomBitrate] = useState('96000');
+
+  // Wipe server confirmation
+  const [wipeServerDialog, setWipeServerDialog] = useState(false);
+  const [wipeConfirmName, setWipeConfirmName] = useState('');
+  const [wipeConfirmCheck, setWipeConfirmCheck] = useState(false);
 
   // User list toggle
   const [showUserList, setShowUserList] = useState(() => {
@@ -941,6 +947,16 @@ export function TerminalForum() {
   useEffect(() => { connectedServerIdRef.current = connectedServerId; }, [connectedServerId]);
   useEffect(() => { currentVoiceRoomRef.current = currentVoiceRoom; }, [currentVoiceRoom]);
   useEffect(() => { currentTextRoomRef.current = currentTextRoom; }, [currentTextRoom]);
+  useEffect(() => {
+    if (viewMode === 'text' && currentTextRoom && !activeDmTab) {
+      setUnreadRooms(prev => {
+        if (!prev.has(currentTextRoom)) return prev;
+        const s = new Set(prev);
+        s.delete(currentTextRoom);
+        return s;
+      });
+    }
+  }, [viewMode, currentTextRoom, activeDmTab]);
   useEffect(() => { voiceServerIdRef.current = voiceServerId; }, [voiceServerId]);
   useEffect(() => { try { localStorage.setItem('voip-theme', theme); } catch {} }, [theme]);
   const customThemeSaveRef = useRef(0);
@@ -1216,12 +1232,37 @@ export function TerminalForum() {
     } else if (line.startsWith('ROOMS:')) {
       try {
         const d = JSON.parse(line.substring(6));
-        setVoiceRooms((d.VoiceRooms || []).map((r: any) => ({
+        const newVoiceRooms: VoiceRoom[] = (d.VoiceRooms || []).map((r: any) => ({
           name: r.Name, hasPassword: r.HasPassword, bitrate: r.Bitrate || 0,
-        })));
-        setTextRooms((d.TextRooms || []).map((r: any) => ({
+        }));
+        const newTextRooms: TextRoom[] = (d.TextRooms || []).map((r: any) => ({
           name: r.Name, hasPassword: r.HasPassword,
-        })));
+        }));
+        setVoiceRooms(newVoiceRooms);
+        setTextRooms(newTextRooms);
+        // Defensive cleanup: if current rooms were deleted, reset state
+        const textNames = new Set(newTextRooms.map(r => r.name));
+        const voiceNames = new Set(newVoiceRooms.map(r => r.name));
+        if (currentTextRoomRef.current && !textNames.has(currentTextRoomRef.current)) {
+          const removed = currentTextRoomRef.current;
+          setCurrentText(null);
+          setJoinedText(prev => { const s = new Set(prev); s.delete(removed); return s; });
+          setRoomMessages(prev => { const n = { ...prev }; delete n[removed]; return n; });
+          setPinnedMessages(prev => { const n = { ...prev }; delete n[removed]; return n; });
+          setRoomHasMore(prev => { const n = { ...prev }; delete n[removed]; return n; });
+        }
+        // Clean up joinedTextRooms for any other deleted rooms
+        setJoinedText(prev => {
+          let changed = false;
+          const s = new Set(prev);
+          for (const r of s) {
+            if (!textNames.has(r)) { s.delete(r); changed = true; }
+          }
+          return changed ? s : prev;
+        });
+        if (currentVoiceRoomRef.current && !voiceNames.has(currentVoiceRoomRef.current)) {
+          setCurrentVoice(null);
+        }
       } catch {}
     } else if (line.startsWith('USERS:')) {
       try {
@@ -1266,7 +1307,7 @@ export function TerminalForum() {
       setRoomMessages(prev => ({ ...prev, [room]: [] }));
       setCurrentText(room);
     } else if (line.startsWith('LEFT_TEXT:')) {
-      const room = line.substring(9);
+      const room = line.substring(10);
       setJoinedText(prev => { const s = new Set(prev); s.delete(room); return s; });
       setCurrentText(prev => prev === room ? null : prev);
       setRoomMessages(prev => { const n = { ...prev }; delete n[room]; return n; });
@@ -1349,7 +1390,12 @@ export function TerminalForum() {
       const sender = rest2.substring(0, i3);
       const text = rest2.substring(i3 + 1);
       const now = Date.now();
-      if (sender !== nicknameRef.current) playUiSound('message');
+      if (sender !== nicknameRef.current) {
+        playUiSound('message');
+        if (viewModeRef.current !== 'text' || currentTextRoomRef.current !== room) {
+          setUnreadRooms(prev => new Set(prev).add(room));
+        }
+      }
       e2eeDecryptText(text).then(body => {
         setRoomMessages(prev => ({
           ...prev,
@@ -3855,11 +3901,13 @@ export function TerminalForum() {
                 <div key={r.name} className="group/room mb-2 flex items-center gap-1">
                   <button onClick={() => joinText(r)}
                     className={`flex-1 text-left px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all ${
-                      currentTextRoom === r.name
+                      currentTextRoom === r.name && viewMode === 'text' && !activeDmTab
                         ? 'bg-green-900/40 text-green-400 shadow-md shadow-green-900/30'
-                        : joinedTextRooms.has(r.name)
-                          ? 'text-green-500 hover:bg-green-900/20'
-                          : 'text-green-700 hover:bg-green-900/20'
+                        : unreadRooms.has(r.name)
+                          ? 'text-green-400 font-bold hover:bg-green-900/20'
+                          : joinedTextRooms.has(r.name)
+                            ? 'text-green-500 hover:bg-green-900/20'
+                            : 'text-green-700 hover:bg-green-900/20'
                     }`}>
                     {r.hasPassword ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
                     <span className="text-sm truncate">{r.name}</span>
@@ -5494,6 +5542,24 @@ export function TerminalForum() {
                         Save & Apply
                       </button>
                     </div>
+
+                    {/* Danger Zone */}
+                    {hasPermission('admin') && (
+                      <div className="pt-6 mt-6 border-t-2 border-red-900/40">
+                        <h3 className="text-sm text-red-500 mb-4 flex items-center gap-2">
+                          <Trash2 className="w-4 h-4" />
+                          DANGER ZONE
+                        </h3>
+                        <div className="bg-red-900/10 border border-red-900/30 rounded-lg p-4">
+                          <p className="text-xs text-red-400 mb-1 font-bold">Wipe Server</p>
+                          <p className="text-[10px] text-red-500/70 mb-3">Permanently deletes ALL chat history, avatars, soundboard sounds, custom emojis, and custom roles. Rooms are reset to defaults. All users are kicked. This action cannot be undone.</p>
+                          <button onClick={() => { setWipeServerDialog(true); setWipeConfirmName(''); setWipeConfirmCheck(false); }}
+                            className="px-4 py-2 rounded-lg bg-red-900/30 border border-red-800/50 text-red-400 hover:bg-red-900/50 hover:border-red-700/50 transition-all text-xs font-bold">
+                            Wipe Server…
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -6385,6 +6451,68 @@ export function TerminalForum() {
                 {createRoomDialog.editing ? 'SAVE CHANGES' : 'CREATE CHANNEL'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Wipe Server Confirmation Dialog ──────────────── */}
+      {wipeServerDialog && serverInfo && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+          <div className="bg-[#0d120d]/95 border border-red-900/50 rounded-lg shadow-2xl shadow-red-900/30 w-full max-w-md">
+            <div className="bg-red-900/30 p-6 border-b border-red-900/50 flex items-center gap-3">
+              <Trash2 className="w-6 h-6 text-red-500" />
+              <div>
+                <h2 className="text-lg font-bold text-red-400">WIPE SERVER</h2>
+                <p className="text-xs text-red-500/70">This action is permanent and irreversible</p>
+              </div>
+              <button onClick={() => setWipeServerDialog(false)} className="ml-auto p-2 text-red-600 hover:text-red-400">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-red-900/10 border border-red-900/30 rounded-lg p-3">
+                <p className="text-xs text-red-400 font-bold mb-2">The following will be permanently deleted:</p>
+                <ul className="text-[11px] text-red-500/80 space-y-1 list-disc list-inside">
+                  <li>All chat messages and pins</li>
+                  <li>All user avatars</li>
+                  <li>All soundboard sounds</li>
+                  <li>All custom emojis</li>
+                  <li>All custom roles and assignments</li>
+                  <li>Server name and logo (reset to defaults)</li>
+                  <li>All rooms (reset to defaults)</li>
+                </ul>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs text-red-500/70 block">Type <span className="font-bold text-red-400">{serverInfo.serverName}</span> to confirm:</label>
+                <input type="text" value={wipeConfirmName} onChange={e => setWipeConfirmName(e.target.value)}
+                  placeholder="Enter server name exactly..."
+                  className="w-full bg-[#0a0e0a] border border-red-900/50 rounded-lg px-4 py-3 text-red-500 placeholder-red-900 outline-none focus:border-red-700 focus:ring-2 focus:ring-red-900/50 transition-all"
+                  autoFocus autoComplete="off" spellCheck={false} />
+              </div>
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" checked={wipeConfirmCheck}
+                  onChange={e => setWipeConfirmCheck(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 rounded bg-[#0a0e0a] border-red-900/50 text-red-600 focus:ring-red-900/50 accent-red-600" />
+                <span className="text-xs text-red-500/70">I understand this will permanently destroy all server data and cannot be undone</span>
+              </label>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setWipeServerDialog(false)}
+                  className="flex-1 px-4 py-3 text-green-700 hover:text-green-500 rounded-lg hover:bg-green-900/20 transition-all text-sm">
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    sendToServer(`CMD:WIPE_SERVER:${serverInfo!.serverName}`);
+                    setWipeServerDialog(false);
+                    setShowServerSettings(false);
+                  }}
+                  disabled={wipeConfirmName !== serverInfo.serverName || !wipeConfirmCheck}
+                  className="flex-1 px-4 py-3 rounded-lg bg-red-700/80 hover:bg-red-600 disabled:bg-red-900/20 disabled:cursor-not-allowed text-white disabled:text-red-800 transition-all font-bold text-sm flex items-center justify-center gap-2">
+                  <Trash2 className="w-4 h-4" />
+                  WIPE EVERYTHING
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

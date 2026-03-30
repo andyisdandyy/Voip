@@ -42,6 +42,12 @@ public class EmojiStore
         return true;
     }
 
+    public void WipeAll()
+    {
+        _emojis.Clear();
+        Save();
+    }
+
     private void Load()
     {
         try
