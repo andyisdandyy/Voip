@@ -103,7 +103,8 @@ for real-time mention notifications without requiring a full TCP session.
 - **Event format**: `event: mention\ndata: {"room":"General","sender":"alice","text":"@bob hey"}\n\n`
 - **Chunked transfer**: Response uses `SendChunked = true` so each `Flush` pushes data
   to the wire immediately (required for SSE — without it, `HttpListener` may buffer
-  until `Close()`).
+  until `Close()`). The `X-Accel-Buffering: no` header disables NGINX proxy buffering
+  so heartbeats and events reach the client in real-time when behind a reverse proxy.
 - **Heartbeat**: A `: heartbeat` comment is sent every 25 seconds to keep connections alive.
 - **Write safety**: Each `SseClient` holds a `SemaphoreSlim` write lock. Both the
   heartbeat loop and `PushMentionAsync` acquire it before writing, preventing
@@ -419,7 +420,12 @@ The decoder is reset whenever the socket is replaced (TLS fallback).
 #### TLS Negotiation
 The client probes TLS first on every new host:port. If the TLS handshake fails with
 a protocol error (not a connection error), it falls back to plain TCP. The result is
-cached in `_tlsCapable` so subsequent connections skip the probe.
+cached in `_tlsCapable` so subsequent connections skip the probe. A helper
+`isHostTlsCapable(host)` returns a tri-state: `true` if any port on the host is
+TLS-capable, `false` if at least one port was probed as plain, or `undefined` if the
+host was never probed (cold start). The SSE autoconnect and HTTP file upload use this
+to infer HTTPS — on cold start (undefined) they default to HTTPS first, mirroring the
+TCP probe's TLS-first strategy.
 
 Recognised TLS-failure signals: error codes `ECONNRESET`, `EPROTO`, any `ERR_SSL_*`
 prefix, and error messages containing `ssl`/`SSL`/`wrong version`/`alert`/`routines`.
@@ -507,10 +513,20 @@ available but not yet watched.
 
 #### Autoconnect (SSE Notifications)
 For each pinned server with `autoConnect` enabled and a valid `authToken`, the client
-opens a lightweight HTTP SSE connection to the server's notification endpoint
+opens an SSE connection to the server's notification endpoint
 (`GET /events?token=<token>` on the `SsePort`). This replaces the previous approach
 of maintaining a full TCP chat session per pinned server.
 
+- **TLS-aware** — infers HTTPS from the `_tlsCapable` cache (populated during TCP
+  connection). If the SSE port has no cached entry, `isHostTlsCapable(host)` checks
+  whether any port on that host used TLS. On protocol mismatch (`socket hang up`,
+  `ECONNRESET`, SSL errors) the client retries with the opposite protocol and caches
+  the result, mirroring the TCP TLS probe behaviour.
+- **No default timeout** — `req.setTimeout(0)` explicitly disables any agent/socket
+  timeout so the long-lived SSE stream isn't killed prematurely.
+- **Liveness timer** — a 90-second timer resets on every `data` event (heartbeats
+  arrive every 25 s). If no data arrives for 90 s the connection is treated as dead
+  and torn down for reconnect.
 - **No credentials sent** — uses the HMAC-SHA256 token issued during the main TCP auth
 - **Auto-reconnect** — reconnects after 15 seconds on disconnect
 - **Paused for active server** — SSE is stopped for the server the user is fully connected to
@@ -601,6 +617,8 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 - **`useMemo`**: Expensive derived values are memoized — `currentMessages`, `usersInRoom`, `onlineUsersList`, `awayUsersList`, `offlineUsersList`, `myPermissions`, and `myAvatar`.
 - **`useCallback`**: `hasPermission` is wrapped with `useCallback` keyed on the memoized `myPermissions` set.
 - **Mic level throttling**: The mic-level monitoring interval runs at 100 ms (instead of 50 ms) and only triggers a React state update when the level changes by more than 2%, reducing re-renders during voice calls.
+- **Sidebar resize**: The `mousemove`/`mouseup` listeners for sidebar resizing are registered once (`[]` deps) and use refs for all mutable state. This avoids a race condition where rapid state updates during dragging could tear down and re-register the `mouseup` listener, causing a missed mouseup that leaves `document.body.style.userSelect = 'none'` stuck (making inputs appear uneditable). The effect cleanup also resets body styles as a safety net.
+- **Keybind recording cleanup**: All paths that close the settings modal (`setShowSettings(false)`) also call `setRecordingKeybind(null)` to prevent the capture-phase `keydown` handler from remaining active and eating keystrokes.
 
 | Section | Lines (approx) | Purpose |
 |---------|----------------|---------|

@@ -629,15 +629,16 @@ export function TerminalForum() {
       if (resizingRef.current === 'left') setLeftSidebarWidth(newWidth);
       else setRightSidebarWidth(newWidth);
     };
-    const onMouseUp = () => {
+    const onMouseUp = (e: MouseEvent) => {
       if (!resizingRef.current) return;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      if (resizingRef.current === 'left') {
-        localStorage.setItem('voip-left-sidebar-width', String(leftSidebarWidth));
-      } else {
-        localStorage.setItem('voip-right-sidebar-width', String(rightSidebarWidth));
-      }
+      const delta = e.clientX - resizeStartXRef.current;
+      const finalWidth = Math.max(180, Math.min(450, resizeStartWidthRef.current + (resizingRef.current === 'left' ? delta : -delta)));
+      localStorage.setItem(
+        resizingRef.current === 'left' ? 'voip-left-sidebar-width' : 'voip-right-sidebar-width',
+        String(finalWidth),
+      );
       resizingRef.current = null;
     };
     window.addEventListener('mousemove', onMouseMove);
@@ -645,8 +646,13 @@ export function TerminalForum() {
     return () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      if (resizingRef.current) {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        resizingRef.current = null;
+      }
     };
-  }, [leftSidebarWidth, rightSidebarWidth]);
+  }, []);
 
   async function deriveE2eeKey(passphrase: string): Promise<CryptoKey> {
     const enc = new TextEncoder();
@@ -1042,7 +1048,7 @@ export function TerminalForum() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (hideUiOverlay) { setHideUiOverlay(false); setMouseActive(true); if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current); return; }
-        if (showSettings) setShowSettings(false);
+        if (showSettings) { setShowSettings(false); setRecordingKeybind(null); }
       }
     };
     window.addEventListener('keydown', handler);
@@ -4878,7 +4884,7 @@ export function TerminalForum() {
       {/* ── Settings Modal ─────────────────────────────────── */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-          onMouseDown={() => setShowSettings(false)}>
+          onMouseDown={() => { setShowSettings(false); setRecordingKeybind(null); }}>
           <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
             onMouseDown={e => e.stopPropagation()}>
             {/* Header */}
@@ -4887,7 +4893,7 @@ export function TerminalForum() {
                 <Settings className="w-6 h-6 text-green-500" />
                 <h2 className="text-xl font-bold text-green-400">SETTINGS</h2>
               </div>
-              <button onClick={() => setShowSettings(false)}
+              <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
                 className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
                 <X className="w-5 h-5" />
               </button>
@@ -5282,11 +5288,11 @@ export function TerminalForum() {
                 Check for Updates
               </button>
               <div className="flex-1" />
-              <button onClick={() => setShowSettings(false)}
+              <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
                 className="px-6 py-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
                 Cancel
               </button>
-              <button onClick={() => { if (currentVoiceRoom) restartAudio(); setShowSettings(false); }}
+              <button onClick={() => { if (currentVoiceRoom) restartAudio(); setShowSettings(false); setRecordingKeybind(null); }}
                 className="px-6 py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold">
                 Save Changes
               </button>

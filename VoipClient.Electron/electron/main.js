@@ -27,6 +27,19 @@ try {
 // Cached per host:port — avoids repeating the TLS probe every reconnect
 const _tlsCapable = new Map(); // "host:port" → true|false
 
+// Check if any port on a given host is known to be TLS-capable.
+// Returns true/false if cached, or undefined if the host was never probed.
+function isHostTlsCapable(host) {
+  let hasEntry = false;
+  for (const [key, value] of _tlsCapable) {
+    if (key.startsWith(host + ':')) {
+      if (value) return true;
+      hasEntry = true;
+    }
+  }
+  return hasEntry ? false : undefined;
+}
+
 const SAMPLE_RATE = 48000;
 const FRAME_SIZE = 960;
 
@@ -149,12 +162,17 @@ function e2eeDecryptText(data, key) {
 function uploadFileToServer(host, port, token, fileName, mimeType, base64Data) {
   return new Promise((resolve) => {
     try {
-      const http = require('http');
+      const useTls = isHostTlsCapable(host) !== false;
+      const httpMod = useTls ? require('https') : require('http');
       const fileBuffer = Buffer.from(base64Data, 'base64');
       const encodedName = encodeURIComponent(fileName);
-      const url = `http://${host}:${port}/upload?token=${encodeURIComponent(token)}&name=${encodedName}`;
+      const reqOpts = {
+        hostname: host, port, path: `/upload?token=${encodeURIComponent(token)}&name=${encodedName}`,
+        method: 'POST', headers: { 'Content-Type': mimeType, 'Content-Length': fileBuffer.length }, timeout: 60000,
+      };
+      if (useTls) reqOpts.rejectUnauthorized = false;
 
-      const req = http.request(url, { method: 'POST', headers: { 'Content-Type': mimeType, 'Content-Length': fileBuffer.length }, timeout: 60000 }, (res) => {
+      const req = httpMod.request(reqOpts, (res) => {
         let body = '';
         res.on('data', (chunk) => { body += chunk; });
         res.on('end', () => {
@@ -925,12 +943,16 @@ function fullDisconnect() {
 function startAutoConnect(serverId, host, ssePort, token) {
   if (!token || !ssePort) return;
 
-  const http = require('http');
-  const url = `http://${host}:${ssePort}/events?token=${encodeURIComponent(token)}`;
-  let reconnectTimer = null;
-  let req = null;
-  let destroyed = false;
+  // Infer TLS from cached TCP probe results for this host
+  const sseKey = `${host}:${ssePort}`;
+  let useTls = _tlsCapable.get(sseKey);
+  if (useTls === undefined) {
+    const hostTls = isHostTlsCapable(host);
+    // When the host was never probed (cold start), default to HTTPS first
+    useTls = hostTls !== false;
+  }
 
+  let destroyed = false;
   const entry = { req: null, reconnectTimer: null, destroy: () => { destroyed = true; } };
   autoConnectSockets.set(serverId, entry);
 
@@ -943,73 +965,111 @@ function startAutoConnect(serverId, host, ssePort, token) {
     }, 15000);
   };
 
-  try {
-    req = http.get(url, (res) => {
-      if (res.statusCode !== 200) {
-        console.error(`[AutoConnect:${serverId}] SSE HTTP ${res.statusCode}`);
-        res.resume();
-        reconnect();
-        return;
-      }
-      console.log(`[AutoConnect:${serverId}] SSE connected to ${host}:${ssePort}`);
+  function attempt(tls, canFallback) {
+    if (destroyed || autoConnectSockets.get(serverId) !== entry) return;
+    const httpMod = tls ? require('https') : require('http');
+    const reqOpts = {
+      hostname: host, port: ssePort,
+      path: `/events?token=${encodeURIComponent(token)}`,
+    };
+    if (tls) reqOpts.rejectUnauthorized = false;
 
-      let buffer = '';
-      let currentEvent = '';
-      let currentData = '';
+    try {
+      const req = httpMod.get(reqOpts, (res) => {
+        if (res.statusCode !== 200) {
+          console.error(`[AutoConnect:${serverId}] SSE HTTP ${res.statusCode}`);
+          res.resume();
+          reconnect();
+          return;
+        }
+        _tlsCapable.set(sseKey, tls);
+        console.log(`[AutoConnect:${serverId}] SSE connected to ${host}:${ssePort}${tls ? ' (TLS)' : ''}`);
 
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => {
-        buffer += chunk;
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        // Liveness timer — server sends heartbeats every 25s, so 90s
+        // without any data (including heartbeat comments) means the
+        // connection is dead (e.g. NGINX buffering killed it).
+        let livenessTimer = null;
+        const resetLiveness = () => {
+          if (livenessTimer) clearTimeout(livenessTimer);
+          livenessTimer = setTimeout(() => {
+            console.log(`[AutoConnect:${serverId}] No SSE data for 90s, reconnecting`);
+            try { req.destroy(); } catch {}
+            reconnect();
+          }, 90000);
+        };
+        resetLiveness();
 
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.substring(7).trim();
-          } else if (line.startsWith('data: ')) {
-            currentData = line.substring(6);
-          } else if (line === '' && currentEvent && currentData) {
-            // End of SSE message
-            if (currentEvent === 'mention') {
-              try {
-                const d = JSON.parse(currentData);
-                console.log(`[AutoConnect:${serverId}] Mention from ${d.sender} in ${d.room}`);
-                mainWindow?.webContents.send('autoconnect:mention', serverId, d.room, d.sender, d.text);
-              } catch {}
+        let buffer = '';
+        let currentEvent = '';
+        let currentData = '';
+
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          resetLiveness();
+          buffer += chunk;
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              currentEvent = line.substring(7).trim();
+            } else if (line.startsWith('data: ')) {
+              currentData = line.substring(6);
+            } else if (line === '' && currentEvent && currentData) {
+              // End of SSE message
+              if (currentEvent === 'mention') {
+                try {
+                  const d = JSON.parse(currentData);
+                  console.log(`[AutoConnect:${serverId}] Mention from ${d.sender} in ${d.room}`);
+                  mainWindow?.webContents.send('autoconnect:mention', serverId, d.room, d.sender, d.text);
+                } catch {}
+              }
+              currentEvent = '';
+              currentData = '';
             }
-            currentEvent = '';
-            currentData = '';
           }
+        });
+
+        res.on('end', () => {
+          if (livenessTimer) clearTimeout(livenessTimer);
+          console.log(`[AutoConnect:${serverId}] SSE stream ended`);
+          reconnect();
+        });
+
+        res.on('error', (err) => {
+          if (livenessTimer) clearTimeout(livenessTimer);
+          console.error(`[AutoConnect:${serverId}] SSE stream error: ${err.message}`);
+          reconnect();
+        });
+      });
+
+      entry.req = req;
+      // Disable any default socket/agent timeout — SSE is long-lived
+      req.setTimeout(0);
+
+      req.on('error', (err) => {
+        const isProtocolMismatch = err.message.includes('socket hang up') ||
+          err.code === 'ECONNRESET' || err.code === 'EPROTO' ||
+          (err.code && err.code.startsWith('ERR_SSL_')) ||
+          (err.message && (err.message.includes('ssl') || err.message.includes('SSL') ||
+            err.message.includes('wrong version') || err.message.includes('alert') ||
+            err.message.includes('routines')));
+        if (canFallback && isProtocolMismatch) {
+          console.log(`[AutoConnect:${serverId}] SSE ${tls ? 'HTTPS' : 'HTTP'} failed (${err.message}), retrying with ${!tls ? 'HTTPS' : 'HTTP'}`);
+          _tlsCapable.set(sseKey, !tls);
+          attempt(!tls, false);
+        } else {
+          console.error(`[AutoConnect:${serverId}] SSE request error: ${err.message}`);
+          reconnect();
         }
       });
-
-      res.on('end', () => {
-        console.log(`[AutoConnect:${serverId}] SSE stream ended`);
-        reconnect();
-      });
-
-      res.on('error', (err) => {
-        console.error(`[AutoConnect:${serverId}] SSE stream error: ${err.message}`);
-        reconnect();
-      });
-    });
-
-    entry.req = req;
-
-    req.on('error', (err) => {
-      console.error(`[AutoConnect:${serverId}] SSE request error: ${err.message}`);
+    } catch (err) {
+      console.error(`[AutoConnect:${serverId}] SSE connect failed: ${err.message}`);
       reconnect();
-    });
-
-    req.on('timeout', () => {
-      console.log(`[AutoConnect:${serverId}] SSE request timeout`);
-      req.destroy();
-      reconnect();
-    });
-  } catch (err) {
-    console.error(`[AutoConnect:${serverId}] SSE connect failed: ${err.message}`);
-    reconnect();
+    }
   }
+
+  attempt(useTls, true);
 }
 
 function stopAutoConnect(serverId) {

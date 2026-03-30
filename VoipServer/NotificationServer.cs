@@ -227,6 +227,7 @@ public class NotificationServer
         response.Headers.Add("Cache-Control", "no-cache");
         response.Headers.Add("Connection", "keep-alive");
         response.Headers.Add("Access-Control-Allow-Origin", "*");
+        response.Headers.Add("X-Accel-Buffering", "no"); // Disable NGINX proxy buffering for SSE
         response.StatusCode = 200;
 
         var cts = new CancellationTokenSource();
