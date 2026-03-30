@@ -10,6 +10,7 @@ public class ChatMessage
     public string User { get; set; } = "";
     public string Text { get; set; } = "";
     public DateTime Time { get; set; }
+    public bool Edited { get; set; } = false;
 }
 
 /// <summary>
@@ -57,7 +58,16 @@ public class ChatHistoryStore
         cmd.Parameters.AddWithValue("$id", id);
         cmd.Parameters.AddWithValue("$room", room);
         cmd.Parameters.AddWithValue("$user", username);
-        return cmd.ExecuteNonQuery() > 0;
+        var deleted = cmd.ExecuteNonQuery() > 0;
+        if (deleted)
+        {
+            using var r = conn.CreateCommand();
+            r.CommandText = "DELETE FROM reactions WHERE room = $room AND msg_id = $id";
+            r.Parameters.AddWithValue("$room", room);
+            r.Parameters.AddWithValue("$id", id);
+            r.ExecuteNonQuery();
+        }
+        return deleted;
     }
 
     public bool DeleteMessageAdmin(string room, string id)
@@ -67,14 +77,114 @@ public class ChatHistoryStore
         cmd.CommandText = "DELETE FROM messages WHERE id = $id AND room = $room";
         cmd.Parameters.AddWithValue("$id", id);
         cmd.Parameters.AddWithValue("$room", room);
+        var deleted = cmd.ExecuteNonQuery() > 0;
+        if (deleted)
+        {
+            using var r = conn.CreateCommand();
+            r.CommandText = "DELETE FROM reactions WHERE room = $room AND msg_id = $id";
+            r.Parameters.AddWithValue("$room", room);
+            r.Parameters.AddWithValue("$id", id);
+            r.ExecuteNonQuery();
+        }
+        return deleted;
+    }
+
+    public bool EditMessage(string room, string id, string username, string newText)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE messages SET text = $text, edited = 1 WHERE id = $id AND room = $room AND user = $user";
+        cmd.Parameters.AddWithValue("$text", newText);
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$user", username);
         return cmd.ExecuteNonQuery() > 0;
+    }
+
+    public bool EditMessageAdmin(string room, string id, string newText)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE messages SET text = $text, edited = 1 WHERE id = $id AND room = $room";
+        cmd.Parameters.AddWithValue("$text", newText);
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$room", room);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
+    // ── Reactions ────────────────────────────────────────────
+
+    /// <summary>Adds a reaction. Returns true if added, false if already exists (idempotent).</summary>
+    public bool AddReaction(string room, string msgId, string user, string emoji)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT OR IGNORE INTO reactions (room, msg_id, user, emoji) VALUES ($room, $mid, $user, $emoji)";
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$mid", msgId);
+        cmd.Parameters.AddWithValue("$user", user);
+        cmd.Parameters.AddWithValue("$emoji", emoji);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
+    public bool RemoveReaction(string room, string msgId, string user, string emoji)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM reactions WHERE room = $room AND msg_id = $mid AND user = $user AND emoji = $emoji";
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$mid", msgId);
+        cmd.Parameters.AddWithValue("$user", user);
+        cmd.Parameters.AddWithValue("$emoji", emoji);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
+    /// <summary>Returns emoji → list-of-usernames for a single message.</summary>
+    public Dictionary<string, List<string>> GetMessageReactions(string room, string msgId)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT emoji, user FROM reactions WHERE room = $room AND msg_id = $mid ORDER BY rowid ASC";
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$mid", msgId);
+        var result = new Dictionary<string, List<string>>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var emoji = reader.GetString(0);
+            var user = reader.GetString(1);
+            if (!result.TryGetValue(emoji, out var list)) result[emoji] = list = [];
+            list.Add(user);
+        }
+        return result;
+    }
+
+    /// <summary>Returns msgId → (emoji → list-of-usernames) for all reacted messages in a room.</summary>
+    public Dictionary<string, Dictionary<string, List<string>>> GetRoomReactions(string room)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT msg_id, emoji, user FROM reactions WHERE room = $room ORDER BY rowid ASC";
+        cmd.Parameters.AddWithValue("$room", room);
+        var result = new Dictionary<string, Dictionary<string, List<string>>>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var msgId = reader.GetString(0);
+            var emoji = reader.GetString(1);
+            var user = reader.GetString(2);
+            if (!result.TryGetValue(msgId, out var byEmoji)) result[msgId] = byEmoji = [];
+            if (!byEmoji.TryGetValue(emoji, out var list)) byEmoji[emoji] = list = [];
+            list.Add(user);
+        }
+        return result;
     }
 
     public List<ChatMessage> GetHistory(string room)
     {
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT id, user, text, time FROM messages WHERE room = $room ORDER BY rowid ASC";
+        cmd.CommandText = "SELECT id, user, text, time, edited FROM messages WHERE room = $room ORDER BY rowid ASC";
         cmd.Parameters.AddWithValue("$room", room);
         return ReadMessages(cmd);
     }
@@ -91,8 +201,8 @@ public class ChatHistoryStore
         if (string.IsNullOrEmpty(beforeId))
         {
             cmd.CommandText = """
-                SELECT id, user, text, time FROM (
-                    SELECT id, user, text, time, rowid FROM messages
+                SELECT id, user, text, time, edited FROM (
+                    SELECT id, user, text, time, edited, rowid FROM messages
                     WHERE room = $room ORDER BY rowid DESC LIMIT $count
                 ) sub ORDER BY rowid ASC
                 """;
@@ -100,8 +210,8 @@ public class ChatHistoryStore
         else
         {
             cmd.CommandText = """
-                SELECT id, user, text, time FROM (
-                    SELECT m.id, m.user, m.text, m.time, m.rowid FROM messages m
+                SELECT id, user, text, time, edited FROM (
+                    SELECT m.id, m.user, m.text, m.time, m.edited, m.rowid FROM messages m
                     WHERE m.room = $room AND m.rowid < (SELECT rowid FROM messages WHERE id = $bid AND room = $room)
                     ORDER BY m.rowid DESC LIMIT $count
                 ) sub ORDER BY rowid ASC
@@ -157,7 +267,7 @@ public class ChatHistoryStore
         using var conn = Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT m.id, m.user, m.text, m.time FROM messages m
+            SELECT m.id, m.user, m.text, m.time, m.edited FROM messages m
             INNER JOIN pins p ON p.msg_id = m.id AND p.room = m.room
             WHERE m.room = $room ORDER BY m.rowid ASC
             """;
@@ -165,11 +275,12 @@ public class ChatHistoryStore
         return ReadMessages(cmd);
     }
 
-    /// <summary>Permanently deletes ALL messages and pins across every room.</summary>
+    /// <summary>Permanently deletes ALL messages, pins, and reactions across every room.</summary>
     public void WipeAll()
     {
         using var conn = Open();
         using var tx = conn.BeginTransaction();
+        Exec(conn, "DELETE FROM reactions");
         Exec(conn, "DELETE FROM pins");
         Exec(conn, "DELETE FROM messages");
         tx.Commit();
@@ -198,11 +309,17 @@ public class ChatHistoryStore
         tx.Commit();
     }
 
-    /// <summary>Permanently deletes all history and pins for the given room.</summary>
+    /// <summary>Permanently deletes all history, pins, and reactions for the given room.</summary>
     public void DeleteRoom(string roomName)
     {
         using var conn = Open();
         using var tx = conn.BeginTransaction();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM reactions WHERE room = $room";
+            cmd.Parameters.AddWithValue("$room", roomName);
+            cmd.ExecuteNonQuery();
+        }
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM pins WHERE room = $room";
@@ -262,6 +379,26 @@ public class ChatHistoryStore
             """);
 
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_pins_room ON pins (room)");
+
+        Exec(conn, """
+            CREATE TABLE IF NOT EXISTS reactions (
+                room   TEXT NOT NULL,
+                msg_id TEXT NOT NULL,
+                user   TEXT NOT NULL,
+                emoji  TEXT NOT NULL,
+                UNIQUE(room, msg_id, user, emoji)
+            )
+            """);
+
+        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions (room, msg_id)");
+
+        // Add edited column to existing databases that predate this feature
+        using (var check = conn.CreateCommand())
+        {
+            check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'edited'";
+            if (Convert.ToInt32(check.ExecuteScalar()) == 0)
+                Exec(conn, "ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0");
+        }
     }
 
     private static void Exec(SqliteConnection conn, string sql)
@@ -365,6 +502,7 @@ public class ChatHistoryStore
                 User = reader.GetString(1),
                 Text = reader.GetString(2),
                 Time = DateTime.Parse(reader.GetString(3)).ToUniversalTime(),
+                Edited = !reader.IsDBNull(4) && reader.GetInt32(4) != 0,
             });
         }
         return list;

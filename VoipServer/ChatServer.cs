@@ -23,6 +23,8 @@ public class ChatServer
     private readonly EmojiStore _emojiStore;
     private readonly ServerConfig _serverConfig;
     private readonly NotificationServer? _notificationServer;
+    private readonly BanStore _banStore;
+    private readonly InviteStore _inviteStore;
     private readonly Action<string>? _log;
 
     // ── Connected clients ───────────────────────────────────
@@ -51,7 +53,7 @@ public class ChatServer
     private const int MaxAuthAttempts = 5;
     private static readonly TimeSpan AuthLockoutDuration = TimeSpan.FromMinutes(2);
 
-    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, AvatarStore avatarStore, SoundboardStore soundboardStore, EmojiStore emojiStore, Action<string>? log = null, NotificationServer? notificationServer = null)
+    public ChatServer(ServerConfig serverConfig, RoomManager rooms, ChatHistoryStore history, UserStore userStore, RoleStore roleStore, AvatarStore avatarStore, SoundboardStore soundboardStore, EmojiStore emojiStore, Action<string>? log = null, NotificationServer? notificationServer = null, BanStore? banStore = null, InviteStore? inviteStore = null)
     {
         _serverConfig = serverConfig;
         var bindAddress = serverConfig.BindLocalhost ? IPAddress.Loopback : IPAddress.Any;
@@ -65,6 +67,8 @@ public class ChatServer
         _emojiStore = emojiStore;
         _log = log;
         _notificationServer = notificationServer;
+        _banStore = banStore ?? new BanStore();
+        _inviteStore = inviteStore ?? new InviteStore();
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -151,6 +155,16 @@ public class ChatServer
                     await writer.WriteLineAsync("REGISTER_FAIL:Invalid format").ConfigureAwait(false);
                     return;
                 }
+                if (_banStore.IsBanned(parts[0]))
+                {
+                    await writer.WriteLineAsync("REGISTER_FAIL:You have been banned from this server").ConfigureAwait(false);
+                    return;
+                }
+                if (_serverConfig.InviteOnly)
+                {
+                    await writer.WriteLineAsync("REGISTER_FAIL:Server is invite-only — use an invite code").ConfigureAwait(false);
+                    return;
+                }
                 var (ok, err) = _userStore.Register(parts[0], parts[1]);
                 if (!ok)
                 {
@@ -167,6 +181,46 @@ public class ChatServer
                     await writer.WriteLineAsync($"AUTH_TOKEN:{token}").ConfigureAwait(false);
                 }
             }
+            else if (authLine.StartsWith("REGISTER_WITH_INVITE:"))
+            {
+                // REGISTER_WITH_INVITE:<token>:<user>:<pass>
+                var rest = authLine.Substring("REGISTER_WITH_INVITE:".Length);
+                var parts = rest.Split(':', 3);
+                if (parts.Length < 3)
+                {
+                    await writer.WriteLineAsync("REGISTER_FAIL:Invalid format").ConfigureAwait(false);
+                    return;
+                }
+                var inviteToken = parts[0];
+                var regUser = parts[1];
+                var regPass = parts[2];
+                if (_banStore.IsBanned(regUser))
+                {
+                    await writer.WriteLineAsync("REGISTER_FAIL:You have been banned from this server").ConfigureAwait(false);
+                    return;
+                }
+                if (!_inviteStore.UseInvite(inviteToken))
+                {
+                    await writer.WriteLineAsync("REGISTER_FAIL:Invalid or expired invite code").ConfigureAwait(false);
+                    return;
+                }
+                var (ok, err) = _userStore.Register(regUser, regPass);
+                if (!ok)
+                {
+                    await writer.WriteLineAsync($"REGISTER_FAIL:{err}").ConfigureAwait(false);
+                    return;
+                }
+                name = regUser;
+                var isFirst = _userStore.GetAllUsernames().Count <= 1;
+                _roleStore.EnsureDefaultRole(name, isFirst);
+                _log?.Invoke($"[Invite] {name} registered using invite token {inviteToken}");
+                await writer.WriteLineAsync("REGISTER_OK").ConfigureAwait(false);
+                if (_notificationServer != null)
+                {
+                    var token = _notificationServer.IssueToken(name);
+                    await writer.WriteLineAsync($"AUTH_TOKEN:{token}").ConfigureAwait(false);
+                }
+            }
             else if (authLine.StartsWith("AUTH:"))
             {
                 var parts = authLine.Substring(5).Split(':', 2);
@@ -176,6 +230,12 @@ public class ChatServer
                     return;
                 }
                 var attemptedUser = parts[0];
+                // Check ban before rate limiting
+                if (_banStore.IsBanned(attemptedUser))
+                {
+                    await writer.WriteLineAsync("AUTH_FAIL:You have been banned from this server").ConfigureAwait(false);
+                    return;
+                }
                 // Rate limiting per username
                 if (_authRateLimit.TryGetValue(attemptedUser, out var rl) && rl.attempts >= MaxAuthAttempts && DateTime.UtcNow < rl.resetAt)
                 {
@@ -227,16 +287,16 @@ public class ChatServer
             await SendServerInfoAsync(writer, client).ConfigureAwait(false);
 
             // Send room list
-            await SendRoomListAsync(writer).ConfigureAwait(false);
+            await SendRoomListAsync(writer, name).ConfigureAwait(false);
 
             // Send role definitions
             await SendRoleListAsync(writer).ConfigureAwait(false);
 
-            // Auto-join first non-password text room
-            var firstRoom = _rooms.Config.TextRooms.FirstOrDefault(r => string.IsNullOrEmpty(r.Password));
+            // Auto-join first accessible text room
+            var firstRoom = _rooms.Config.TextRooms.FirstOrDefault(r => RoomManager.CanAccessRoom(name, r, _roleStore));
             if (firstRoom != null)
             {
-                _rooms.JoinTextRoom(name, firstRoom.Name, null);
+                _rooms.JoinTextRoom(name, firstRoom.Name, _roleStore);
                 await writer.WriteLineAsync($"JOINED_TEXT:{firstRoom.Name}").ConfigureAwait(false);
                 try { await SendHistoryAsync(writer, firstRoom.Name).ConfigureAwait(false); }
                 catch (Exception ex) { _log?.Invoke($"[Chat] Failed to send history for '{firstRoom.Name}': {ex.GetType().Name}: {ex.Message}"); }
@@ -324,15 +384,13 @@ public class ChatServer
     {
         if (cmd == "LIST_ROOMS")
         {
-            await SendRoomListAsync(writer).ConfigureAwait(false);
+            await SendRoomListAsync(writer, name).ConfigureAwait(false);
         }
         else if (cmd.StartsWith("JOIN_VOICE:"))
         {
-            var args = cmd.Substring("JOIN_VOICE:".Length).Split(':', 2);
-            var roomName = args[0];
-            var password = args.Length > 1 ? args[1] : null;
+            var roomName = cmd.Substring("JOIN_VOICE:".Length);
 
-            if (_rooms.JoinVoiceRoom(name, roomName, password))
+            if (_rooms.JoinVoiceRoom(name, roomName, _roleStore))
             {
                 var bitrate = _rooms.GetVoiceRoomBitrate(roomName);
                 await writer.WriteLineAsync($"JOINED_VOICE:{roomName}:{bitrate}").ConfigureAwait(false);
@@ -355,7 +413,7 @@ public class ChatServer
             }
             else
             {
-                await writer.WriteLineAsync("ERROR:Wrong password or room not found").ConfigureAwait(false);
+                await writer.WriteLineAsync("ERROR:No permission or room not found").ConfigureAwait(false);
             }
         }
         else if (cmd == "LEAVE_VOICE")
@@ -377,18 +435,16 @@ public class ChatServer
         }
         else if (cmd.StartsWith("JOIN_TEXT:"))
         {
-            var args = cmd.Substring("JOIN_TEXT:".Length).Split(':', 2);
-            var roomName = args[0];
-            var password = args.Length > 1 ? args[1] : null;
+            var roomName = cmd.Substring("JOIN_TEXT:".Length);
 
-            if (_rooms.JoinTextRoom(name, roomName, password))
+            if (_rooms.JoinTextRoom(name, roomName, _roleStore))
             {
                 await writer.WriteLineAsync($"JOINED_TEXT:{roomName}").ConfigureAwait(false);
                 await SendHistoryAsync(writer, roomName).ConfigureAwait(false);
             }
             else
             {
-                await writer.WriteLineAsync("ERROR:Wrong password or room not found").ConfigureAwait(false);
+                await writer.WriteLineAsync("ERROR:No permission or room not found").ConfigureAwait(false);
             }
         }
         else if (cmd.StartsWith("LEAVE_TEXT:"))
@@ -454,6 +510,26 @@ public class ChatServer
                 if (_history.DeleteMessage(roomName, msgId, name) ||
                     (_roleStore.HasPermission(name, "delete_messages") && _history.DeleteMessageAdmin(roomName, msgId)))
                     await BroadcastToTextRoomAsync(roomName, $"MSG_DELETED:{roomName}:{msgId}").ConfigureAwait(false);
+            }
+        }
+        else if (cmd.StartsWith("EDIT_MSG:"))
+        {
+            // EDIT_MSG:<room>:<msgId>:<newText>
+            var args = cmd.Substring("EDIT_MSG:".Length).Split(':', 3);
+            if (args.Length >= 3)
+            {
+                var roomName = args[0];
+                var msgId = args[1];
+                var newText = args[2];
+                if (string.IsNullOrWhiteSpace(newText)) return;
+                // Owner can edit their own message; delete_messages permission allows editing any
+                bool edited = _history.EditMessage(roomName, msgId, name, newText);
+                if (!edited && _roleStore.HasPermission(name, "delete_messages"))
+                    edited = _history.EditMessageAdmin(roomName, msgId, newText);
+                if (edited)
+                    await BroadcastToTextRoomAsync(roomName, $"MSG_EDITED:{roomName}:{msgId}:{newText}").ConfigureAwait(false);
+                else
+                    await writer.WriteLineAsync("ERROR:Cannot edit message").ConfigureAwait(false);
             }
         }
         else if (cmd.StartsWith("PIN_MSG:"))
@@ -567,12 +643,49 @@ public class ChatServer
                     _log?.Invoke($"[Roles] {name} deleted role '{roleName}'");
                     await BroadcastUserListAsync().ConfigureAwait(false);
                     await BroadcastRoleListAsync().ConfigureAwait(false);
+                    await BroadcastRoomListAsync().ConfigureAwait(false);
                 }
                 else
                     await writer.WriteLineAsync("ERROR:Kan ikke slette denne rolle").ConfigureAwait(false);
             }
             else
                 await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("EDIT_ROLE:"))
+        {
+            // EDIT_ROLE:<originalName>:<newName>:<color>:<perm1,perm2,...>
+            var args = cmd.Substring("EDIT_ROLE:".Length).Split(':', 4);
+            if (args.Length >= 4 && _roleStore.HasPermission(name, "manage_roles"))
+            {
+                var perms = args[3].Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (_roleStore.EditRole(args[0], args[1], args[2], perms))
+                {
+                    _log?.Invoke($"[Roles] {name} edited role '{args[0]}'");
+                    await BroadcastUserListAsync().ConfigureAwait(false);
+                    await BroadcastRoleListAsync().ConfigureAwait(false);
+                    await BroadcastRoomListAsync().ConfigureAwait(false);
+                }
+                else
+                    await writer.WriteLineAsync("ERROR:Could not edit role").ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("REORDER_ROLES:"))
+        {
+            if (!_roleStore.HasPermission(name, "manage_roles"))
+            {
+                await writer.WriteLineAsync("ERROR:Ingen tilladelse").ConfigureAwait(false);
+                return;
+            }
+            var names = cmd.Substring("REORDER_ROLES:".Length).Split(',').ToList();
+            if (_roleStore.ReorderRoles(names))
+            {
+                _log?.Invoke($"[Roles] {name} reordered roles");
+                await BroadcastRoleListAsync().ConfigureAwait(false);
+            }
+            else
+                await writer.WriteLineAsync("ERROR:Invalid role order").ConfigureAwait(false);
         }
         else if (cmd == "KICK_USER" || cmd.StartsWith("KICK_USER:"))
         {
@@ -668,6 +781,39 @@ public class ChatServer
         else if (cmd == "PING")
         {
             await writer.WriteLineAsync("PONG").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("TYPING:"))
+        {
+            // TYPING:<room> — relay to all other users currently in that text room
+            var room = cmd.Substring("TYPING:".Length);
+            if (!string.IsNullOrWhiteSpace(room))
+            {
+                foreach (var kv in _clients)
+                {
+                    var (w, clientName) = kv.Value;
+                    if (clientName == name) continue;
+                    if (!_rooms.IsInTextRoom(clientName, room)) continue;
+                    try { await w.WriteLineAsync($"TYPING:{room}:{name}").ConfigureAwait(false); } catch { }
+                }
+            }
+        }
+        else if (cmd.StartsWith("REACT:"))
+        {
+            // REACT:<room>:<msgId>:<emoji>  — toggle reaction; broadcast updated state
+            var args = cmd.Substring("REACT:".Length).Split(':', 3);
+            if (args.Length >= 3)
+            {
+                var roomName = args[0];
+                var msgId = args[1];
+                var emoji = args[2];
+                if (string.IsNullOrWhiteSpace(emoji) || emoji.Length > 12) return;
+                // Toggle: add if not present, remove if the user already reacted with this emoji
+                bool added = _history.AddReaction(roomName, msgId, name, emoji);
+                if (!added) _history.RemoveReaction(roomName, msgId, name, emoji);
+                var reactions = _history.GetMessageReactions(roomName, msgId);
+                var json = JsonSerializer.Serialize(reactions);
+                await BroadcastToTextRoomAsync(roomName, $"MSG_REACT:{roomName}:{msgId}:{json}").ConfigureAwait(false);
+            }
         }
         else if (cmd == "DIAG")
         {
@@ -818,9 +964,11 @@ public class ChatServer
             }
             var args = cmd.Substring("CREATE_VOICE_ROOM:".Length).Split(':', 3);
             var roomName = args[0];
-            var password = args.Length > 1 && !string.IsNullOrEmpty(args[1]) ? args[1] : null;
+            var allowedRoles = args.Length > 1 && !string.IsNullOrEmpty(args[1])
+                ? args[1].Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
+                : new List<string>();
             var bitrate = args.Length > 2 && int.TryParse(args[2], out var br) ? br : 96000;
-            if (_rooms.Config.CreateVoiceRoom(roomName, password, bitrate))
+            if (_rooms.Config.CreateVoiceRoom(roomName, allowedRoles, bitrate))
             {
                 _log?.Invoke($"[Rooms] {name} created voice room '{roomName}'");
                 await BroadcastRoomListAsync().ConfigureAwait(false);
@@ -838,8 +986,10 @@ public class ChatServer
             }
             var args = cmd.Substring("CREATE_TEXT_ROOM:".Length).Split(':', 2);
             var roomName = args[0];
-            var password = args.Length > 1 && !string.IsNullOrEmpty(args[1]) ? args[1] : null;
-            if (_rooms.Config.CreateTextRoom(roomName, password))
+            var allowedRoles = args.Length > 1 && !string.IsNullOrEmpty(args[1])
+                ? args[1].Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
+                : new List<string>();
+            if (_rooms.Config.CreateTextRoom(roomName, allowedRoles))
             {
                 _rooms.EnsureTextRoom(roomName);
                 _log?.Invoke($"[Rooms] {name} created text room '{roomName}'");
@@ -959,9 +1109,11 @@ public class ChatServer
             var args = cmd.Substring("EDIT_VOICE_ROOM:".Length).Split(':', 4);
             var oldName = args[0];
             var newName = args.Length > 1 ? args[1] : oldName;
-            var password = args.Length > 2 && !string.IsNullOrEmpty(args[2]) ? args[2] : null;
+            var allowedRoles = args.Length > 2 && !string.IsNullOrEmpty(args[2])
+                ? args[2].Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
+                : new List<string>();
             var bitrate = args.Length > 3 && int.TryParse(args[3], out var ebr) ? ebr : 96000;
-            if (_rooms.Config.EditVoiceRoom(oldName, newName, password, bitrate))
+            if (_rooms.Config.EditVoiceRoom(oldName, newName, allowedRoles, bitrate))
             {
                 if (!string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase))
                     _rooms.RenameVoiceRoom(oldName, newName);
@@ -983,8 +1135,10 @@ public class ChatServer
             var args = cmd.Substring("EDIT_TEXT_ROOM:".Length).Split(':', 3);
             var oldName = args[0];
             var newName = args.Length > 1 ? args[1] : oldName;
-            var password = args.Length > 2 && !string.IsNullOrEmpty(args[2]) ? args[2] : null;
-            if (_rooms.Config.EditTextRoom(oldName, newName, password))
+            var allowedRoles = args.Length > 2 && !string.IsNullOrEmpty(args[2])
+                ? args[2].Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
+                : new List<string>();
+            if (_rooms.Config.EditTextRoom(oldName, newName, allowedRoles))
             {
                 if (!string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase))
                 {
@@ -1266,6 +1420,10 @@ public class ChatServer
             await writer.WriteLineAsync($"HISTORY:{roomName}:{hasMore}:{json}").ConfigureAwait(false);
         }
 
+        var reactions = _history.GetRoomReactions(roomName);
+        if (reactions.Count > 0)
+            await writer.WriteLineAsync($"REACTIONS:{roomName}:{JsonSerializer.Serialize(reactions)}").ConfigureAwait(false);
+
         var pinned = _history.GetPinnedMessages(roomName);
         if (pinned.Count > 0)
         {
@@ -1321,33 +1479,37 @@ public class ChatServer
         await writer.WriteLineAsync($"SERVER_INFO:{json}").ConfigureAwait(false);
     }
 
-    private string BuildRoomListJson()
+    private string BuildRoomListJson(string username)
     {
-        var voiceRooms = _rooms.Config.VoiceRooms.Select(r => new
+        bool isAdmin = _roleStore.HasPermission(username, "admin");
+        var userRoles = isAdmin ? null : _roleStore.GetUserRoleNames(username);
+
+        bool canAccess(List<string> allowedRoles)
         {
-            r.Name,
-            HasPassword = !string.IsNullOrEmpty(r.Password),
-            r.Bitrate,
-        });
-        var textRooms = _rooms.Config.TextRooms.Select(r => new
-        {
-            r.Name,
-            HasPassword = !string.IsNullOrEmpty(r.Password)
-        });
+            if (allowedRoles.Count == 0) return true;
+            if (isAdmin) return true;
+            return allowedRoles.Any(r => userRoles!.Contains(r, StringComparer.OrdinalIgnoreCase));
+        }
+
+        var voiceRooms = _rooms.Config.VoiceRooms
+            .Where(r => canAccess(r.AllowedRoles))
+            .Select(r => new { r.Name, r.AllowedRoles, r.Bitrate });
+        var textRooms = _rooms.Config.TextRooms
+            .Where(r => canAccess(r.AllowedRoles))
+            .Select(r => new { r.Name, r.AllowedRoles });
         return JsonSerializer.Serialize(new { VoiceRooms = voiceRooms, TextRooms = textRooms });
     }
 
-    private async Task SendRoomListAsync(StreamWriter writer)
+    private async Task SendRoomListAsync(StreamWriter writer, string username)
     {
-        await writer.WriteLineAsync($"ROOMS:{BuildRoomListJson()}").ConfigureAwait(false);
+        await writer.WriteLineAsync($"ROOMS:{BuildRoomListJson(username)}").ConfigureAwait(false);
     }
 
     private async Task BroadcastRoomListAsync()
     {
-        var message = $"ROOMS:{BuildRoomListJson()}";
-        foreach (var (writer, _) in _clients.Values)
+        foreach (var (writer, uname) in _clients.Values)
         {
-            try { await writer.WriteLineAsync(message).ConfigureAwait(false); }
+            try { await writer.WriteLineAsync($"ROOMS:{BuildRoomListJson(uname)}").ConfigureAwait(false); }
             catch { }
         }
     }

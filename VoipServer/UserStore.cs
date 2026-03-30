@@ -77,6 +77,13 @@ public class UserStore
         return _users.Keys.ToList();
     }
 
+    public bool DeleteUser(string username)
+    {
+        if (!_users.TryRemove(username, out _)) return false;
+        Save();
+        return true;
+    }
+
     private const int Pbkdf2Iterations = 100_000;
     private const int SaltSize = 16;
     private const int HashSize = 32;

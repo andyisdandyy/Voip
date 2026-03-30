@@ -12,6 +12,9 @@ public class ServerConfig
     public string ServerName { get; set; } = "Echo Server";
     public string? ServerPassword { get; set; }
 
+    /// <summary>When true, new registrations require a valid invite code. Existing users can still log in.</summary>
+    public bool InviteOnly { get; set; } = false;
+
     /// <summary>Server logo as a base64 data-URI (e.g. "data:image/png;base64,..."). Max ~64 KB.</summary>
     public string? ServerLogo { get; set; }
 

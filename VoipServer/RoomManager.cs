@@ -56,11 +56,20 @@ public class RoomManager
         return new();
     }
 
-    public bool JoinVoiceRoom(string username, string roomName, string? password)
+    /// <summary>Returns true if the user is allowed to access the room (no restriction, admin, or matching role).</summary>
+    public static bool CanAccessRoom(string username, RoomDefinition room, RoleStore roleStore)
+    {
+        if (room.AllowedRoles.Count == 0) return true;
+        if (roleStore.HasPermission(username, "admin")) return true;
+        var userRoles = roleStore.GetUserRoleNames(username);
+        return room.AllowedRoles.Any(r => userRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+    }
+
+    public bool JoinVoiceRoom(string username, string roomName, RoleStore roleStore)
     {
         var room = _config.VoiceRooms.FirstOrDefault(r => r.Name == roomName);
         if (room == null) return false;
-        if (!string.IsNullOrEmpty(room.Password) && room.Password != password) return false;
+        if (!CanAccessRoom(username, room, roleStore)) return false;
         _userVoiceRoom[username] = roomName;
         _log?.Invoke($"[Room] {username} joined voice '{roomName}'");
         return true;
@@ -84,11 +93,11 @@ public class RoomManager
         return room?.Bitrate ?? 64000;
     }
 
-    public bool JoinTextRoom(string username, string roomName, string? password)
+    public bool JoinTextRoom(string username, string roomName, RoleStore roleStore)
     {
         var room = _config.TextRooms.FirstOrDefault(r => r.Name == roomName);
         if (room == null) return false;
-        if (!string.IsNullOrEmpty(room.Password) && room.Password != password) return false;
+        if (!CanAccessRoom(username, room, roleStore)) return false;
         if (!_textRoomMembers.ContainsKey(roomName))
             _textRoomMembers[roomName] = new(StringComparer.OrdinalIgnoreCase);
         _textRoomMembers[roomName][username] = 0;

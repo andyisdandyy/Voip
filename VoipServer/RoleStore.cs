@@ -122,18 +122,28 @@ public class RoleStore
         }
     }
 
+    public void RemoveUserData(string username)
+    {
+        lock (_lock)
+        {
+            if (_data.UserRoles.Remove(username))
+                SaveUnsafe();
+        }
+    }
+
     public bool CreateRole(string name, string color, int priority, List<string> permissions)
     {
         lock (_lock)
         {
             if (GetRoleUnsafe(name) != null) return false;
-            _data.Roles.Add(new RoleDefinition
-            {
-                Name = name,
-                Color = color,
-                Priority = priority,
-                Permissions = permissions,
-            });
+            var newRole = new RoleDefinition { Name = name, Color = color, Priority = priority, Permissions = permissions };
+            // Insert before Member so custom roles sit between Admin and Member in hierarchy
+            var memberIdx = _data.Roles.FindIndex(r => string.Equals(r.Name, "Member", StringComparison.OrdinalIgnoreCase));
+            if (memberIdx >= 0)
+                _data.Roles.Insert(memberIdx, newRole);
+            else
+                _data.Roles.Add(newRole);
+            UpdatePrioritiesUnsafe();
             SaveUnsafe();
             return true;
         }
@@ -153,10 +163,81 @@ public class RoleStore
             {
                 foreach (var kv in _data.UserRoles)
                     kv.Value.RemoveAll(r => string.Equals(r, name, StringComparison.OrdinalIgnoreCase));
+                UpdatePrioritiesUnsafe();
                 SaveUnsafe();
             }
             return removed;
         }
+    }
+
+    /// <summary>Edits an existing role's name, color, and permissions. Admin/Member names cannot be changed. Admin permissions cannot be changed.</summary>
+    public bool EditRole(string name, string newName, string color, List<string> permissions)
+    {
+        lock (_lock)
+        {
+            var role = GetRoleUnsafe(name);
+            if (role == null) return false;
+
+            bool isProtected = string.Equals(name, "Admin", StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(name, "Member", StringComparison.OrdinalIgnoreCase);
+
+            // Handle rename for non-protected roles
+            if (!string.Equals(name, newName, StringComparison.OrdinalIgnoreCase))
+            {
+                if (isProtected) return false;
+                if (string.IsNullOrWhiteSpace(newName)) return false;
+                if (GetRoleUnsafe(newName) != null) return false;
+                // Update all user role assignments to the new name
+                foreach (var kv in _data.UserRoles)
+                    for (int i = 0; i < kv.Value.Count; i++)
+                        if (string.Equals(kv.Value[i], name, StringComparison.OrdinalIgnoreCase))
+                            kv.Value[i] = newName;
+                role.Name = newName;
+            }
+
+            role.Color = color;
+            if (!string.Equals(role.Name, "Admin", StringComparison.OrdinalIgnoreCase))
+                role.Permissions = permissions;
+
+            SaveUnsafe();
+            return true;
+        }
+    }
+
+    /// <summary>Reorders roles by name list. Admin must be first, Member must be last.</summary>
+    public bool ReorderRoles(List<string> orderedNames)
+    {
+        lock (_lock)
+        {
+            if (orderedNames.Count != _data.Roles.Count) return false;
+            if (!string.Equals(orderedNames[0], "Admin", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.Equals(orderedNames[^1], "Member", StringComparison.OrdinalIgnoreCase)) return false;
+
+            var lookup = _data.Roles.ToDictionary(r => r.Name, StringComparer.OrdinalIgnoreCase);
+            var reordered = new List<RoleDefinition>(orderedNames.Count);
+            foreach (var n in orderedNames)
+            {
+                if (!lookup.TryGetValue(n, out var role)) return false;
+                reordered.Add(role);
+            }
+            _data.Roles.Clear();
+            _data.Roles.AddRange(reordered);
+            UpdatePrioritiesUnsafe();
+            SaveUnsafe();
+            return true;
+        }
+    }
+
+    /// <summary>Assigns priority values based on list position (Admin=100 first, Member=0 last).</summary>
+    private void UpdatePrioritiesUnsafe()
+    {
+        int count = _data.Roles.Count;
+        for (int i = 0; i < count; i++)
+            _data.Roles[i].Priority = count - i;
+        var admin = _data.Roles.FirstOrDefault(r => string.Equals(r.Name, "Admin", StringComparison.OrdinalIgnoreCase));
+        if (admin != null) admin.Priority = 100;
+        var member = _data.Roles.FirstOrDefault(r => string.Equals(r.Name, "Member", StringComparison.OrdinalIgnoreCase));
+        if (member != null) member.Priority = 0;
     }
 
     /// <summary>Ensure user has at least the Member role. Returns true if Admin was auto-assigned (first user).</summary>

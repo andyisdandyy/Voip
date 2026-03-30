@@ -670,7 +670,40 @@ The entire UI lives in a single React component (`TerminalForum`). Key sections:
 | Video capture | 778–970 | Camera and screen share encoding |
 | Settings & avatar | 988–1043 | Device enumeration, avatar crop/upload (object URLs are revoked after image load to prevent memory leaks) |
 | Connect screen | 1410+ | Server list, login dialogs |
-voice activity indicator (green ring around profile picture when speaking — remote users are gated by RMS energy threshold on received PCM to avoid false positives from silence frames).
+
+**Voice activity indicators**: remote users show a green ring around their avatar when the received PCM RMS exceeds 0.01 (threshold avoids false positives from silence frames). Local user speaking detection respects the active input mode:
+- **VAD mode**: green ring when `micLevel > 0.05 && !isMuted`.
+- **PTT mode**: green ring when `pttHeld` is true.
+- **Gate-suppressed**: amber ring + GATED badge when signal is present (`micLevel > 0.05`) but the gate is actively suppressing it (`gateActive && inputSensitivity > 0`).
+
+**Notification preferences** (`voip-notif-prefs` in localStorage): per-server and per-channel control over sound/unread/mention behaviour. Three levels — `all` (sound + unread dot + badge), `mentions` (badge only), `none` (completely silent). Channel settings default to the server setting. Stored as `Record<serverId, { _server?: NotifLevel, [channelName]: NotifLevel | 'default' }>`. Accessible via right-click on a server tab (server-level) or right-click on a channel (channel-level). Muted channels show a faint `BellOff` icon in the sidebar.
+
+**Global client settings** (localStorage keys): settings that apply across all servers are stored without a server-specific prefix and are accessible from the settings modal (⚙ button), which is available on both the home screen and the connected view.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `voip-notification-sounds` | boolean | Enable/disable UI sounds globally |
+| `voip-notification-volume` | number | UI sound volume (0–100) |
+| `voip-echo-cancellation` | boolean | Microphone echo cancellation |
+| `voip-noise-suppression` | boolean | Microphone noise suppression |
+| `voip-auto-gain` | boolean | Microphone auto-gain control |
+| `voip-input-sensitivity` | number | VAD gate threshold (0 = off) |
+| `voip-gate-attack` | number | Gate attack time (ms) |
+| `voip-gate-hold` | number | Gate hold time (ms) |
+| `voip-gate-release` | number | Gate release time (ms) |
+| `voip-ptt-mode` | boolean | Push-to-Talk mode enabled |
+| `voip-keybinds` | JSON | Keybind assignments: `toggleMute`, `toggleDeafen`, `pushToTalk` |
+| `voip-soundboard-volume` | number | Soundboard playback volume (0–100) |
+| `voip-theme` | string | Active theme: `mono` / `light` / `custom` |
+| `voip-custom-theme` | JSON | Custom theme color values |
+| `voip-ui-scale` | number | UI zoom factor (50–150%) |
+| `voip-font-family` | string | Font family CSS string |
+| `voip-notif-prefs` | JSON | Per-server/channel notification preferences |
+| `voip-pinned-servers` | JSON | Saved servers list |
+| `voip-open-tabs` | JSON | Ordered server tab IDs |
+| `voip-friends` | JSON | Friends list (username + serverId pairs) |
+| `voip-e2ee-keys` | JSON | Per-server E2EE passphrases (local only) |
+| `voip-show-user-list` | boolean | Right sidebar visible state |
 
 ### Preload Bridge — `preload.js`
 Exposes a typed `window.electronAPI` object with methods for:
@@ -688,9 +721,23 @@ Exposes a typed `window.electronAPI` object with methods for:
 - HTTP file upload — `uploadFile(host, port, token, fileName, mimeType, base64)` (upload to server's file server for server-side transcoding)
 
 ### AudioWorklet Processors
-- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono (960 samples per message), and posts to main thread. Supports an **input sensitivity gate** with configurable **attack**, **hold**, and **release** timing: the main thread sends `{ sensitivity: 0..1, attackMs, holdMs, releaseMs }` via `port.postMessage`; when the RMS level of a 960-sample block (scaled ×3 to match the UI meter) exceeds the threshold the gate ramps open over `attackMs` (default 20 ms); once the level drops below the threshold the gate stays open for `holdMs` (default 100 ms) then fades to silence over `releaseMs` (default 300 ms) using a linear per-block ramp. Used for voice capture.
+- **`audio-capture-processor.js`**: Buffers Float32 mono samples into 960-frame blocks (20 ms at 48 kHz), converts to Int16 mono, and posts two messages per block:
+  1. The PCM frame as a **transferable `ArrayBuffer`** — consumed by the main thread to send audio to the server.
+  2. A **status object** `{ type: 'status', gateGain: number, level: number }` — consumed by the renderer to drive the noise-gate visual indicator.
+
+  Supports two mutually exclusive transmission modes:
+  - **Voice-activity gate (VAD)** — configurable via `{ sensitivity, attackMs, holdMs, releaseMs }`. When the RMS level of a block exceeds the threshold the gate ramps open over `attackMs` (default 20 ms); once below, the gate stays open for `holdMs` (default 100 ms) then fades to silence over `releaseMs` (default 300 ms). When `sensitivity = 0` the gate is fully bypassed.
+  - **Push-to-Talk (PTT)** — activated by `{ pttMode: true }`. The VAD gate is completely bypassed; instead, `{ pttHeld: true/false }` controls the gain directly (1 when held, 0 when released). Switching PTT off automatically clears `pttHeld`.
+
+  The renderer keeps a `gateActive` state derived from incoming status messages (`gateGain < 0.99`). This state drives the **noise-gate visual feedback**: in VAD mode, a local user's voice tile shows an amber GATED badge + amber ring when signal is present but the gate is suppressing it. In PTT mode, a PTT badge shows green when transmitting, red when not.
+
 - **`audio-screen-capture-processor.js`**: Buffers Float32 stereo samples into 960-frame stereo blocks (20 ms at 48 kHz), interleaves L/R channels into Int16 (1920 samples per message), and posts to main thread. Used for screen-share system audio.
-- **`audio-playback-processor.js`**: Receives interleaved stereo Int16 PCM buffers, de-interleaves to separate L/R Float32 arrays, and plays them back through the stereo output channels. Used by both voice and screen audio playback pipelines.
+- **`audio-playback-processor.js`**: Receives interleaved stereo Int16 PCM buffers, de-interleaves to separate L/R Float32 arrays, and plays them back through the stereo output channels. Implements an **adaptive jitter buffer**:
+  - **Buffering phase**: on startup or after an underrun, silence is output until the queue reaches `targetDepth` frames before playback resumes, preventing choppy repeated underruns from small network jitter.
+  - **EMA depth tracking**: `emaDepth` is an exponential moving average (α = 0.05) of instantaneous queue depth, updated on every `process()` call (~86 Hz).
+  - **Adaptive target**: every 200 `process()` calls (~1 s), `targetDepth` increments (up to 8) when `emaDepth < 0.8` (frequent underruns → more jitter) and decrements (down to 1) when `emaDepth > targetDepth + 1.5` (stable → reduce latency).
+  - **Hard cap**: if the queue exceeds `maxDepth = 12` frames (e.g. after the tab was backgrounded and frames accumulated), the oldest frames are dropped to prevent latency buildup.
+  - Used by both voice and screen audio playback pipelines.
 
 ### Native Audio Loopback — `native/audio-loopback/`
 N-API C++ addon that captures system audio using the Windows 10 2004+

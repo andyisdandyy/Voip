@@ -1,23 +1,23 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import {
   Terminal, Hash, User, Circle, Mic, MicOff, Headphones,
-  Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, Monitor,
+  Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, BellOff, Monitor,
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
   Plus, LogOut, Command, Wifi, WifiOff, Home, Paperclip, Download, FileText, Send, Smile, Moon, Image as ImageIcon,
   Music, Upload, Play, Trash, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Eye, EyeOff, Shield, Sliders, Users, Check,
-  PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil,
+  PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil, SmilePlus,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
 
-interface VoiceRoom { name: string; hasPassword: boolean; bitrate: number }
-interface TextRoom  { name: string; hasPassword: boolean }
+interface VoiceRoom { name: string; allowedRoles: string[]; bitrate: number }
+interface TextRoom  { name: string; allowedRoles: string[] }
 interface UserInfo  { name: string; voiceRoom: string | null; online: boolean; status: 'online' | 'away' | 'offline'; roles: string[]; roleColor: string | null; avatar: string | null; muted: boolean; deafened: boolean }
-interface ChatMsg   { id: string; msgId: string; sender: string; body: string; timestamp: number }
+interface ChatMsg   { id: string; msgId: string; sender: string; body: string; timestamp: number; edited?: boolean }
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean; screenMuted: boolean; screenVolume: number }
-interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string; authToken?: string; ssePort?: number }
+interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string; authToken?: string; ssePort?: number; trusted?: boolean }
 interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string; ssePort?: number; fileServerPort?: number }
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
@@ -146,6 +146,34 @@ const BlobMedia = memo(function BlobMedia({ type, base64, mimeType, className }:
   return <audio src={src} controls preload="metadata" className={className} />;
 });
 
+// ── EditInput — inline message edit field ───────────────────
+
+function EditInput({ body, onSave, onCancel }: { body: string; onSave: (v: string) => void; onCancel: () => void }) {
+  const [value, setValue] = useState(body);
+  return (
+    <div className="mt-0.5">
+      <textarea
+        autoFocus
+        rows={Math.max(1, Math.ceil(value.length / 80))}
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (value.trim() && value.trim() !== body) onSave(value); else onCancel(); }
+          if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+        }}
+        className="w-full bg-[#0a0e0a] border border-green-700/60 rounded-lg px-3 py-2 text-sm text-green-400 outline-none focus:border-green-600 resize-none"
+      />
+      <div className="flex gap-2 mt-1 text-[10px] text-green-800">
+        <span>Enter to save</span>
+        <span>·</span>
+        <span>Esc to cancel</span>
+        <span>·</span>
+        <span>Shift+Enter for newline</span>
+      </div>
+    </div>
+  );
+}
+
 // ── Component ───────────────────────────────────────────────
 
 export function TerminalForum() {
@@ -217,11 +245,29 @@ export function TerminalForum() {
     catch { return 50; }
   });
 
+  type NotifLevel = 'all' | 'mentions' | 'none';
+  type NotifPrefs = Record<string, { _server?: NotifLevel; [ch: string]: NotifLevel | 'default' | undefined }>;
+  const [notifPrefs, setNotifPrefs] = useState<NotifPrefs>(() => {
+    try { return JSON.parse(localStorage.getItem('voip-notif-prefs') || '{}'); } catch { return {}; }
+  });
+  const notifPrefsRef = useRef<NotifPrefs>({});
+  useEffect(() => { notifPrefsRef.current = notifPrefs; try { localStorage.setItem('voip-notif-prefs', JSON.stringify(notifPrefs)); } catch {} }, [notifPrefs]);
+
   // Input
   const [input, setInput] = useState('');
   const [isAway, setIsAway] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+
+  // Typing indicators — per-room list of usernames currently typing
+  const [typingUsers, setTypingUsers] = useState<Record<string, string[]>>({});
+  const typingTimeoutsRef = useRef<Record<string, Record<string, ReturnType<typeof setTimeout>>>>({});
+  const typingLastSentRef = useRef<Record<string, number>>({}); // room → last-sent timestamp
+
+  // Reactions — msgId → (emoji → username[])
+  const [reactions, setReactions] = useState<Record<string, Record<string, string[]>>>({});
+  // Which message has the reaction picker open (msgId or null)
+  const [reactionPickerMsgId, setReactionPickerMsgId] = useState<string | null>(null);
   const [showGifPicker, setShowGifPicker] = useState(false);
   const [gifQuery, setGifQuery] = useState('');
   const [gifResults, setGifResults] = useState<Array<{ id: string; preview: string; url: string }>>([]);
@@ -229,12 +275,10 @@ export function TerminalForum() {
   const gifPickerRef = useRef<HTMLDivElement>(null);
   const gifDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Password dialog
-  const [pwDialog, setPwDialog] = useState<{ room: string; type: 'voice' | 'text' } | null>(null);
-  const [pwInput, setPwInput]   = useState('');
   const [password, setPassword] = useState('');
   const [isRegister, setIsRegister] = useState(false);
   const [msgContextMenu, setMsgContextMenu] = useState<MsgContextMenu | null>(null);
+  const [editingMsg, setEditingMsg] = useState<{ msgId: string; room: string; body: string } | null>(null);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; dataUrl: string } | null>(null);
   const [fileUploadStatus, setFileUploadStatus] = useState<string | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
@@ -281,6 +325,7 @@ export function TerminalForum() {
         address: s.address || `${s.host || '127.0.0.1'}:${s.port || s.tcpPort || '5001'}`,
         username: s.username, password: s.password, serverPassword: s.serverPassword,
         autoConnect: s.autoConnect, logo: s.logo, authToken: s.authToken, ssePort: s.ssePort,
+        trusted: s.trusted ?? false,
       }));
     } catch { return []; }
   });
@@ -290,6 +335,7 @@ export function TerminalForum() {
   const [addServerDialog, setAddServerDialog] = useState(false);
   const [newServerName, setNewServerName] = useState('');
   const [newServerAddress, setNewServerAddress] = useState('');
+  const [newServerTrusted, setNewServerTrusted] = useState(false);
   const [platform, setPlatform] = useState<string>('win32');
   const [keybinds, setKeybinds] = useState<Record<string, KeyBind | null>>(() => {
     try { return JSON.parse(localStorage.getItem('voip-keybinds') || '{}'); }
@@ -311,6 +357,8 @@ export function TerminalForum() {
   const [openDmTabs, setOpenDmTabs] = useState<DmTab[]>([]);
   const [activeDmTab, setActiveDmTab] = useState<string | null>(null); // username or null
   const [dmMessages, setDmMessages] = useState<Record<string, DmMessage[]>>({});
+  const [dmKeyFingerprints, setDmKeyFingerprints] = useState<Record<string, string>>({});
+  const [unlockedGifUrls, setUnlockedGifUrls] = useState<Set<string>>(new Set());
   const [dmInput, setDmInput] = useState('');
   const [pendingDmFile, setPendingDmFile] = useState<{ name: string; mimeType: string; base64: string; dataUrl: string } | null>(null);
   const [dmError, setDmError] = useState<string | null>(null);
@@ -375,6 +423,22 @@ export function TerminalForum() {
   const perUserSettingsRef = useRef<Record<string, UserSetting>>({});
   const notificationSoundsRef = useRef(true);
   const notificationVolumeRef = useRef(50);
+
+  // ── Notification preference helpers (use refs so IPC callbacks stay fresh) ──
+  const resolveNotifLevel = (sid: string, channel?: string): NotifLevel => {
+    const prefs = notifPrefsRef.current[sid];
+    const serverLevel: NotifLevel = (prefs?._server as NotifLevel) ?? 'all';
+    if (!channel) return serverLevel;
+    const chPref = prefs?.[channel];
+    if (!chPref || chPref === 'default') return serverLevel;
+    return chPref as NotifLevel;
+  };
+  const setServerNotifLevel = (sid: string, level: NotifLevel) => {
+    setNotifPrefs(prev => ({ ...prev, [sid]: { ...(prev[sid] ?? {}), _server: level } }));
+  };
+  const setChannelNotifLevel = (sid: string, channel: string, level: NotifLevel | 'default') => {
+    setNotifPrefs(prev => ({ ...prev, [sid]: { ...(prev[sid] ?? {}), [channel]: level } }));
+  };
   const prevVoiceUsersRef = useRef<Set<string>>(new Set());
   const uiSoundCtxRef = useRef<AudioContext | null>(null);
   const voiceServerIdRef = useRef<string | null>(null);
@@ -642,7 +706,16 @@ export function TerminalForum() {
   const [gateAttack, setGateAttack] = useState(() => { try { return parseInt(localStorage.getItem('voip-gate-attack') || '20'); } catch { return 20; } });
   const [gateHold, setGateHold] = useState(() => { try { return parseInt(localStorage.getItem('voip-gate-hold') || '100'); } catch { return 100; } });
   const [gateRelease, setGateRelease] = useState(() => { try { return parseInt(localStorage.getItem('voip-gate-release') || '300'); } catch { return 300; } });
+  const [pushToTalkMode, setPushToTalkMode] = useState(() => { try { return localStorage.getItem('voip-ptt-mode') === 'true'; } catch { return false; } });
+  const pushToTalkModeRef = useRef(false);
+  const [pttHeld, setPttHeld] = useState(false);
+  const pttHeldRef = useRef(false);
+  const [gateActive, setGateActive] = useState(false);
+  const gateActiveRef = useRef(false);
   const [userContextMenu, setUserContextMenu] = useState<UserContextMenu | null>(null);
+  const [roomContextMenu, setRoomContextMenu] = useState<{ type: 'text' | 'voice'; name: string; idx: number; x: number; y: number } | null>(null);
+  const [dragRoomIdx, setDragRoomIdx] = useState<{ type: 'text' | 'voice'; idx: number } | null>(null);
+  const [dragOverRoomIdx, setDragOverRoomIdx] = useState<{ type: 'text' | 'voice'; idx: number } | null>(null);
   const [perUserSettings, setPerUserSettings] = useState<Record<string, UserSetting>>({});
   const [uiScale, setUiScale] = useState(() => {
     try { return parseInt(localStorage.getItem('voip-ui-scale') || '100'); }
@@ -684,8 +757,14 @@ export function TerminalForum() {
   // Room management
   const [createRoomDialog, setCreateRoomDialog] = useState<{ type: 'voice' | 'text'; editing?: string } | null>(null);
   const [newRoomName, setNewRoomName] = useState('');
-  const [newRoomPassword, setNewRoomPassword] = useState('');
+  const [newRoomRoles, setNewRoomRoles] = useState<string[]>([]);
   const [newRoomBitrate, setNewRoomBitrate] = useState('96000');
+
+  // Role editing
+  const [editingRole, setEditingRole] = useState<string | null>(null);
+  const [editRoleName, setEditRoleName] = useState('');
+  const [editRoleColor, setEditRoleColor] = useState('#22c55e');
+  const [editRolePerms, setEditRolePerms] = useState<string[]>([]);
 
   // Wipe server confirmation
   const [wipeServerDialog, setWipeServerDialog] = useState(false);
@@ -1037,6 +1116,15 @@ export function TerminalForum() {
   useEffect(() => { gateAttackRef.current = gateAttack; if (captureRef.current) captureRef.current.port.postMessage({ attackMs: gateAttack }); try { localStorage.setItem('voip-gate-attack', String(gateAttack)); } catch {} }, [gateAttack]);
   useEffect(() => { gateHoldRef.current = gateHold; if (captureRef.current) captureRef.current.port.postMessage({ holdMs: gateHold }); try { localStorage.setItem('voip-gate-hold', String(gateHold)); } catch {} }, [gateHold]);
   useEffect(() => { gateReleaseRef.current = gateRelease; if (captureRef.current) captureRef.current.port.postMessage({ releaseMs: gateRelease }); try { localStorage.setItem('voip-gate-release', String(gateRelease)); } catch {} }, [gateRelease]);
+  useEffect(() => {
+    pushToTalkModeRef.current = pushToTalkMode;
+    try { localStorage.setItem('voip-ptt-mode', String(pushToTalkMode)); } catch {}
+    if (captureRef.current) captureRef.current.port.postMessage({ pttMode: pushToTalkMode });
+    if (!pushToTalkMode && pttHeldRef.current) {
+      pttHeldRef.current = false; setPttHeld(false);
+      captureRef.current?.port.postMessage({ pttHeld: false });
+    }
+  }, [pushToTalkMode]);
   useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
   useEffect(() => { connectedServerIdRef.current = connectedServerId; }, [connectedServerId]);
   useEffect(() => { currentVoiceRoomRef.current = currentVoiceRoom; }, [currentVoiceRoom]);
@@ -1135,15 +1223,23 @@ export function TerminalForum() {
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null);
+      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null); setRoomContextMenu(null);
       if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target as Node)) setShowEmojiPicker(false);
       if (gifPickerRef.current && !gifPickerRef.current.contains(e.target as Node)) { setShowGifPicker(false); setGifQuery(''); setGifResults([]); }
     };
-    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || showEmojiPicker) {
+    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || roomContextMenu || showEmojiPicker || reactionPickerMsgId) {
       document.addEventListener('click', handleClick);
       return () => document.removeEventListener('click', handleClick);
     }
-  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, showEmojiPicker]);
+  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, roomContextMenu, showEmojiPicker, reactionPickerMsgId]);
+
+  // Close reaction picker on outside click
+  useEffect(() => {
+    if (!reactionPickerMsgId) return;
+    const handler = () => setReactionPickerMsgId(null);
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
+  }, [reactionPickerMsgId]);
 
   // Keybind recording
   useEffect(() => {
@@ -1172,8 +1268,6 @@ export function TerminalForum() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [showSettings, hideUiOverlay]);
-
-  // Global keybind handler
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
@@ -1183,11 +1277,41 @@ export function TerminalForum() {
           e.preventDefault();
           if (action === 'toggleMute') setIsMuted(m => !m);
           else if (action === 'toggleDeafen') setIsDeafened(d => !d);
+          else if (action === 'pushToTalk' && pushToTalkModeRef.current && !e.repeat) {
+            if (!pttHeldRef.current) {
+              pttHeldRef.current = true;
+              setPttHeld(true);
+              captureRef.current?.port.postMessage({ pttHeld: true });
+            }
+          }
         }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Cancel inline message editing on Escape (global fallback)
+  useEffect(() => {
+    if (!editingMsg) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setEditingMsg(null); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [editingMsg]);
+
+  // PTT key-up handler
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!pushToTalkModeRef.current || !pttHeldRef.current) return;
+      const bind = keybindsRef.current.pushToTalk;
+      if (bind && e.key === bind.key) {
+        pttHeldRef.current = false;
+        setPttHeld(false);
+        captureRef.current?.port.postMessage({ pttHeld: false });
+      }
+    };
+    window.addEventListener('keyup', handler);
+    return () => window.removeEventListener('keyup', handler);
   }, []);
 
   // Browser-style back/forward via mouse buttons 3/4 and Alt+Arrow keys
@@ -1450,6 +1574,7 @@ export function TerminalForum() {
               sender: m.User || '',
               body: await e2eeDecryptText(m.Text || ''),
               timestamp: new Date(m.Time).getTime(),
+              edited: !!m.Edited,
             }))).then(formatted => {
               setRoomMessages(prev => {
                 const existing = prev[room] || [];
@@ -1480,7 +1605,36 @@ export function TerminalForum() {
           [room]: (prev[room] || []).filter(m => m.msgId !== msgId),
         }));
       }
+    } else if (line.startsWith('MSG_EDITED:')) {
+      // MSG_EDITED:<room>:<msgId>:<newText>
+      const payload = line.substring(11);
+      const i1 = payload.indexOf(':');
+      const i2 = i1 >= 0 ? payload.indexOf(':', i1 + 1) : -1;
+      if (i1 >= 0 && i2 >= 0) {
+        const room = payload.substring(0, i1);
+        const msgId = payload.substring(i1 + 1, i2);
+        const newText = payload.substring(i2 + 1);
+        e2eeDecryptText(newText).then(body => {
+          setRoomMessages(prev => ({
+            ...prev,
+            [room]: (prev[room] || []).map(m => m.msgId === msgId ? { ...m, body, edited: true } : m),
+          }));
+        });
+      }
     } else if (line.startsWith('MSG:')) {
+      // Clear typing indicator for the sender when their message arrives
+      const senderEnd = line.indexOf(':', line.indexOf(':', 4) + 1) + 1;
+      const senderColon = line.indexOf(':', senderEnd);
+      if (senderColon > 0) {
+        const senderName = line.substring(senderEnd, senderColon);
+        if (senderName) {
+          setTypingUsers(prev => {
+            const updated: Record<string, string[]> = {};
+            for (const [r, users] of Object.entries(prev)) updated[r] = users.filter(u => u !== senderName);
+            return updated;
+          });
+        }
+      }
       const payload = line.substring(4);
       const i1 = payload.indexOf(':');
       if (i1 < 0) return;
@@ -1496,9 +1650,12 @@ export function TerminalForum() {
       const text = rest2.substring(i3 + 1);
       const now = Date.now();
       if (sender !== nicknameRef.current) {
-        playUiSound('message');
-        if (viewModeRef.current !== 'text' || currentTextRoomRef.current !== room) {
-          setUnreadRooms(prev => new Set(prev).add(room));
+        const level = resolveNotifLevel(connectedServerIdRef.current ?? '', room);
+        if (level === 'all') playUiSound('message');
+        if (level !== 'none') {
+          if (viewModeRef.current !== 'text' || currentTextRoomRef.current !== room) {
+            setUnreadRooms(prev => new Set(prev).add(room));
+          }
         }
       }
       e2eeDecryptText(text).then(body => {
@@ -1507,6 +1664,43 @@ export function TerminalForum() {
           [room]: [...(prev[room] || []), { id: crypto.randomUUID(), msgId, sender, body, timestamp: now }],
         }));
       });
+    } else if (line.startsWith('TYPING:')) {
+      // TYPING:<room>:<username>
+      const payload = line.substring(7);
+      const idx = payload.indexOf(':');
+      if (idx >= 0) {
+        const room = payload.substring(0, idx);
+        const user = payload.substring(idx + 1);
+        if (!user || user === nicknameRef.current) return;
+        setTypingUsers(prev => ({ ...prev, [room]: [...new Set([...(prev[room] || []), user])] }));
+        if (!typingTimeoutsRef.current[room]) typingTimeoutsRef.current[room] = {};
+        if (typingTimeoutsRef.current[room][user]) clearTimeout(typingTimeoutsRef.current[room][user]);
+        typingTimeoutsRef.current[room][user] = setTimeout(() => {
+          setTypingUsers(prev => ({ ...prev, [room]: (prev[room] || []).filter(u => u !== user) }));
+        }, 3000);
+      }
+    } else if (line.startsWith('REACTIONS:')) {
+      // REACTIONS:<room>:<json> — bulk reaction state sent on room join
+      const payload = line.substring(10);
+      const idx = payload.indexOf(':');
+      if (idx >= 0) {
+        try {
+          const data: Record<string, Record<string, string[]>> = JSON.parse(payload.substring(idx + 1));
+          setReactions(prev => ({ ...prev, ...data }));
+        } catch {}
+      }
+    } else if (line.startsWith('MSG_REACT:')) {
+      // MSG_REACT:<room>:<msgId>:<json>  — updated reaction state for one message
+      const payload = line.substring(10);
+      const i1 = payload.indexOf(':');
+      const i2 = i1 >= 0 ? payload.indexOf(':', i1 + 1) : -1;
+      if (i1 >= 0 && i2 >= 0) {
+        const msgId = payload.substring(i1 + 1, i2);
+        try {
+          const data: Record<string, string[]> = JSON.parse(payload.substring(i2 + 1));
+          setReactions(prev => ({ ...prev, [msgId]: data }));
+        } catch {}
+      }
     } else if (line.startsWith('PINS:')) {
       // PINS:<room>:<json array of pinned messages>
       const payload = line.substring(5);
@@ -1610,10 +1804,13 @@ export function TerminalForum() {
         const sender = line.substring(i1 + 1, i2);
         const rawBody = line.substring(i2 + 1);
         const notifBody = rawBody && !rawBody.startsWith('ENC:') ? rawBody.substring(0, 100) : undefined;
-        playUiSound('message');
-        window.electronAPI.showNotification(`@${sender} i #${room}`, notifBody);
-        if (currentTextRoomRef.current !== room || viewModeRef.current !== 'text') {
-          setMentionedRooms(prev => ({ ...prev, [room]: (prev[room] || 0) + 1 }));
+        const level = resolveNotifLevel(connectedServerIdRef.current ?? '', room);
+        if (level !== 'none') {
+          playUiSound('message');
+          window.electronAPI.showNotification(`@${sender} i #${room}`, notifBody);
+          if (currentTextRoomRef.current !== room || viewModeRef.current !== 'text') {
+            setMentionedRooms(prev => ({ ...prev, [room]: (prev[room] || 0) + 1 }));
+          }
         }
       }
     } else if (line.startsWith('DM_KEY:')) {
@@ -1628,6 +1825,12 @@ export function TerminalForum() {
           deriveDmSharedKey(pubKeyB64).then(key => {
             if (key) dmSharedKeysRef.current.set(username, key);
             callbacks.forEach(cb => cb(key));
+          });
+          const raw = Uint8Array.from(atob(pubKeyB64), c => c.charCodeAt(0));
+          crypto.subtle.digest('SHA-256', raw).then(hash => {
+            const fp = Array.from(new Uint8Array(hash).slice(0, 8))
+              .map(b => b.toString(16).padStart(2, '0')).join(':');
+            setDmKeyFingerprints(prev => ({ ...prev, [username]: fp }));
           });
         } else {
           callbacks.forEach(cb => cb(null));
@@ -1649,8 +1852,9 @@ export function TerminalForum() {
           if (activeDmTabRef.current !== fromUser) {
             setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
           }
-          if (notificationSoundsRef.current) playUiSound('message');
-          window.electronAPI.showNotification(`DM from ${fromUser}`, body.substring(0, 100));
+          const dmLevel = resolveNotifLevel(connectedServerIdRef.current ?? '');
+          if (notificationSoundsRef.current && dmLevel !== 'none') playUiSound('message');
+          if (dmLevel !== 'none') window.electronAPI.showNotification(`DM from ${fromUser}`, body.substring(0, 100));
         };
         if (rawText.startsWith('DMENC:')) {
           const cachedKey = dmSharedKeysRef.current.get(fromUser);
@@ -2028,11 +2232,19 @@ export function TerminalForum() {
         channelCount: 1,
         channelCountMode: 'explicit',
       });
-      capture.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-        if (!isMutedRef.current) window.electronAPI.sendAudio(e.data);
+      capture.port.onmessage = (e: MessageEvent) => {
+        if (e.data instanceof ArrayBuffer) {
+          if (!isMutedRef.current) window.electronAPI.sendAudio(e.data);
+        } else if (e.data?.type === 'status') {
+          const suppressing = (e.data.gateGain as number) < 0.99;
+          if (suppressing !== gateActiveRef.current) {
+            gateActiveRef.current = suppressing;
+            setGateActive(suppressing);
+          }
+        }
       };
       source.connect(capture);
-      capture.port.postMessage({ sensitivity: inputSensitivityRef.current / 100, attackMs: gateAttackRef.current, holdMs: gateHoldRef.current, releaseMs: gateReleaseRef.current });
+      capture.port.postMessage({ sensitivity: inputSensitivityRef.current / 100, attackMs: gateAttackRef.current, holdMs: gateHoldRef.current, releaseMs: gateReleaseRef.current, pttMode: pushToTalkModeRef.current, pttHeld: pttHeldRef.current });
       const silent = ctx.createGain();
       silent.gain.value = 0;
       capture.connect(silent);
@@ -2567,8 +2779,21 @@ export function TerminalForum() {
   }
 
   function renderMessageBody(body: string) {
+    const isServerTrusted = pinnedServers.find(s => s.id === connectedServerIdRef.current)?.trusted ?? false;
     if (body.startsWith('__GIF__:')) {
       const url = body.substring('__GIF__:'.length);
+      if (!isServerTrusted && !unlockedGifUrls.has(url)) {
+        return (
+          <div className="mt-1">
+            <button
+              onClick={() => setUnlockedGifUrls(prev => new Set(prev).add(url))}
+              className="flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/30 rounded-lg px-3 py-2 text-[10px] text-yellow-700 hover:bg-yellow-900/30 transition-all">
+              <Shield className="w-3 h-3 flex-shrink-0" />
+              <span>GIF blocked — untrusted server. Click to load (reveals your IP to the image host).</span>
+            </button>
+          </div>
+        );
+      }
       return (
         <div className="mt-1">
           <img src={url} alt="GIF"
@@ -2635,7 +2860,8 @@ export function TerminalForum() {
             </div>
             {fileUrl && (
               <a href={fileUrl} download={fileName}
-                className="p-2 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all">
+                className="p-2 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all"
+                title={isServerTrusted ? undefined : 'Untrusted server — verify this file before opening'}>
                 <Download className="w-4 h-4" />
               </a>
             )}
@@ -3058,10 +3284,12 @@ export function TerminalForum() {
       id: crypto.randomUUID(),
       name: newServerName.trim() || newServerAddress.trim(),
       address: newServerAddress.trim(),
+      trusted: newServerTrusted,
     }]);
     setAddServerDialog(false);
     setNewServerName('');
     setNewServerAddress('');
+    setNewServerTrusted(false);
   };
 
   const unpinServer = (serverId: string) => {
@@ -3073,6 +3301,13 @@ export function TerminalForum() {
   const logoutServer = (serverId: string) => {
     setPinnedServers(prev => prev.map(s =>
       s.id === serverId ? { ...s, username: undefined, password: undefined } : s
+    ));
+    setServerContextMenu(null);
+  };
+
+  const toggleServerTrust = (serverId: string) => {
+    setPinnedServers(prev => prev.map(s =>
+      s.id === serverId ? { ...s, trusted: !s.trusted } : s
     ));
     setServerContextMenu(null);
   };
@@ -3195,25 +3430,14 @@ export function TerminalForum() {
     setViewModeTracked('voice');
     if (room.name === currentVoiceRoom && voiceServerIdRef.current === connectedServerIdRef.current) return;
     await ensureVoiceOnCurrentServer();
-    if (room.hasPassword) { setPwDialog({ room: room.name, type: 'voice' }); setPwInput(''); }
-    else sendToServer(`CMD:JOIN_VOICE:${room.name}`);
+    sendToServer(`CMD:JOIN_VOICE:${room.name}`);
   };
 
   const joinText = (room: TextRoom) => {
     if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId, view: 'text', textRoom: room.name });
     setViewModeTracked('text');
     if (joinedTextRooms.has(room.name)) { setCurrentText(room.name); return; }
-    if (room.hasPassword) { setPwDialog({ room: room.name, type: 'text' }); setPwInput(''); }
-    else sendToServer(`CMD:JOIN_TEXT:${room.name}`);
-  };
-
-  const handlePwSubmit = async () => {
-    if (!pwDialog || !pwInput) return;
-    if (pwDialog.type === 'voice') await ensureVoiceOnCurrentServer();
-    const cmd = pwDialog.type === 'voice' ? 'JOIN_VOICE' : 'JOIN_TEXT';
-    sendToServer(`CMD:${cmd}:${pwDialog.room}:${pwInput}`);
-    setPwDialog(null);
-    setPwInput('');
+    sendToServer(`CMD:JOIN_TEXT:${room.name}`);
   };
 
   const leaveVoice = () => {
@@ -3301,7 +3525,13 @@ export function TerminalForum() {
                 <Terminal className="w-4 h-4 shrink-0 mr-2 ml-2" />
                 <span className="text-xs font-bold">ECHO</span>
               </div>
-              <div className="w-[70px]" />
+              <div className="w-[70px] flex items-center justify-end pr-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                <button onClick={() => { setShowSettings(true); refreshDevices(); }}
+                  className="p-2 rounded-lg text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-colors"
+                  title="Settings">
+                  <Settings className="w-4 h-4" />
+                </button>
+              </div>
             </>
           ) : (
             <>
@@ -3322,6 +3552,11 @@ export function TerminalForum() {
                 <span className="text-xs font-bold">ECHO</span>
               </div>
               <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                <button onClick={() => { setShowSettings(true); refreshDevices(); }}
+                  className="px-3 py-2 text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-colors"
+                  title="Settings">
+                  <Settings className="w-4 h-4" />
+                </button>
                 <button onClick={() => window.electronAPI.minimizeWindow()}
                   className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Minimize">
                   <Minus className="w-4 h-4" />
@@ -3451,6 +3686,11 @@ export function TerminalForum() {
                       {server.autoConnect && server.authToken && (
                         <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Autoconnect active">
                           <Wifi className="w-2 h-2 text-white" />
+                        </div>
+                      )}
+                      {!server.trusted && (
+                        <div className="absolute -top-1 -left-1 w-4 h-4 bg-yellow-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Untrusted server — GIFs blocked, file downloads may be unsafe">
+                          <Shield className="w-2.5 h-2.5 text-white" />
                         </div>
                       )}
                     </div>
@@ -3617,6 +3857,12 @@ export function TerminalForum() {
                     {isRegister ? <UserPlus className="w-5 h-5" /> : <LogIn className="w-5 h-5" />}
                     {connecting ? (isRegister ? 'REGISTERING...' : 'LOGGING IN...') : (isRegister ? 'REGISTER' : 'LOG IN')}
                   </button>
+                  {isRegister && (
+                    <div className="flex items-start gap-2 bg-yellow-900/20 border border-yellow-800/30 rounded-lg px-3 py-2.5 text-[10px] text-yellow-700 leading-relaxed">
+                      <Shield className="w-3 h-3 mt-0.5 flex-shrink-0 text-yellow-700" />
+                      <span>The server operator can see your password. Use a unique password not shared with other services.</span>
+                    </div>
+                  )}
                   <div className="pt-2 text-center">
                     <span className="text-xs text-green-700">{status}</span>
                   </div>
@@ -3651,11 +3897,28 @@ export function TerminalForum() {
                     placeholder="Leave empty to use server name"
                     className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
                 </div>
+                <label className="flex items-center gap-3 cursor-pointer select-none group">
+                  <div className={`w-5 h-5 rounded flex items-center justify-center border-2 transition-all flex-shrink-0 ${
+                    newServerTrusted
+                      ? 'bg-green-600 border-green-600'
+                      : 'bg-transparent border-green-800 group-hover:border-green-600'
+                  }`}>
+                    {newServerTrusted && <Check className="w-3 h-3 text-white" />}
+                  </div>
+                  <input type="checkbox" className="sr-only" checked={newServerTrusted} onChange={e => setNewServerTrusted(e.target.checked)} />
+                  <span className="text-sm text-green-500">I trust this server</span>
+                </label>
                 <button onClick={addPinnedServer} disabled={!newServerAddress.trim()}
                   className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
                   <Plus className="w-5 h-5" />
                   ADD SERVER
                 </button>
+                {!newServerTrusted && (
+                  <div className="flex items-start gap-2 bg-yellow-900/20 border border-yellow-800/30 rounded-lg px-3 py-2.5 text-[10px] text-yellow-700 leading-relaxed">
+                    <Shield className="w-3 h-3 mt-0.5 flex-shrink-0 text-yellow-700" />
+                    <span>Untrusted — GIFs will be blocked and file downloads will show a warning. The server operator can still see your username, password, and all non-DM messages. Use a unique password.</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -3703,11 +3966,32 @@ export function TerminalForum() {
                   <span>Log out</span>
                 </button>
               )}
+              <button onClick={() => toggleServerTrust(server.id)}
+                className={`w-full px-4 py-2.5 rounded-lg transition-all flex items-center gap-2 text-sm ${server.trusted ? 'text-yellow-400 hover:bg-yellow-900/30' : 'text-green-400 hover:bg-green-900/30'}`}>
+                <Shield className="w-4 h-4" />
+                <span>{server.trusted ? 'Mark as untrusted' : 'Mark as trusted'}</span>
+              </button>
               <button onClick={() => unpinServer(server.id)}
                 className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
                 <Trash2 className="w-4 h-4" />
                 <span>Remove server</span>
               </button>
+              <div className="border-t border-green-900/30 mt-1 pt-1 px-2 pb-1">
+                <div className="text-[10px] text-green-700 mb-1.5 flex items-center gap-1"><Bell className="w-3 h-3" /> NOTIFICATIONS</div>
+                <div className="flex gap-1">
+                  {(['all', 'mentions', 'none'] as const).map(level => {
+                    const current = resolveNotifLevel(server.id);
+                    const active = current === level;
+                    const labels = { all: '🔔 All', mentions: '🔕 @only', none: '🚫 Off' };
+                    return (
+                      <button key={level} onClick={() => { setServerNotifLevel(server.id, level); setServerContextMenu(null); }}
+                        className={`flex-1 py-1 rounded text-[10px] transition-all ${active ? 'bg-green-900/60 text-green-300 font-bold' : 'text-green-700 hover:bg-green-900/30 hover:text-green-500'}`}>
+                        {labels[level]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           );
         })()}
@@ -4011,10 +4295,21 @@ export function TerminalForum() {
             <div className="px-4 py-3 border-b border-green-900/30 flex items-center gap-3 shrink-0">
               <Send className="w-4 h-4 text-green-600" />
               <span className="text-sm text-green-400 font-bold">DM — {activeDmTab}</span>
-              <span className="ml-auto flex items-center gap-1 text-[10px] text-green-700" title="End-to-end encrypted with ECDH P-256 + AES-256-GCM">
-                <Lock className="w-3 h-3 text-green-600" />
-                E2EE
-              </span>
+              <div className="ml-auto flex flex-col items-end gap-0.5">
+                <span className="flex items-center gap-1 text-[10px] text-green-700" title="End-to-end encrypted with ECDH P-256 + AES-256-GCM">
+                  <Lock className="w-3 h-3 text-green-600" />
+                  E2EE
+                </span>
+                {dmKeyFingerprints[activeDmTab] ? (
+                  <span className="text-[9px] text-green-800 font-mono tracking-tight" title="Key fingerprint — verify with your contact out-of-band to confirm no server MITM">
+                    {dmKeyFingerprints[activeDmTab]}
+                  </span>
+                ) : (
+                  <span className="text-[9px] text-yellow-800" title="Peer key not yet received — fingerprint unavailable">
+                    key pending
+                  </span>
+                )}
+              </div>
             </div>
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -4177,7 +4472,7 @@ export function TerminalForum() {
               <div className="flex items-center justify-between">
                 <div className="text-xs text-green-700">TEXT CHANNELS</div>
                 {hasPermission('create_rooms') && (
-                  <button onClick={() => { setCreateRoomDialog({ type: 'text' }); setNewRoomName(''); setNewRoomPassword(''); }}
+                  <button onClick={() => { setCreateRoomDialog({ type: 'text' }); setNewRoomName(''); setNewRoomRoles([]); }}
                     className="p-1 text-green-700 hover:text-green-400 transition-colors" title="Create text channel">
                     <Plus className="w-3.5 h-3.5" />
                   </button>
@@ -4185,58 +4480,59 @@ export function TerminalForum() {
               </div>
             </div>
             <div className="p-3">
-              {textRooms.map((r, idx) => (
-                <div key={r.name} className="group/room mb-2 flex items-center gap-1">
-                  <button onClick={() => joinText(r)}
-                    className={`flex-1 text-left px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all ${
-                      currentTextRoom === r.name && viewMode === 'text' && !activeDmTab
-                        ? 'bg-green-900/40 text-green-400 shadow-md shadow-green-900/30'
-                        : mentionedRooms[r.name]
-                          ? 'bg-red-900/20 text-white font-bold hover:bg-red-900/30'
-                          : unreadRooms.has(r.name)
-                            ? 'text-green-400 font-bold hover:bg-green-900/20'
-                            : 'text-green-700 hover:bg-green-900/20'
-                    }`}>
-                    {r.hasPassword ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
-                    <span className="text-sm truncate flex-1">{r.name}</span>
-                    {mentionedRooms[r.name] ? (
-                      <span className="w-4 h-4 bg-red-500 rounded-full flex items-center justify-center text-[9px] text-white font-bold shrink-0">
-                        {mentionedRooms[r.name] > 9 ? '9+' : mentionedRooms[r.name]}
-                      </span>
-                    ) : unreadRooms.has(r.name) ? (
-                      <span className="w-2 h-2 bg-green-500 rounded-full shrink-0" />
-                    ) : null}
-                  </button>
-                  {(hasPermission('reorder_rooms') || hasPermission('delete_rooms') || hasPermission('create_rooms')) && (
-                    <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
-                      {hasPermission('create_rooms') && (
-                        <button onClick={() => { setCreateRoomDialog({ type: 'text', editing: r.name }); setNewRoomName(r.name); setNewRoomPassword(''); }}
-                          className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Edit channel">
-                          <Pencil className="w-3 h-3" />
-                        </button>
-                      )}
-                      {hasPermission('reorder_rooms') && idx > 0 && (
-                        <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; sendToServer(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
-                          className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move up">
-                          <ChevronUp className="w-3 h-3" />
-                        </button>
-                      )}
-                      {hasPermission('reorder_rooms') && idx < textRooms.length - 1 && (
-                        <button onClick={() => { const names = textRooms.map(x => x.name); [names[idx], names[idx + 1]] = [names[idx + 1], names[idx]]; sendToServer(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`); }}
-                          className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move down">
-                          <ChevronDown className="w-3 h-3" />
-                        </button>
-                      )}
-                      {hasPermission('delete_rooms') && (
-                        <button onClick={() => { if (confirm(`Delete text channel "${r.name}"?`)) sendToServer(`CMD:DELETE_TEXT_ROOM:${r.name}`); }}
-                          className="p-0.5 text-green-800 hover:text-red-400 transition-colors" title="Delete channel">
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
+              {textRooms.map((r, idx) => {
+                const isDraggingText = dragRoomIdx?.type === 'text' && dragRoomIdx.idx === idx;
+                const isDragOverText = dragOverRoomIdx?.type === 'text' && dragOverRoomIdx.idx === idx && !isDraggingText;
+                return (
+                  <div
+                    key={r.name}
+                    className={`mb-2 rounded-lg transition-all ${isDraggingText ? 'opacity-50' : ''} ${isDragOverText ? 'ring-1 ring-green-500/50' : ''}`}
+                    draggable={hasPermission('reorder_rooms')}
+                    onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragRoomIdx({ type: 'text', idx }); }}
+                    onDragOver={(e) => { e.preventDefault(); setDragOverRoomIdx({ type: 'text', idx }); }}
+                    onDragLeave={() => { if (dragOverRoomIdx?.type === 'text' && dragOverRoomIdx.idx === idx) setDragOverRoomIdx(null); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragRoomIdx?.type === 'text' && dragRoomIdx.idx !== idx) {
+                        const names = textRooms.map(x => x.name);
+                        const [removed] = names.splice(dragRoomIdx.idx, 1);
+                        names.splice(idx, 0, removed);
+                        sendToServer(`CMD:REORDER_TEXT_ROOMS:${names.join(',')}`);
+                      }
+                      setDragRoomIdx(null); setDragOverRoomIdx(null);
+                    }}
+                    onDragEnd={() => { setDragRoomIdx(null); setDragOverRoomIdx(null); }}>
+                    <button
+                      onClick={() => joinText(r)}
+                      onContextMenu={(e) => { e.preventDefault(); setRoomContextMenu({ type: 'text', name: r.name, idx, x: e.clientX, y: e.clientY }); }}
+                      className={`w-full text-left px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all ${
+                        currentTextRoom === r.name && viewMode === 'text' && !activeDmTab
+                          ? 'bg-green-900/40 text-green-400 shadow-md shadow-green-900/30'
+                          : mentionedRooms[r.name]
+                            ? 'bg-red-900/20 text-white font-bold hover:bg-red-900/30'
+                            : unreadRooms.has(r.name)
+                              ? 'text-green-400 font-bold hover:bg-green-900/20'
+                              : 'text-green-700 hover:bg-green-900/20'
+                      }`}>
+                      {r.allowedRoles.length > 0 ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
+                      <span className="text-sm truncate flex-1">{r.name}</span>
+                      {connectedServerId && (() => {
+                        const chPref = notifPrefs[connectedServerId]?.[r.name];
+                        if (chPref === 'none') return <span title="Muted"><BellOff className="w-3 h-3 text-green-800/60 shrink-0" /></span>;
+                        if (chPref === 'mentions') return <span title="Mentions only"><Bell className="w-3 h-3 text-green-800/60 shrink-0" /></span>;
+                        return null;
+                      })()}
+                      {mentionedRooms[r.name] ? (
+                        <span className="w-4 h-4 bg-red-500 rounded-full flex items-center justify-center text-[9px] text-white font-bold shrink-0">
+                          {mentionedRooms[r.name] > 9 ? '9+' : mentionedRooms[r.name]}
+                        </span>
+                      ) : unreadRooms.has(r.name) ? (
+                        <span className="w-2 h-2 bg-green-500 rounded-full shrink-0" />
+                      ) : null}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
 
             {/* Voice channels */}
@@ -4244,7 +4540,7 @@ export function TerminalForum() {
               <div className="flex items-center justify-between">
                 <div className="text-xs text-green-700">VOICE CHANNELS</div>
                 {hasPermission('create_rooms') && (
-                  <button onClick={() => { setCreateRoomDialog({ type: 'voice' }); setNewRoomName(''); setNewRoomPassword(''); setNewRoomBitrate('96000'); }}
+                  <button onClick={() => { setCreateRoomDialog({ type: 'voice' }); setNewRoomName(''); setNewRoomRoles([]); setNewRoomBitrate('96000'); }}
                     className="p-1 text-green-700 hover:text-green-400 transition-colors" title="Create voice channel">
                     <Plus className="w-3.5 h-3.5" />
                   </button>
@@ -4254,47 +4550,38 @@ export function TerminalForum() {
             <div className="p-3">
               {voiceRooms.map((r, idx) => {
                 const usersInChannel = onlineUsers.filter(u => u.online && u.voiceRoom === r.name);
+                const isDraggingVoice = dragRoomIdx?.type === 'voice' && dragRoomIdx.idx === idx;
+                const isDragOverVoice = dragOverRoomIdx?.type === 'voice' && dragOverRoomIdx.idx === idx && !isDraggingVoice;
                 return (
-                  <div key={r.name} className="mb-2">
-                    <div className="group/room flex items-center gap-1">
-                      <button onClick={() => joinVoice(r)}
-                        className={`flex-1 text-left px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all ${
-                          currentVoiceRoom === r.name
-                            ? 'bg-green-900/40 text-green-400 shadow-md shadow-green-900/30'
-                            : 'hover:bg-green-900/20 text-green-600'
-                        }`}>
-                        {r.hasPassword ? <Lock className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                        <span className="text-sm truncate">{r.name}</span>
-                      </button>
-                      {(hasPermission('reorder_rooms') || hasPermission('delete_rooms') || hasPermission('create_rooms')) && (
-                        <div className="hidden group-hover/room:flex items-center gap-0.5 shrink-0">
-                          {hasPermission('create_rooms') && (
-                            <button onClick={() => { setCreateRoomDialog({ type: 'voice', editing: r.name }); setNewRoomName(r.name); setNewRoomPassword(''); setNewRoomBitrate(String(r.bitrate)); }}
-                              className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Edit channel">
-                              <Pencil className="w-3 h-3" />
-                            </button>
-                          )}
-                          {hasPermission('reorder_rooms') && idx > 0 && (
-                            <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx - 1], names[idx]] = [names[idx], names[idx - 1]]; sendToServer(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
-                              className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move up">
-                              <ChevronUp className="w-3 h-3" />
-                            </button>
-                          )}
-                          {hasPermission('reorder_rooms') && idx < voiceRooms.length - 1 && (
-                            <button onClick={() => { const names = voiceRooms.map(x => x.name); [names[idx], names[idx + 1]] = [names[idx + 1], names[idx]]; sendToServer(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`); }}
-                              className="p-0.5 text-green-800 hover:text-green-400 transition-colors" title="Move down">
-                              <ChevronDown className="w-3 h-3" />
-                            </button>
-                          )}
-                          {hasPermission('delete_rooms') && (
-                            <button onClick={() => { if (confirm(`Delete voice channel "${r.name}"?`)) sendToServer(`CMD:DELETE_VOICE_ROOM:${r.name}`); }}
-                              className="p-0.5 text-green-800 hover:text-red-400 transition-colors" title="Delete channel">
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                  <div
+                    key={r.name}
+                    className={`mb-2 rounded-lg transition-all ${isDraggingVoice ? 'opacity-50' : ''} ${isDragOverVoice ? 'ring-1 ring-green-500/50' : ''}`}
+                    draggable={hasPermission('reorder_rooms')}
+                    onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragRoomIdx({ type: 'voice', idx }); }}
+                    onDragOver={(e) => { e.preventDefault(); setDragOverRoomIdx({ type: 'voice', idx }); }}
+                    onDragLeave={() => { if (dragOverRoomIdx?.type === 'voice' && dragOverRoomIdx.idx === idx) setDragOverRoomIdx(null); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragRoomIdx?.type === 'voice' && dragRoomIdx.idx !== idx) {
+                        const names = voiceRooms.map(x => x.name);
+                        const [removed] = names.splice(dragRoomIdx.idx, 1);
+                        names.splice(idx, 0, removed);
+                        sendToServer(`CMD:REORDER_VOICE_ROOMS:${names.join(',')}`);
+                      }
+                      setDragRoomIdx(null); setDragOverRoomIdx(null);
+                    }}
+                    onDragEnd={() => { setDragRoomIdx(null); setDragOverRoomIdx(null); }}>
+                    <button
+                      onClick={() => joinVoice(r)}
+                      onContextMenu={(e) => { e.preventDefault(); setRoomContextMenu({ type: 'voice', name: r.name, idx, x: e.clientX, y: e.clientY }); }}
+                      className={`w-full text-left px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all ${
+                        currentVoiceRoom === r.name
+                          ? 'bg-green-900/40 text-green-400 shadow-md shadow-green-900/30'
+                          : 'hover:bg-green-900/20 text-green-600'
+                      }`}>
+                      {r.allowedRoles.length > 0 ? <Lock className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                      <span className="text-sm truncate">{r.name}</span>
+                    </button>
                     {usersInChannel.length > 0 && (
                       <div className="ml-6 mt-1 space-y-1">
                         {usersInChannel.map(u => (
@@ -4369,13 +4656,26 @@ export function TerminalForum() {
           {/* User controls at bottom */}
           <div className="p-4 border-t border-green-900/30 bg-[#0d120d]/40">
             <div className="flex items-center gap-3 mb-3">
-              <UserAvatar name={nickname} size="md" />
+              <div className="relative group/avatar shrink-0">
+                <UserAvatar name={nickname} size="md" />
+                <button onClick={openAvatarPicker}
+                  className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-full opacity-0 group-hover/avatar:opacity-100 transition-opacity"
+                  title="Change profile picture">
+                  <ImageIcon className="w-3 h-3 text-white" />
+                </button>
+              </div>
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-green-500 truncate">{nickname}</div>
                 <div className={`text-xs ${isAway ? 'text-yellow-500' : 'text-green-700'}`}>{isAway ? 'away' : 'online'}</div>
               </div>
             </div>
             <div className="flex items-center flex-wrap gap-1">
+              {pushToTalkMode && currentVoiceRoom && (
+                <div className={`px-2 py-1 rounded text-[10px] font-bold transition-all select-none ${pttHeld ? 'bg-green-900/60 text-green-300' : 'bg-red-900/30 text-red-400'}`}
+                  title="Push-to-Talk active">
+                  PTT
+                </div>
+              )}
               <button onClick={() => setIsMuted(!isMuted)}
                 className={`p-2 rounded-lg transition-all ${isMuted ? 'bg-red-900/40 text-red-500 hover:bg-red-900/60' : 'bg-green-900/20 text-green-600 hover:bg-green-900/40'}`}
                 title={isMuted ? 'Unmute' : 'Mute'}>
@@ -4477,7 +4777,10 @@ export function TerminalForum() {
                       const isLocal = u.name === nickname;
                       const isSelected = selectedVideoFeed === u.name;
                       if (selectedVideoFeed && !isSelected) return null;
-                      const isSpeaking = isLocal ? (micLevel > 0.05 && !isMuted) : speakingUsers.has(u.name);
+                      const isSpeaking = isLocal
+                        ? (pushToTalkMode ? pttHeld : (micLevel > 0.05 && !isMuted))
+                        : speakingUsers.has(u.name);
+                      const isGateSuppressing = isLocal && !pushToTalkMode && gateActive && inputSensitivity > 0 && micLevel > 0.05;
                       return (
                         <div key={u.name}
                           onClick={() => setSelectedVideoFeed(isSelected ? null : u.name)}
@@ -4487,9 +4790,17 @@ export function TerminalForum() {
                               ? 'h-full border-green-500 shadow-lg shadow-green-900/50'
                               : isSpeaking
                                 ? 'shadow-lg'
-                                : 'border-green-900/30 hover:border-green-700/50'
+                                : isGateSuppressing
+                                  ? 'border-yellow-600/60'
+                                  : 'border-green-900/30 hover:border-green-700/50'
                           }`}
-                          style={!isSelected && isSpeaking ? { borderColor: '#4ade80', '--tw-shadow-color': 'rgba(34, 197, 94, 0.5)' } as React.CSSProperties : undefined}>
+                          style={!isSelected ? (isSpeaking ? { borderColor: '#4ade80', '--tw-shadow-color': 'rgba(34, 197, 94, 0.5)' } as React.CSSProperties : isGateSuppressing ? { borderColor: '#ca8a04' } : undefined) : undefined}>
+                          {isGateSuppressing && (
+                            <div className="absolute top-1 left-1 z-20 px-1.5 py-0.5 rounded text-[9px] font-bold bg-yellow-900/80 text-yellow-400 pointer-events-none">GATED</div>
+                          )}
+                          {isLocal && pushToTalkMode && (
+                            <div className={`absolute top-1 right-1 z-20 px-1.5 py-0.5 rounded text-[9px] font-bold pointer-events-none ${pttHeld ? 'bg-green-900/80 text-green-300' : 'bg-red-900/80 text-red-400'}`}>PTT</div>
+                          )}
                           <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-green-950/50 to-green-900/30">
                             {isLocal ? (
                               (isCameraOn || isScreenSharing) ? (
@@ -4639,11 +4950,14 @@ export function TerminalForum() {
                         const isSelf = u.name === nickname;
                         const userMuted = isSelf ? isMuted : u.muted;
                         const userDeafened = isSelf ? isDeafened : u.deafened;
-                        const isSpeaking = isSelf ? (micLevel > 0.05 && !isMuted) : speakingUsers.has(u.name);
+                        const isSpeaking = isSelf
+                          ? (pushToTalkMode ? pttHeld : (micLevel > 0.05 && !isMuted))
+                          : speakingUsers.has(u.name);
+                        const isGateSuppressing = isSelf && !pushToTalkMode && gateActive && inputSensitivity > 0 && micLevel > 0.05;
                         return (
                         <div key={u.name} className="flex flex-col items-center">
                           <div className={`w-32 h-32 rounded-full ring-2 shadow-lg mb-3 relative overflow-visible transition-all duration-200 ${
-                            !isSpeaking ? 'ring-green-900/50 shadow-green-900/50' : ''
+                            isSpeaking ? '' : isGateSuppressing ? 'ring-yellow-600/50 shadow-yellow-900/30' : 'ring-green-900/50 shadow-green-900/50'
                           }`}
                             style={isSpeaking ? { '--tw-ring-color': '#4ade80', '--tw-shadow-color': 'rgba(34, 197, 94, 0.5)' } as React.CSSProperties : undefined}>
                             {u.avatar ? (
@@ -4652,6 +4966,12 @@ export function TerminalForum() {
                               <div className="w-32 h-32 rounded-full bg-green-900/40 flex items-center justify-center">
                                 <span className="text-4xl font-bold" style={{ color: u.roleColor || '#22c55e' }}>{u.name.charAt(0).toUpperCase()}</span>
                               </div>
+                            )}
+                            {isSelf && pushToTalkMode && (
+                              <div className={`absolute -top-1 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded text-[10px] font-bold ${pttHeld ? 'bg-green-900/90 text-green-300' : 'bg-red-900/80 text-red-400'}`}>PTT</div>
+                            )}
+                            {isSelf && isGateSuppressing && (
+                              <div className="absolute -top-1 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-900/90 text-yellow-400">GATED</div>
                             )}
                             {(userMuted || userDeafened) && (
                               <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 flex gap-1">
@@ -4863,11 +5183,48 @@ export function TerminalForum() {
                   const senderColor = senderUser?.roleColor || undefined;
                   const isMention = nickname && !msg.body.startsWith('__FILE__:') && msg.body.toLowerCase().includes(`@${nickname.toLowerCase()}`);
                   const mentionBg = isMention ? 'bg-yellow-500/10 border-l-2 border-yellow-500/50' : '';
+                  const canEdit = msg.msgId && (msg.sender === nickname || hasPermission('delete_messages')) && !msg.body.startsWith('__FILE__:') && !msg.body.startsWith('__GIF__:') && !msg.body.startsWith('__FILE_REF__:');
+                  const isEditing = editingMsg?.msgId === msg.msgId;
+                  const msgReactions = msg.msgId ? (reactions[msg.msgId] || {}) : {};
+                  const hasReactions = Object.keys(msgReactions).length > 0;
+                  const reactionBar = msg.msgId ? (
+                    <div className="pl-8 flex flex-wrap items-center gap-1 mt-1">
+                      {Object.entries(msgReactions).map(([emoji, users]) => (
+                        <button key={emoji} type="button"
+                          onClick={() => sendToServer(`CMD:REACT:${currentTextRoom}:${msg.msgId}:${emoji}`)}
+                          title={users.join(', ')}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-all ${
+                            users.includes(nickname)
+                              ? 'bg-green-900/40 border-green-700/50 text-green-300'
+                              : 'bg-transparent border-green-900/30 text-green-700 hover:border-green-700/40 hover:text-green-500'
+                          }`}>
+                          <span>{emoji}</span><span>{users.length}</span>
+                        </button>
+                      ))}
+                      <button type="button"
+                        onClick={() => setReactionPickerMsgId(prev => prev === msg.msgId ? null : msg.msgId)}
+                        className="opacity-0 group-hover:opacity-100 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs border border-green-900/30 text-green-800 hover:border-green-700/40 hover:text-green-600 transition-all">
+                        <SmilePlus className="w-3 h-3" />
+                      </button>
+                      {reactionPickerMsgId === msg.msgId && (
+                        <div className="absolute z-50 mt-1 bg-[#0d120d] border border-green-900/50 rounded-lg shadow-xl shadow-black/40 p-2 flex flex-wrap gap-1 w-56">
+                          {['👍','👎','❤️','😂','😮','😢','😡','🔥','✅','🎉','💯','👀','💀','🤔','🙏','💪','⭐','🥳'].map(e => (
+                            <button key={e} type="button"
+                              onClick={() => { sendToServer(`CMD:REACT:${currentTextRoom}:${msg.msgId}:${e}`); setReactionPickerMsgId(null); }}
+                              className="w-8 h-8 flex items-center justify-center text-lg hover:bg-green-900/30 rounded transition-all">
+                              {e}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : null;
                   return (
-                  <div key={msg.id} className={`group ${mentionBg}`}
+                  <div key={msg.id} className={`group relative ${mentionBg}`}
                     onContextMenu={(e) => {
                       if (msg.msgId) {
                         e.preventDefault();
+                        setReactionPickerMsgId(null);
                         setMsgContextMenu({ msgId: msg.msgId, sender: msg.sender, room: currentTextRoom!, x: e.clientX, y: e.clientY });
                       }
                     }}>
@@ -4877,13 +5234,46 @@ export function TerminalForum() {
                           <UserAvatar name={msg.sender} size="sm" />
                           <span className="text-sm font-bold" style={senderColor ? { color: senderColor } : undefined}>{msg.sender}</span>
                           <span className="text-[10px] text-green-700">{dateStr}{timeStr}</span>
+                          {msg.edited && <span className="text-[9px] text-green-800 italic">(edited)</span>}
                         </div>
-                        <div className="text-sm text-green-400 mt-0.5 pl-8">{renderMessageBody(msg.body)}</div>
+                        {isEditing ? (
+                          <EditInput body={editingMsg!.body} onSave={async (newBody) => {
+                            const enc = await e2eeEncryptText(newBody.trim());
+                            sendToServer(`CMD:EDIT_MSG:${editingMsg!.room}:${editingMsg!.msgId}:${enc}`);
+                            setEditingMsg(null);
+                          }} onCancel={() => setEditingMsg(null)} />
+                        ) : (
+                          <div className="text-sm text-green-400 mt-0.5 pl-8 flex items-start gap-1">
+                            <span className="flex-1">{renderMessageBody(msg.body)}</span>
+                            {canEdit && <button onClick={() => setEditingMsg({ msgId: msg.msgId, room: currentTextRoom!, body: msg.body })}
+                              className="opacity-0 group-hover:opacity-100 p-0.5 text-green-800 hover:text-green-500 transition-all shrink-0 mt-0.5">
+                              <Pencil className="w-3 h-3" />
+                            </button>}
+                          </div>
+                        )}
+                        {(hasReactions || reactionPickerMsgId === msg.msgId) && reactionBar}
                       </div>
                     ) : (
                       <div className="relative hover:bg-green-900/10 rounded px-2 py-0.5 -mx-2 transition-all group/cont">
-                        <span className="absolute left-2 text-green-800 opacity-0 group-hover/cont:opacity-100 text-[10px] leading-5 select-none transition-opacity">{timeStr}</span>
-                        <div className="text-sm text-green-400 pl-8">{renderMessageBody(msg.body)}</div>
+                        <span className="absolute left-2 text-green-800 opacity-0 group-hover/cont:opacity-100 text-[10px] leading-5 select-none transition-opacity">{timeStr}{msg.edited ? ' (edited)' : ''}</span>
+                        {isEditing ? (
+                          <div className="pl-8">
+                            <EditInput body={editingMsg!.body} onSave={async (newBody) => {
+                              const enc = await e2eeEncryptText(newBody.trim());
+                              sendToServer(`CMD:EDIT_MSG:${editingMsg!.room}:${editingMsg!.msgId}:${enc}`);
+                              setEditingMsg(null);
+                            }} onCancel={() => setEditingMsg(null)} />
+                          </div>
+                        ) : (
+                          <div className="text-sm text-green-400 pl-8 flex items-start gap-1">
+                            <span className="flex-1">{renderMessageBody(msg.body)}</span>
+                            {canEdit && <button onClick={() => setEditingMsg({ msgId: msg.msgId, room: currentTextRoom!, body: msg.body })}
+                              className="opacity-0 group-hover:opacity-100 p-0.5 text-green-800 hover:text-green-500 transition-all shrink-0 mt-0.5">
+                              <Pencil className="w-3 h-3" />
+                            </button>}
+                          </div>
+                        )}
+                        {(hasReactions || reactionPickerMsgId === msg.msgId) && reactionBar}
                       </div>
                     )}
                   </div>
@@ -4921,6 +5311,20 @@ export function TerminalForum() {
                     <div className="mt-1 h-1 bg-green-900/30 rounded-full overflow-hidden">
                       <div className="h-full bg-green-500 rounded-full animate-[progress-indeterminate_1.5s_ease-in-out_infinite]" style={{ width: '40%' }} />
                     </div>
+                  </div>
+                )}
+                {currentTextRoom && (typingUsers[currentTextRoom] || []).length > 0 && (
+                  <div className="px-4 py-1 flex items-center gap-1.5">
+                    <span className="flex gap-0.5">
+                      {[0,1,2].map(i => (
+                        <span key={i} className="w-1 h-1 bg-green-700 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
+                      ))}
+                    </span>
+                    <span className="text-[11px] text-green-700 italic">
+                      {(typingUsers[currentTextRoom] || []).slice(0, 3).join(', ')}
+                      {(typingUsers[currentTextRoom] || []).length > 3 ? ' and others' : ''}
+                      {' '}{(typingUsers[currentTextRoom] || []).length === 1 ? 'is' : 'are'} typing…
+                    </span>
                   </div>
                 )}
                 <form onSubmit={handleSubmit} className="flex gap-3 items-center p-4 pt-3 relative">
@@ -4993,6 +5397,14 @@ export function TerminalForum() {
                       const colonMatch = before.match(/:([a-zA-Z0-9_+-]{1,})$/);
                       if (colonMatch && !before.match(/:([a-zA-Z0-9_+-]+):$/)) { setEmojiQuery(colonMatch[1]); setEmojiAutoIndex(0); }
                       else setEmojiQuery(null);
+                      // Typing indicator — throttle to one event per 2 s per room
+                      if (v.trim() && currentTextRoom && isConnected) {
+                        const now = Date.now();
+                        if (now - (typingLastSentRef.current[currentTextRoom] || 0) > 2000) {
+                          typingLastSentRef.current[currentTextRoom] = now;
+                          sendToServer(`CMD:TYPING:${currentTextRoom}`);
+                        }
+                      }
                     }}
                     onKeyDown={e => {
                       if (emojiQuery !== null) {
@@ -5234,7 +5646,10 @@ export function TerminalForum() {
             <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between sticky top-0">
               <div className="flex items-center gap-3">
                 <Settings className="w-6 h-6 text-green-500" />
-                <h2 className="text-xl font-bold text-green-400">SETTINGS</h2>
+                <div>
+                  <h2 className="text-xl font-bold text-green-400">SETTINGS</h2>
+                  <p className="text-[10px] text-green-700">Global — applies to all servers</p>
+                </div>
               </div>
               <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
                 className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
@@ -5466,25 +5881,6 @@ export function TerminalForum() {
                   APPEARANCE
                 </h3>
                 <div className="space-y-3 pl-6">
-                  {/* Avatar */}
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Profile Picture</label>
-                    <div className="flex items-center gap-4">
-                      <UserAvatar name={nickname} size="lg" />
-                      <div className="flex gap-2">
-                        <button onClick={openAvatarPicker}
-                          className="px-3 py-1.5 bg-green-900/30 hover:bg-green-900/50 text-green-400 rounded-lg text-xs transition-all">
-                          {myAvatar ? 'Change image' : 'Upload image'}
-                        </button>
-                        {myAvatar && (
-                          <button onClick={removeAvatar}
-                            className="px-3 py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded-lg text-xs transition-all">
-                            Remove
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
                   <div>
                     <label className="text-xs text-green-600 block mb-2">Theme Color</label>
                     <select value={theme}
@@ -5589,16 +5985,29 @@ export function TerminalForum() {
                   KEYBINDS
                 </h3>
                 <div className="space-y-3 pl-6">
-                  {(['toggleMute', 'toggleDeafen'] as const).map(action => {
-                    const labels: Record<string, string> = { toggleMute: 'Mute / Unmute', toggleDeafen: 'Deafen / Undeafen' };
+                  {/* Push-to-Talk mode toggle */}
+                  <div className="pb-3 border-b border-green-900/20">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input type="checkbox" checked={pushToTalkMode} onChange={e => setPushToTalkMode(e.target.checked)}
+                        className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                      <div>
+                        <span className="text-sm text-green-500">Push to Talk</span>
+                        <span className="text-[10px] text-green-800 block">Hold key to transmit. VAD gate is disabled in this mode.</span>
+                      </div>
+                    </label>
+                  </div>
+                  {(['toggleMute', 'toggleDeafen', 'pushToTalk'] as const).map(action => {
+                    const labels: Record<string, string> = { toggleMute: 'Mute / Unmute', toggleDeafen: 'Deafen / Undeafen', pushToTalk: 'Push to Talk' };
                     const bind = keybinds[action];
                     const isRecording = recordingKeybind === action;
+                    const disabled = action === 'pushToTalk' && !pushToTalkMode;
                     return (
-                      <div key={action} className="flex items-center justify-between">
+                      <div key={action} className={`flex items-center justify-between ${disabled ? 'opacity-40' : ''}`}>
                         <span className="text-sm text-green-500">{labels[action]}</span>
                         <div className="flex items-center gap-2">
                           <button
-                            onClick={() => setRecordingKeybind(isRecording ? null : action)}
+                            disabled={disabled}
+                            onClick={() => !disabled && setRecordingKeybind(isRecording ? null : action)}
                             className={`px-3 py-1.5 rounded-lg text-xs font-mono transition-all min-w-[120px] text-center ${
                               isRecording
                                 ? 'bg-green-900/40 border-2 border-green-500 text-green-400 animate-pulse'
@@ -5608,7 +6017,7 @@ export function TerminalForum() {
                             }`}>
                             {isRecording ? 'Press a key...' : bind ? formatKeyBind(bind) : 'Not set'}
                           </button>
-                          {bind && !isRecording && (
+                          {bind && !isRecording && !disabled && (
                             <button onClick={() => setKeybinds(prev => ({ ...prev, [action]: null }))}
                               className="p-1 text-green-800 hover:text-red-400 transition-colors">
                               <X className="w-3 h-3" />
@@ -5860,35 +6269,125 @@ export function TerminalForum() {
 
                 {serverSettingsTab === 'roles' && (
                   <div className="space-y-6">
-                    {/* Existing Roles */}
+                    {/* Role Hierarchy */}
                     <div>
-                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                      <h3 className="text-sm text-green-700 mb-1 flex items-center gap-2">
                         <Shield className="w-4 h-4" />
-                        ROLES
+                        ROLE HIERARCHY
                       </h3>
-                      <div className="space-y-3">
-                        {serverRoles.map(role => {
-                          const isProtected = role.name === 'Admin' || role.name === 'Member';
-                          return (
-                            <div key={role.name} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg p-4">
-                              <div className="flex items-center justify-between mb-2">
-                                <div className="flex items-center gap-3">
-                                  <span className="w-4 h-4 rounded-full shrink-0" style={{ backgroundColor: role.color }} />
-                                  <span className="text-sm font-bold" style={{ color: role.color }}>{role.name}</span>
-                                  <span className="text-[10px] text-green-800">Priority: {role.priority}</span>
+                      <p className="text-[10px] text-green-800 mb-4">Top = highest. Use arrows to reorder custom roles.</p>
+                      <div className="space-y-2">
+                        {serverRoles.map((role, idx) => {
+                          const isAdmin = role.name === 'Admin';
+                          const isMember = role.name === 'Member';
+                          const isProtected = isAdmin || isMember;
+                          const isCustom = !isProtected;
+                          const canMoveUp = isCustom && idx > 1;
+                          const canMoveDown = isCustom && idx < serverRoles.length - 2;
+                          const isEditing = editingRole === role.name;
+
+                          const reorder = (fromIdx: number, toIdx: number) => {
+                            const next = [...serverRoles];
+                            [next[fromIdx], next[toIdx]] = [next[toIdx], next[fromIdx]];
+                            sendToServer(`CMD:REORDER_ROLES:${next.map(r => r.name).join(',')}`);
+                          };
+
+                          if (isEditing) {
+                            return (
+                              <div key={role.name} className="bg-[#0a0e0a] border border-green-700/50 rounded-lg p-4 space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs text-green-600 font-bold uppercase">Editing — {role.name}</span>
+                                  <button onClick={() => setEditingRole(null)} className="p-1 text-green-700 hover:text-green-400 transition-colors">
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
                                 </div>
+                                {!isProtected && (
+                                  <div>
+                                    <label className="text-xs text-green-600 block mb-1">Name</label>
+                                    <input type="text" value={editRoleName} onChange={e => setEditRoleName(e.target.value)}
+                                      className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
+                                  </div>
+                                )}
+                                <div>
+                                  <label className="text-xs text-green-600 block mb-1">Color</label>
+                                  <div className="flex items-center gap-2">
+                                    <input type="color" value={editRoleColor} onChange={e => setEditRoleColor(e.target.value)}
+                                      className="w-10 h-10 rounded-lg border border-green-900/50 bg-transparent cursor-pointer" />
+                                    <input type="text" value={editRoleColor}
+                                      onChange={e => { if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) setEditRoleColor(e.target.value); }}
+                                      className="flex-1 bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm font-mono" />
+                                  </div>
+                                </div>
+                                {!isAdmin && (
+                                  <div>
+                                    <label className="text-xs text-green-600 block mb-2">Permissions</label>
+                                    <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                                      {ALL_PERMS.map(p => (
+                                        <label key={p} className="flex items-start gap-3 cursor-pointer group/perm">
+                                          <input type="checkbox" checked={editRolePerms.includes(p)}
+                                            onChange={e => setEditRolePerms(prev => e.target.checked ? [...prev, p] : prev.filter(x => x !== p))}
+                                            className="w-4 h-4 mt-0.5 shrink-0" />
+                                          <div>
+                                            <span className="text-sm text-green-500 group-hover/perm:text-green-400 transition-colors">{p}</span>
+                                            <span className="text-[10px] text-green-800 block">{PERM_LABELS[p]}</span>
+                                          </div>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="flex gap-2 pt-1">
+                                  <button onClick={() => {
+                                      sendToServer(`CMD:EDIT_ROLE:${role.name}:${editRoleName || role.name}:${editRoleColor}:${editRolePerms.join(',')}`);
+                                      setEditingRole(null);
+                                    }}
+                                    className="flex-1 py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold text-sm flex items-center justify-center gap-2">
+                                    <Check className="w-4 h-4" /> Save
+                                  </button>
+                                  <button onClick={() => setEditingRole(null)}
+                                    className="px-4 py-2 rounded-lg text-green-700 hover:text-green-500 transition-colors text-sm">
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div key={role.name} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg px-4 py-3 flex items-center gap-3">
+                              {/* Reorder arrows */}
+                              <div className="flex flex-col gap-0.5 shrink-0">
+                                <button disabled={!canMoveUp} onClick={() => reorder(idx, idx - 1)}
+                                  className="p-0.5 text-green-800 hover:text-green-500 disabled:opacity-20 disabled:cursor-default transition-colors">
+                                  <ChevronUp className="w-3 h-3" />
+                                </button>
+                                <button disabled={!canMoveDown} onClick={() => reorder(idx, idx + 1)}
+                                  className="p-0.5 text-green-800 hover:text-green-500 disabled:opacity-20 disabled:cursor-default transition-colors">
+                                  <ChevronDown className="w-3 h-3" />
+                                </button>
+                              </div>
+                              {/* Color dot + name */}
+                              <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ backgroundColor: role.color }} />
+                              <span className="text-sm font-bold flex-1" style={{ color: role.color }}>{role.name}</span>
+                              {/* Permissions preview */}
+                              <div className="hidden sm:flex flex-wrap gap-1 max-w-[240px]">
+                                {role.permissions.length > 0 ? role.permissions.map(p => (
+                                  <span key={p} className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-900/30 text-green-600">{p}</span>
+                                )) : (
+                                  <span className="text-[10px] text-green-800">No permissions</span>
+                                )}
+                              </div>
+                              {/* Actions */}
+                              <div className="flex items-center gap-1 ml-auto shrink-0">
+                                <button onClick={() => { setEditingRole(role.name); setEditRoleName(role.name); setEditRoleColor(role.color); setEditRolePerms([...role.permissions]); }}
+                                  className="p-1.5 rounded text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-all" title="Edit role">
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
                                 {!isProtected && (
                                   <button onClick={() => { if (confirm(`Delete role "${role.name}"? Users with this role will lose it.`)) sendToServer(`CMD:DELETE_ROLE:${role.name}`); }}
                                     className="p-1.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/20 transition-all" title="Delete role">
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
-                                )}
-                              </div>
-                              <div className="flex flex-wrap gap-1.5">
-                                {role.permissions.length > 0 ? role.permissions.map(p => (
-                                  <span key={p} className="text-[10px] px-2 py-0.5 rounded-full bg-green-900/30 text-green-500">{p}</span>
-                                )) : (
-                                  <span className="text-[10px] text-green-800">No permissions</span>
                                 )}
                               </div>
                             </div>
@@ -5904,17 +6403,10 @@ export function TerminalForum() {
                         CREATE ROLE
                       </h3>
                       <div className="bg-[#0a0e0a] border border-green-900/40 rounded-lg p-4 space-y-4">
-                        <div className="grid grid-cols-3 gap-3">
-                          <div className="col-span-2">
-                            <label className="text-xs text-green-600 block mb-1">Name</label>
-                            <input type="text" id="new-role-name" placeholder="e.g. Moderator"
-                              className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
-                          </div>
-                          <div>
-                            <label className="text-xs text-green-600 block mb-1">Priority</label>
-                            <input type="number" id="new-role-priority" defaultValue={10} min={0} max={99}
-                              className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
-                          </div>
+                        <div>
+                          <label className="text-xs text-green-600 block mb-1">Name</label>
+                          <input type="text" id="new-role-name" placeholder="e.g. Moderator"
+                            className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
                         </div>
                         <div>
                           <label className="text-xs text-green-600 block mb-1">Color</label>
@@ -5944,10 +6436,9 @@ export function TerminalForum() {
                         <button onClick={() => {
                             const name = (document.getElementById('new-role-name') as HTMLInputElement)?.value?.trim();
                             const color = (document.getElementById('new-role-color') as HTMLInputElement)?.value || '#22c55e';
-                            const priority = parseInt((document.getElementById('new-role-priority') as HTMLInputElement)?.value) || 10;
                             const perms = ALL_PERMS.filter(p => (document.getElementById(`new-role-perm-${p}`) as HTMLInputElement)?.checked);
                             if (!name) return;
-                            sendToServer(`CMD:CREATE_ROLE:${name}:${color}:${priority}:${perms.join(',')}`);
+                            sendToServer(`CMD:CREATE_ROLE:${name}:${color}:0:${perms.join(',')}`);
                             (document.getElementById('new-role-name') as HTMLInputElement).value = '';
                             ALL_PERMS.forEach(p => { const el = document.getElementById(`new-role-perm-${p}`) as HTMLInputElement; if (el) el.checked = false; });
                           }}
@@ -6131,6 +6622,61 @@ export function TerminalForum() {
         );
       })()}
 
+      {/* ── Room Context Menu ── */}
+      {roomContextMenu && (
+        <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[160px] z-50"
+          style={{ left: Math.min(roomContextMenu.x, window.innerWidth - 180), top: Math.min(roomContextMenu.y, window.innerHeight - 120) }}
+          onClick={e => e.stopPropagation()}>
+          <div className="px-3 py-1.5 mb-1 text-[10px] text-green-700 uppercase tracking-wider truncate">{roomContextMenu.name}</div>
+          {hasPermission('create_rooms') && (
+            <button
+              onClick={() => {
+                if (roomContextMenu.type === 'text') {
+                  setCreateRoomDialog({ type: 'text', editing: roomContextMenu.name }); setNewRoomName(roomContextMenu.name); setNewRoomRoles(textRooms.find(t => t.name === roomContextMenu.name)?.allowedRoles ?? []);
+                } else {
+                  const r = voiceRooms[roomContextMenu.idx];
+                  setCreateRoomDialog({ type: 'voice', editing: roomContextMenu.name }); setNewRoomName(roomContextMenu.name); setNewRoomRoles(r?.allowedRoles ?? []); setNewRoomBitrate(String(r?.bitrate ?? 96000));
+                }
+                setRoomContextMenu(null);
+              }}
+              className="w-full px-3 py-2 rounded-lg text-green-400 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
+              <Pencil className="w-4 h-4" />
+              <span>Edit channel</span>
+            </button>
+          )}
+          {hasPermission('delete_rooms') && (
+            <button
+              onClick={() => {
+                const cmd = roomContextMenu.type === 'text' ? `CMD:DELETE_TEXT_ROOM:${roomContextMenu.name}` : `CMD:DELETE_VOICE_ROOM:${roomContextMenu.name}`;
+                if (confirm(`Delete ${roomContextMenu.type} channel "${roomContextMenu.name}"?`)) sendToServer(cmd);
+                setRoomContextMenu(null);
+              }}
+              className="w-full px-3 py-2 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
+              <Trash2 className="w-4 h-4" />
+              <span>Delete channel</span>
+            </button>
+          )}
+          {roomContextMenu.type === 'text' && connectedServerId && (
+            <div className="border-t border-green-900/30 mt-1 pt-1 px-2 pb-1">
+              <div className="text-[10px] text-green-700 mb-1.5 flex items-center gap-1"><Bell className="w-3 h-3" /> NOTIFICATIONS</div>
+              <div className="flex gap-1">
+                {(['default', 'all', 'mentions', 'none'] as const).map(level => {
+                  const current = notifPrefs[connectedServerId]?.[roomContextMenu.name] ?? 'default';
+                  const active = current === level;
+                  const labels: Record<string, string> = { default: 'Default', all: '🔔 All', mentions: '🔕 @only', none: '🚫 Off' };
+                  return (
+                    <button key={level} onClick={() => { setChannelNotifLevel(connectedServerId, roomContextMenu.name, level); setRoomContextMenu(null); }}
+                      className={`flex-1 py-1 rounded text-[9px] transition-all ${active ? 'bg-green-900/60 text-green-300 font-bold' : 'text-green-700 hover:bg-green-900/30 hover:text-green-500'}`}>
+                      {labels[level]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── User Context Menu ────────────────────────────────── */}
       {userContextMenu && (() => {
         const menuWidth = 280;
@@ -6278,12 +6824,24 @@ export function TerminalForum() {
       {msgContextMenu && (() => {
         const isPinned = (pinnedMessages[msgContextMenu.room] || []).some(m => m.msgId === msgContextMenu.msgId);
         const canDelete = msgContextMenu.sender === nickname || hasPermission('delete_messages');
+        const canEdit = canDelete && !((roomMessages[msgContextMenu.room] || []).find(m => m.msgId === msgContextMenu.msgId)?.body || '').startsWith('__FILE__:');
         const canPin = hasPermission('pin_messages');
         return (
           <div
             className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[180px] z-50"
-            style={{ left: Math.min(msgContextMenu.x, window.innerWidth - 200), top: Math.min(msgContextMenu.y, window.innerHeight - 100) }}
+            style={{ left: Math.min(msgContextMenu.x, window.innerWidth - 200), top: Math.min(msgContextMenu.y, window.innerHeight - 140) }}
             onClick={(e) => e.stopPropagation()}>
+            {canEdit && (
+              <button onClick={() => {
+                  const msg = (roomMessages[msgContextMenu.room] || []).find(m => m.msgId === msgContextMenu.msgId);
+                  if (msg) setEditingMsg({ msgId: msg.msgId, room: msgContextMenu.room, body: msg.body });
+                  setMsgContextMenu(null);
+                }}
+                className="w-full px-4 py-2.5 rounded-lg text-green-400 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
+                <Pencil className="w-4 h-4" />
+                <span>Edit message</span>
+              </button>
+            )}
             {canPin && (
               <button onClick={() => {
                   if (isPinned) sendToServer(`CMD:UNPIN_MSG:${msgContextMenu.room}:${msgContextMenu.msgId}`);
@@ -6447,33 +7005,6 @@ export function TerminalForum() {
                 className="px-5 py-2 bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:text-green-800 text-green-400 rounded-lg transition-all font-bold flex items-center gap-2">
                 <Share2 className="w-4 h-4" />
                 Start Sharing
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Password dialog overlay ────────────────────────── */}
-      {pwDialog && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-[#0d120d] border border-green-900/50 rounded-lg p-6 w-80 shadow-2xl shadow-green-900/30">
-            <h3 className="text-green-400 font-bold mb-4">
-              <Lock className="w-4 h-4 inline mr-2" />
-              Password — {pwDialog.room}
-            </h3>
-            <input type="password" value={pwInput} onChange={e => setPwInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handlePwSubmit()}
-              placeholder="Enter password..."
-              className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 mb-4"
-              autoFocus />
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setPwDialog(null)}
-                className="px-4 py-2 text-green-700 hover:text-green-500 transition-colors">
-                Cancel
-              </button>
-              <button onClick={handlePwSubmit}
-                className="px-4 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg transition-all">
-                Join
               </button>
             </div>
           </div>
@@ -6715,15 +7246,15 @@ export function TerminalForum() {
               if (!newRoomName.trim()) return;
               if (createRoomDialog.editing) {
                 if (createRoomDialog.type === 'voice') {
-                  sendToServer(`CMD:EDIT_VOICE_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomPassword}:${newRoomBitrate}`);
+                  sendToServer(`CMD:EDIT_VOICE_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomRoles.join(',')}:${newRoomBitrate}`);
                 } else {
-                  sendToServer(`CMD:EDIT_TEXT_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomPassword}`);
+                  sendToServer(`CMD:EDIT_TEXT_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomRoles.join(',')}`);
                 }
               } else {
                 if (createRoomDialog.type === 'voice') {
-                  sendToServer(`CMD:CREATE_VOICE_ROOM:${newRoomName.trim()}:${newRoomPassword}:${newRoomBitrate}`);
+                  sendToServer(`CMD:CREATE_VOICE_ROOM:${newRoomName.trim()}:${newRoomRoles.join(',')}:${newRoomBitrate}`);
                 } else {
-                  sendToServer(`CMD:CREATE_TEXT_ROOM:${newRoomName.trim()}:${newRoomPassword}`);
+                  sendToServer(`CMD:CREATE_TEXT_ROOM:${newRoomName.trim()}:${newRoomRoles.join(',')}`);
                 }
               }
               setCreateRoomDialog(null);
@@ -6736,10 +7267,20 @@ export function TerminalForum() {
                   autoFocus />
               </div>
               <div className="space-y-2">
-                <label className="text-xs text-green-700 block">{'>'} PASSWORD <span className="text-green-800">(optional{createRoomDialog.editing ? ' — leave empty to remove' : ''})</span></label>
-                <input type="text" value={newRoomPassword} onChange={e => setNewRoomPassword(e.target.value)}
-                  placeholder="Leave empty for no password"
-                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                <label className="text-xs text-green-700 block">{'>'} RESTRICTED TO ROLES <span className="text-green-800">(leave empty for public)</span></label>
+                <div className="space-y-1 max-h-32 overflow-y-auto border border-green-900/30 rounded-lg p-2">
+                  {serverRoles.filter(role => !role.permissions.includes('admin')).map(role => (
+                    <label key={role.name} className="flex items-center gap-2 cursor-pointer px-1 py-0.5 rounded hover:bg-green-900/20">
+                      <input type="checkbox" checked={newRoomRoles.includes(role.name)}
+                        onChange={e => setNewRoomRoles(prev => e.target.checked ? [...prev, role.name] : prev.filter(n => n !== role.name))}
+                        className="accent-green-500" />
+                      <span className="text-sm" style={{ color: role.color }}>{role.name}</span>
+                    </label>
+                  ))}
+                  {serverRoles.filter(role => !role.permissions.includes('admin')).length === 0 && (
+                    <p className="text-xs text-green-800 px-1">No roles available.</p>
+                  )}
+                </div>
               </div>
               {createRoomDialog.type === 'voice' && (
                 <div className="space-y-2">

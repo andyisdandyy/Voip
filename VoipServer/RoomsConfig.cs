@@ -6,7 +6,7 @@ using System.Text.Json;
 public class RoomDefinition
 {
     public string Name { get; set; } = "";
-    public string? Password { get; set; }
+    public List<string> AllowedRoles { get; set; } = new();
     public int Bitrate { get; set; } = 96000;
 }
 
@@ -69,11 +69,11 @@ public class RoomsConfig
 
     // ── Voice Room Mutations ────────────────────────────────
 
-    public bool CreateVoiceRoom(string name, string? password, int bitrate)
+    public bool CreateVoiceRoom(string name, List<string> allowedRoles, int bitrate)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
         if (VoiceRooms.Any(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
-        VoiceRooms.Add(new RoomDefinition { Name = name, Password = password, Bitrate = bitrate > 0 ? bitrate : 96000 });
+        VoiceRooms.Add(new RoomDefinition { Name = name, AllowedRoles = allowedRoles, Bitrate = bitrate > 0 ? bitrate : 96000 });
         Save();
         return true;
     }
@@ -103,7 +103,7 @@ public class RoomsConfig
         return true;
     }
 
-    public bool EditVoiceRoom(string oldName, string newName, string? password, int bitrate)
+    public bool EditVoiceRoom(string oldName, string newName, List<string> allowedRoles, int bitrate)
     {
         var room = VoiceRooms.FirstOrDefault(r => string.Equals(r.Name, oldName, StringComparison.OrdinalIgnoreCase));
         if (room == null) return false;
@@ -114,7 +114,7 @@ public class RoomsConfig
             if (VoiceRooms.Any(r => !ReferenceEquals(r, room) && string.Equals(r.Name, newName, StringComparison.OrdinalIgnoreCase))) return false;
         }
         room.Name = newName;
-        room.Password = password;
+        room.AllowedRoles = allowedRoles;
         room.Bitrate = bitrate > 0 ? bitrate : 96000;
         Save();
         return true;
@@ -122,11 +122,11 @@ public class RoomsConfig
 
     // ── Text Room Mutations ─────────────────────────────────
 
-    public bool CreateTextRoom(string name, string? password)
+    public bool CreateTextRoom(string name, List<string> allowedRoles)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
         if (TextRooms.Any(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
-        TextRooms.Add(new RoomDefinition { Name = name, Password = password });
+        TextRooms.Add(new RoomDefinition { Name = name, AllowedRoles = allowedRoles });
         Save();
         return true;
     }
@@ -140,7 +140,7 @@ public class RoomsConfig
         return true;
     }
 
-    public bool EditTextRoom(string oldName, string newName, string? password)
+    public bool EditTextRoom(string oldName, string newName, List<string> allowedRoles)
     {
         var room = TextRooms.FirstOrDefault(r => string.Equals(r.Name, oldName, StringComparison.OrdinalIgnoreCase));
         if (room == null) return false;
@@ -150,7 +150,7 @@ public class RoomsConfig
             if (TextRooms.Any(r => !ReferenceEquals(r, room) && string.Equals(r.Name, newName, StringComparison.OrdinalIgnoreCase))) return false;
         }
         room.Name = newName;
-        room.Password = password;
+        room.AllowedRoles = allowedRoles;
         Save();
         return true;
     }
