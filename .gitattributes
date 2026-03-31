@@ -57,6 +57,11 @@
 #*.DOCX  diff=astextplain
 #*.dot   diff=astextplain
 #*.DOT   diff=astextplain
+
+# Always use LF for shell scripts and YAML workflows
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
 #*.pdf   diff=astextplain
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain

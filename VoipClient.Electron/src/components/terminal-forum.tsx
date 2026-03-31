@@ -22,7 +22,7 @@ interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: strin
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
-interface DmTab { username: string; serverId: string }
+interface DmTab { username: string; serverId: string; rendezvousId?: string }
 interface DmMessage { id: string; sender: string; body: string; timestamp: number }
 interface Friend { username: string; serverId: string }
 interface RendezvousServer { id: string; host: string; port: number; serverName: string; username: string; token: string }
@@ -3250,7 +3250,8 @@ export function TerminalForum() {
     if (!host || isNaN(port)) { setRendezvousFormStatus('Invalid address (use host:port)'); return; }
 
     setRendezvousFormStatus('Connecting…');
-    const publicKey = getRendezvousIdentity();
+    if (!ecdhPrivateKeyRef.current) await generateAndPublishEcdhKey();
+    const publicKey = ecdhPublicKeyB64Ref.current || getRendezvousIdentity();
 
     if (rendezvousForm.tab === 'register') {
       const reg = await window.electronAPI.rendezvousRequest({
@@ -3279,6 +3280,23 @@ export function TerminalForum() {
       ...prev.filter(s => !(s.host === host && s.port === port && s.username === newSrv.username)),
       newSrv,
     ]);
+
+    // Fetch server-side friend list and merge into local state
+    const friendsRes = await window.electronAPI.rendezvousRequest({
+      method: 'GET', host, port, path: '/friends', token: auth.data.token,
+    });
+    if (friendsRes?.status === 200 && Array.isArray(friendsRes.data)) {
+      setRendezvousFriends(prev => {
+        const next = [...prev];
+        for (const f of friendsRes.data as string[]) {
+          if (!next.some(x => x.username === f && x.rendezvousId === newSrv.id)) {
+            next.push({ username: f, rendezvousId: newSrv.id, addedAt: new Date().toISOString() });
+          }
+        }
+        return next;
+      });
+    }
+
     setRendezvousFormStatus('✓ Connected');
     setTimeout(() => {
       setRendezvousDialog(false);
@@ -3327,6 +3345,33 @@ export function TerminalForum() {
     }
   };
 
+  const getRendezvousDmKey = async (username: string, srv: RendezvousServer): Promise<CryptoKey | null> => {
+    const cached = dmSharedKeysRef.current.get(username);
+    if (cached) return cached;
+    if (!ecdhPrivateKeyRef.current) await generateAndPublishEcdhKey();
+    const result = await window.electronAPI.rendezvousRequest({
+      method: 'GET', host: srv.host, port: srv.port, path: `/pubkey/${encodeURIComponent(username)}`,
+    });
+    if (result?.status !== 200 || !result.data?.publicKey) return null;
+    const key = await deriveDmSharedKey(result.data.publicKey);
+    if (key) dmSharedKeysRef.current.set(username, key);
+    return key;
+  };
+
+  const openRendezvousDm = (username: string, srv: RendezvousServer) => {
+    if (username === srv.username) return;
+    setOpenDmTabs(prev => {
+      if (prev.some(t => t.username === username && t.rendezvousId === srv.id)) return prev;
+      return [...prev, { username, serverId: '', rendezvousId: srv.id }];
+    });
+    pushNav({ type: 'dm', username });
+    setActiveDmTab(username);
+    setDmInput('');
+    setShowHome(false);
+    setDmUnreadCounts(prev => { const n = { ...prev }; delete n[username]; return n; });
+    getRendezvousDmKey(username, srv);
+  };
+
   const checkRendezvousInbox = async (srv: RendezvousServer) => {
     const result = await window.electronAPI.rendezvousRequest({
       method: 'GET', host: srv.host, port: srv.port, path: '/messages', token: srv.token,
@@ -3334,6 +3379,24 @@ export function TerminalForum() {
     if (result?.status !== 200 || !Array.isArray(result.data)) return;
     const incoming: FriendRequest[] = [];
     for (const msg of result.data) {
+      if (msg.nonce === 'rdv_dm_v1') {
+        const fromUser: string = msg.from;
+        const key = await getRendezvousDmKey(fromUser, srv);
+        const decrypted = key ? await dmDecrypt(msg.ciphertext, key) : msg.ciphertext;
+        const dmMsg: DmMessage = { id: msg.id, sender: fromUser, body: decrypted, timestamp: new Date(msg.sentAt).getTime() };
+        setDmMessages(prev => {
+          const existing = prev[fromUser] || [];
+          if (existing.some(m => m.id === msg.id)) return prev;
+          return { ...prev, [fromUser]: [...existing, dmMsg] };
+        });
+        setOpenDmTabs(prev => prev.some(t => t.username === fromUser && t.rendezvousId === srv.id)
+          ? prev : [...prev, { username: fromUser, serverId: '', rendezvousId: srv.id }]);
+        if (activeDmTabRef.current !== fromUser) {
+          setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
+        }
+        await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${msg.id}`, token: srv.token });
+        continue;
+      }
       if (msg.nonce !== 'rendezvous_v1') continue;
       try {
         const payload = JSON.parse(atob(msg.ciphertext));
@@ -3346,6 +3409,7 @@ export function TerminalForum() {
           setRendezvousFriends(prev => prev.some(f => f.username === accepter && f.rendezvousId === srv.id)
             ? prev : [...prev, { username: accepter, rendezvousId: srv.id, addedAt: new Date().toISOString() }]);
           setFriendRequests(prev => prev.filter(r => !(r.from === accepter && r.rendezvousId === srv.id && r.direction === 'outgoing')));
+          await window.electronAPI.rendezvousRequest({ method: 'POST', host: srv.host, port: srv.port, path: `/friends/${encodeURIComponent(accepter)}`, token: srv.token });
           await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${msg.id}`, token: srv.token });
         }
       } catch {}
@@ -3365,6 +3429,7 @@ export function TerminalForum() {
       token: srv.token,
       body: { ciphertext: btoa(JSON.stringify(payload)), nonce: 'rendezvous_v1' },
     });
+    await window.electronAPI.rendezvousRequest({ method: 'POST', host: srv.host, port: srv.port, path: `/friends/${encodeURIComponent(req.from)}`, token: srv.token });
     await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${req.id}`, token: srv.token });
     setFriendRequests(prev => prev.filter(r => r.id !== req.id));
   };
@@ -3990,7 +4055,7 @@ export function TerminalForum() {
             </div>
 
             {/* Friends */}
-            {friends.length > 0 && (() => {
+            {(friends.length > 0 || rendezvousFriends.length > 0) && (() => {
               const statusOrder = { online: 0, away: 1, offline: 2 };
               const sorted = [...friends].sort((a, b) => {
                 const sa = getFriendOnlineStatus(a);
@@ -4040,6 +4105,33 @@ export function TerminalForum() {
                             if (isServerConnected) return <Send className="w-3.5 h-3.5 text-green-800 shrink-0" />;
                             return null;
                           })()}
+                        </div>
+                      );
+                    })}
+                    {rendezvousFriends.map(f => {
+                      const rdvSrv = rendezvousServers.find(s => s.id === f.rendezvousId);
+                      const unread = dmUnreadCounts[f.username] || 0;
+                      return (
+                        <div key={`rdv-${f.username}-${f.rendezvousId}`}
+                          onClick={() => rdvSrv && openRendezvousDm(f.username, rdvSrv)}
+                          className="flex items-center gap-3 bg-[#0d120d]/60 border border-indigo-900/20 rounded-lg px-4 py-3 hover:border-indigo-900/40 transition-all select-none cursor-pointer">
+                          <div className="relative shrink-0">
+                            <div className="w-10 h-10 rounded-full bg-green-900/40 flex items-center justify-center text-sm font-bold text-green-400">
+                              {f.username.charAt(0).toUpperCase()}
+                            </div>
+                            <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full ring-2 ring-[#0a0e0a] bg-indigo-500" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-green-400 font-bold truncate">{f.username}</div>
+                            <div className="text-xs text-indigo-700 truncate">via {rdvSrv?.serverName || 'Rendezvous'}</div>
+                          </div>
+                          {unread > 0 ? (
+                            <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 animate-pulse">
+                              {unread > 9 ? '9+' : unread}
+                            </span>
+                          ) : (
+                            <Send className="w-3.5 h-3.5 text-indigo-900 shrink-0" />
+                          )}
                         </div>
                       );
                     })}
@@ -4164,7 +4256,14 @@ export function TerminalForum() {
                                     {f.username.charAt(0).toUpperCase()}
                                   </div>
                                   <div className="flex-1 text-xs text-green-400 font-bold truncate">{f.username}</div>
-                                  <button onClick={() => setRendezvousFriends(prev => prev.filter(x => !(x.username === f.username && x.rendezvousId === srv.id)))}
+                                  <button onClick={() => openRendezvousDm(f.username, srv)}
+                                    className="text-green-800 hover:text-green-400 transition-colors shrink-0" title="Send message">
+                                    <Send className="w-3 h-3" />
+                                  </button>
+                                  <button onClick={async () => {
+                                    setRendezvousFriends(prev => prev.filter(x => !(x.username === f.username && x.rendezvousId === srv.id)));
+                                    await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/friends/${encodeURIComponent(f.username)}`, token: srv.token });
+                                  }}
                                     className="text-green-900 hover:text-red-600 transition-colors shrink-0">
                                     <X className="w-3 h-3" />
                                   </button>
@@ -4937,9 +5036,25 @@ export function TerminalForum() {
                   setPendingDmFile(null);
                 }
                 if (dmInput.trim()) {
-                  const dmKey = await getDmSharedKey(dmTab.username);
-                  const body = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
-                  window.electronAPI.sendDm(dmTab.serverId, dmTab.username, body);
+                  if (dmTab.rendezvousId) {
+                    const rdvSrv = rendezvousServers.find(s => s.id === dmTab.rendezvousId);
+                    if (rdvSrv) {
+                      const dmKey = await getRendezvousDmKey(dmTab.username, rdvSrv);
+                      const body = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
+                      await window.electronAPI.rendezvousRequest({
+                        method: 'POST', host: rdvSrv.host, port: rdvSrv.port,
+                        path: `/messages/${encodeURIComponent(dmTab.username)}`,
+                        token: rdvSrv.token,
+                        body: { ciphertext: body, nonce: 'rdv_dm_v1' },
+                      });
+                      const sentMsg: DmMessage = { id: crypto.randomUUID(), sender: rdvSrv.username, body: dmInput, timestamp: Date.now() };
+                      setDmMessages(prev => ({ ...prev, [dmTab.username]: [...(prev[dmTab.username] || []), sentMsg] }));
+                    }
+                  } else {
+                    const dmKey = await getDmSharedKey(dmTab.username);
+                    const body = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
+                    window.electronAPI.sendDm(dmTab.serverId, dmTab.username, body);
+                  }
                   setDmInput('');
                 }
                 dmInputRef.current?.focus();

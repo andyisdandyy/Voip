@@ -19,6 +19,9 @@ using System.Text.Json;
 ///   POST /messages/{recipient}   — store encrypted message for offline user (auth) {ciphertext, nonce}
 ///   GET  /messages               — fetch inbox (auth)
 ///   DELETE /messages/{id}        — acknowledge and delete a delivered message (auth)
+///   GET  /friends                — list confirmed friends (auth)
+///   POST /friends/{target}       — record a confirmed friendship (auth)
+///   DELETE /friends/{target}     — remove a friendship (auth)
 ///
 /// The server never holds decryption keys. All message payloads are opaque ciphertext blobs.
 /// </summary>
@@ -29,6 +32,7 @@ public class RendezvousHttpServer
     private readonly UserRegistry _users;
     private readonly PresenceTracker _presence;
     private readonly OfflineMailbox _mailbox;
+    private readonly FriendStore _friends;
     private readonly Action<string>? _log;
     private readonly byte[] _hmacKey;
 
@@ -49,12 +53,14 @@ public class RendezvousHttpServer
         UserRegistry users,
         PresenceTracker presence,
         OfflineMailbox mailbox,
+        FriendStore friends,
         Action<string>? log = null)
     {
         _config = config;
         _users = users;
         _presence = presence;
         _mailbox = mailbox;
+        _friends = friends;
         _log = log;
 
         _hmacKey = new byte[32];
@@ -162,6 +168,18 @@ public class RendezvousHttpServer
             else if (method == "DELETE" && path.StartsWith("/messages/"))
             {
                 await HandleMessageDeleteAsync(path["/messages/".Length..], req, res).ConfigureAwait(false);
+            }
+            else if (method == "GET" && path == "/friends")
+            {
+                await HandleFriendsGetAsync(req, res).ConfigureAwait(false);
+            }
+            else if (method == "POST" && path.StartsWith("/friends/"))
+            {
+                await HandleFriendAddAsync(path["/friends/".Length..], req, res).ConfigureAwait(false);
+            }
+            else if (method == "DELETE" && path.StartsWith("/friends/"))
+            {
+                await HandleFriendRemoveAsync(path["/friends/".Length..], req, res).ConfigureAwait(false);
             }
             else
             {
@@ -290,6 +308,41 @@ public class RendezvousHttpServer
             return;
         }
 
+        await WriteJsonAsync(res, 200, new { success = true }).ConfigureAwait(false);
+    }
+
+    private async Task HandleFriendsGetAsync(HttpListenerRequest req, HttpListenerResponse res)
+    {
+        var username = AuthenticateRequest(req);
+        if (username is null) { await WriteJsonAsync(res, 401, new { error = "Unauthorized" }); return; }
+
+        var friends = _friends.GetFriends(username);
+        await WriteJsonAsync(res, 200, friends).ConfigureAwait(false);
+    }
+
+    private async Task HandleFriendAddAsync(string target, HttpListenerRequest req, HttpListenerResponse res)
+    {
+        var username = AuthenticateRequest(req);
+        if (username is null) { await WriteJsonAsync(res, 401, new { error = "Unauthorized" }); return; }
+
+        if (!_users.Exists(target)) { await WriteJsonAsync(res, 404, new { error = "User not found" }); return; }
+        if (string.Equals(username, target, StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteJsonAsync(res, 400, new { error = "Cannot friend yourself" }); return;
+        }
+
+        _friends.Add(username, target);
+        _log?.Invoke($"[Rendezvous] Friendship recorded: {username} <-> {target}");
+        await WriteJsonAsync(res, 200, new { success = true }).ConfigureAwait(false);
+    }
+
+    private async Task HandleFriendRemoveAsync(string target, HttpListenerRequest req, HttpListenerResponse res)
+    {
+        var username = AuthenticateRequest(req);
+        if (username is null) { await WriteJsonAsync(res, 401, new { error = "Unauthorized" }); return; }
+
+        _friends.Remove(username, target);
+        _log?.Invoke($"[Rendezvous] Friendship removed: {username} <-> {target}");
         await WriteJsonAsync(res, 200, new { success = true }).ConfigureAwait(false);
     }
 

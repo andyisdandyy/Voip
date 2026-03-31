@@ -1,4 +1,4 @@
-# Echo â€” Architecture & Code Overview
+ï»¿# Echo â€” Architecture & Code Overview
 
 > A self-hosted VoIP + chat application with an Electron desktop client and a .NET 10 server.
 
@@ -216,16 +216,31 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
   and disconnect
 
 #### Direct Messages (DM)
-Private 1-to-1 messages between users, relayed through the server.
+Private 1-to-1 messages between users. Two transports are supported:
 
-- **Send**: Client sends `DM:<targetUser>:<text>` (text is E2EE-encrypted in the main process if a key is active)
+**VoIP server transport** (requires both users connected to the same server):
+- **Send**: Client sends `DM:<targetUser>:<text>` over the TCP chat connection
 - **Receive**: Server relays `DM:<fromUser>:<text>` to the recipient
 - **Echo**: Server sends `DM_SENT:<targetUser>:<text>` back to the sender for delivery confirmation
-- **Encryption**: When E2EE is active, DM text is encrypted with AES-256-GCM in the main process using the same PBKDF2-derived key as audio/video. The encrypted payload uses the `ENC:<base64>` format (same as room chat messages). Decryption also happens in the main process before forwarding to the renderer.
-- **UI**: Double-click a user in the sidebar or click "Direct Message" in the user context menu to open an inline DM tab in the tab bar. The DM chat replaces the server content area while the tab is active. Incoming DMs auto-open a tab if one isn't already open for that user. DM messages support file uploads (paperclip button) â€” files are embedded as `__FILE__:<name>:<mime>:<base64>` in the DM body text. Video and audio files are rendered with inline `<video>` / `<audio>` players.
-- **Video transcoding**: When `FfmpegPath` is set in `server-config.json` and the file arrives via the `FILE:` protocol (E2EE off), the server transcodes HEVC (H.265) â†’ H.264/MP4 via `VideoTranscoder.TryTranscodeAsync`. Uses `libx264`, fast preset, CRF 23, AAC audio, `+faststart`. Applies to channel uploads and DM attachments. Non-HEVC videos pass through unchanged.
 - **Offline**: If the target user is not connected, the server responds with `ERROR:User is not online`
-- DMs are **not persisted** on the server or client â€” they exist only in the renderer's in-memory state
+
+**Rendezvous server transport** (no VoIP server required, rendezvous friends only):
+- **Send**: Client POSTs `{ ciphertext, nonce: "rdv_dm_v1" }` to `POST /messages/{recipient}` on the rendezvous server. The ciphertext is the `DMENC:...` blob encrypted with the ECDH shared key.
+- **Receive**: `checkRendezvousInbox` polls `GET /messages`, finds messages with `nonce === "rdv_dm_v1"`, decrypts with `dmDecrypt`, delivers to `dmMessages` state, then deletes from server.
+- **Offline delivery**: Messages persist in the rendezvous mailbox (`OfflineMailbox`) until the recipient refreshes their inbox.
+- **UI**: Click the send icon next to a rendezvous friend in the panel to open a DM tab. No VoIP server needed.
+
+**Shared encryption** (both transports):
+- ECDH P-256 key pair generated once per session (`ecdhPrivateKeyRef` / `ecdhPublicKeyB64Ref`)
+- VoIP DMs: peer key fetched via `CMD:GET_DM_KEY` over TCP, shared secret derived with `deriveDmSharedKey`
+- Rendezvous DMs: peer key fetched from `GET /pubkey/{username}`, same derivation via `getRendezvousDmKey`
+- Rendezvous registration now stores the real ECDH public key so peers can look it up for encryption
+- All messages encrypted with AES-256-GCM (`dmEncrypt` / `dmDecrypt`), prefixed `DMENC:`
+
+- **UI (VoIP)**: Double-click a user in the voice sidebar, click "Direct Message" in the context menu, or open from the FRIENDS list (requires shared server connection). DM tab replaces the content area; file uploads supported via paperclip button. Video/audio render inline.
+- **Video transcoding**: When `FfmpegPath` is set in `server-config.json` and a file arrives via the `FILE:` protocol, the server transcodes HEVC to H.264/MP4 via `VideoTranscoder.TryTranscodeAsync`. Applies to channel uploads and VoIP DM attachments.
+- **Offline**: If the target user is not connected to the VoIP server, it responds with `ERROR:User is not online`
+- DMs are **not persisted** on the client -- they exist only in the renderer's in-memory state
 
 ### Persistence Layer
 | Store | File | Purpose |
@@ -1103,12 +1118,12 @@ Lightweight HTTP broker for P2P friend connections. Handles user registration, p
 | DELETE | /messages/{id} | Bearer | Acknowledge and delete message |
 
 ### Security Model
-- Server stores only opaque ciphertext — cannot decrypt any message
+- Server stores only opaque ciphertext ï¿½ cannot decrypt any message
 - GET /myip removes need for external STUN server
 - Server observes metadata only: who talks to who, timing, message size
 
 ### Data Files
-- rendezvous-config.json — port, bind, TTL
-- rendezvous-users.json — username, PBKDF2 hash, public key
-- rendezvous-mailbox.json — pending offline messages
-- logs/rendezvous_debug.txt — append-only log
+- rendezvous-config.json ï¿½ port, bind, TTL
+- rendezvous-users.json ï¿½ username, PBKDF2 hash, public key
+- rendezvous-mailbox.json ï¿½ pending offline messages
+- logs/rendezvous_debug.txt ï¿½ append-only log
