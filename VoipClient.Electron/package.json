@@ -61,6 +61,7 @@
       "public/**/*",
       "native/audio-loopback/index.js",
       "native/audio-loopback/build/Release/*.node",
+      "build-resources/icon.png",
       "package.json"
     ],
     "directories": {

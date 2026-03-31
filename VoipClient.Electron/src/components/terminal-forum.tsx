@@ -345,6 +345,8 @@ export function TerminalForum() {
   const [recordingKeybind, setRecordingKeybind] = useState<string | null>(null);
   const [serverMentions, setServerMentions] = useState<Record<string, number>>({});
   const [updateReady, setUpdateReady] = useState<string | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [appVersion, setAppVersion] = useState('');
@@ -1200,11 +1202,20 @@ export function TerminalForum() {
 
   // Auto-updater listener
   useEffect(() => {
+    const unsubAvailable = window.electronAPI.onUpdateAvailable((version) => {
+      setUpdateAvailable(version);
+      setUpdateDismissed(false);
+    });
+    const unsubProgress = window.electronAPI.onUpdateProgress((percent) => {
+      setUpdateProgress(percent);
+    });
     const unsub = window.electronAPI.onUpdateDownloaded((version) => {
+      setUpdateAvailable(null);
+      setUpdateProgress(null);
       setUpdateReady(version);
       setUpdateDismissed(false);
     });
-    return unsub;
+    return () => { unsubAvailable(); unsubProgress(); unsub(); };
   }, []);
   useEffect(() => { try { localStorage.setItem('voip-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
   useEffect(() => { try { localStorage.setItem('voip-open-tabs', JSON.stringify(openTabs)); } catch {} }, [openTabs]);
@@ -7512,6 +7523,27 @@ export function TerminalForum() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Update available / downloading toast ── */}
+      {updateAvailable && !updateDismissed && (
+        <div className="fixed bottom-4 right-4 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-4 z-50 max-w-xs">
+          <div className="flex items-start gap-3">
+            <Download className="w-5 h-5 text-green-500 shrink-0 mt-0.5 animate-bounce" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-green-400 font-bold">Update available</p>
+              <p className="text-xs text-green-700 mt-1">Version {updateAvailable} is downloading…</p>
+              {updateProgress !== null && (
+                <div className="mt-2 h-1.5 bg-green-900/40 rounded-full overflow-hidden">
+                  <div className="h-full bg-green-500 transition-all duration-300 rounded-full" style={{ width: `${updateProgress}%` }} />
+                </div>
+              )}
+            </div>
+            <button onClick={() => setUpdateDismissed(true)} className="text-green-800 hover:text-green-500 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
           </div>
         </div>
       )}
