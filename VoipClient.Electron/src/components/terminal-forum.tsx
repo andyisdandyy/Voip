@@ -501,6 +501,7 @@ export function TerminalForum() {
     setSoundboardSounds([]); setCustomEmojis({});
     setE2eeActive(false); setE2eePrompt(false); e2eeKeyRef.current = null;
     setSelectedVideoFeed(null);
+    setActiveDmTab(null); setOpenDmTabs([]); setDmMessages({}); setDmKeyFingerprints({});
     // Clear ECDH DM state
     ecdhPrivateKeyRef.current = null;
     ecdhPublicKeyB64Ref.current = '';
@@ -1462,10 +1463,10 @@ export function TerminalForum() {
       try {
         const d = JSON.parse(line.substring(6));
         const newVoiceRooms: VoiceRoom[] = (d.VoiceRooms || []).map((r: any) => ({
-          name: r.Name, hasPassword: r.HasPassword, bitrate: r.Bitrate || 0,
+          name: r.Name, allowedRoles: r.AllowedRoles || [], bitrate: r.Bitrate || 0,
         }));
         const newTextRooms: TextRoom[] = (d.TextRooms || []).map((r: any) => ({
-          name: r.Name, hasPassword: r.HasPassword,
+          name: r.Name, allowedRoles: r.AllowedRoles || [],
         }));
         setVoiceRooms(newVoiceRooms);
         setTextRooms(newTextRooms);
@@ -1987,32 +1988,13 @@ export function TerminalForum() {
           stopAudio();
         }
         if (serverId !== connectedServerIdRef.current) return;
+        connectedServerIdRef.current = null;
+        window.electronAPI.setEncryptionKey(serverId, null);
+        resetServerState();
         setIsConnected(false);
         setConnectedServerId(null);
-        setCurrentVoice(null);
-        setCurrentText(null);
-        setJoinedText(new Set());
-        setRoomMessages({});
-        setPinnedMessages({});
-        setShowPins(false);
-        setOnlineUsers([]);
-        setVoiceRooms([]);
-        setTextRooms([]);
-        setServerInfo(null);
-        setServerRoles([]);
         setStatus('Disconnected');
-        setE2eeActive(false);
-        setE2eePrompt(false);
-        e2eeKeyRef.current = null;
-        window.electronAPI.setEncryptionKey(serverId, null);
-        setCameraUsers(new Set());
-        setScreenUsers(new Set());
-        // Clear ECDH DM state on disconnect
-        ecdhPrivateKeyRef.current = null;
-        ecdhPublicKeyB64Ref.current = '';
-        dmSharedKeysRef.current.clear();
-        pendingDmKeyCallbacksRef.current.forEach(cbs => cbs.forEach(cb => cb(null)));
-        pendingDmKeyCallbacksRef.current.clear();
+        setShowHome(true);
       }),
       window.electronAPI.onAudioReceived((senderName, data) => {
         if (isDeafenedRef.current || !audioCtxRef.current) return;
@@ -3976,21 +3958,42 @@ export function TerminalForum() {
                 <Trash2 className="w-4 h-4" />
                 <span>Remove server</span>
               </button>
-              <div className="border-t border-green-900/30 mt-1 pt-1 px-2 pb-1">
-                <div className="text-[10px] text-green-700 mb-1.5 flex items-center gap-1"><Bell className="w-3 h-3" /> NOTIFICATIONS</div>
-                <div className="flex gap-1">
-                  {(['all', 'mentions', 'none'] as const).map(level => {
-                    const current = resolveNotifLevel(server.id);
-                    const active = current === level;
-                    const labels = { all: '🔔 All', mentions: '🔕 @only', none: '🚫 Off' };
-                    return (
-                      <button key={level} onClick={() => { setServerNotifLevel(server.id, level); setServerContextMenu(null); }}
-                        className={`flex-1 py-1 rounded text-[10px] transition-all ${active ? 'bg-green-900/60 text-green-300 font-bold' : 'text-green-700 hover:bg-green-900/30 hover:text-green-500'}`}>
-                        {labels[level]}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="border-t border-green-900/30 mt-1 pt-1 px-1 pb-1 group/srvnotif">
+                {(() => {
+                  const levels = ['all', 'mentions', 'none'] as const;
+                  const icons: Record<string, React.ReactNode> = {
+                    all: <Bell className="w-3.5 h-3.5 text-green-400" />,
+                    mentions: <Bell className="w-3.5 h-3.5 text-yellow-500" />,
+                    none: <BellOff className="w-3.5 h-3.5 text-red-500" />,
+                  };
+                  const labels = { all: 'All', mentions: 'Mentions only', none: 'Muted' };
+                  const current = resolveNotifLevel(server.id);
+                  return (
+                    <>
+                      <div className="w-full px-4 py-2.5 rounded-lg text-green-700 hover:bg-green-900/20 hover:text-green-500 transition-all flex items-center gap-2 text-sm cursor-default select-none">
+                        {icons[current]}
+                        <span className="flex-1">Notifications: <span className="text-green-500">{labels[current]}</span></span>
+                        <ChevronRight className="w-3 h-3 opacity-40" />
+                      </div>
+                      <div className="hidden group-hover/srvnotif:flex flex-col gap-0.5 pl-2 pb-1">
+                        {levels.map(level => {
+                          const active = current === level;
+                          return (
+                            <button key={level}
+                              onClick={() => { setServerNotifLevel(server.id, level); setServerContextMenu(null); }}
+                              className={`w-full px-4 py-1.5 rounded-lg flex items-center gap-2 text-sm transition-all ${
+                                active ? 'bg-green-900/40 text-green-300 font-semibold' : 'text-green-700 hover:bg-green-900/20 hover:text-green-500'
+                              }`}>
+                              {icons[level]}
+                              <span>{labels[level]}</span>
+                              {active && <Check className="w-3 h-3 ml-auto" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           );
@@ -4285,7 +4288,7 @@ export function TerminalForum() {
      <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? '' : 'p-1.5 gap-1.5'}`}>
 
       {/* ── Inline DM Chat ─────────────────────────────────── */}
-      {activeDmTab ? (() => {
+      {activeDmTab && openDmTabs.some(t => t.username === activeDmTab) ? (() => {
         const dmTab = openDmTabs.find(t => t.username === activeDmTab);
         if (!dmTab) return null;
         const msgs = dmMessages[activeDmTab] || [];
@@ -6656,24 +6659,42 @@ export function TerminalForum() {
               <span>Delete channel</span>
             </button>
           )}
-          {roomContextMenu.type === 'text' && connectedServerId && (
-            <div className="border-t border-green-900/30 mt-1 pt-1 px-2 pb-1">
-              <div className="text-[10px] text-green-700 mb-1.5 flex items-center gap-1"><Bell className="w-3 h-3" /> NOTIFICATIONS</div>
-              <div className="flex gap-1">
-                {(['default', 'all', 'mentions', 'none'] as const).map(level => {
-                  const current = notifPrefs[connectedServerId]?.[roomContextMenu.name] ?? 'default';
-                  const active = current === level;
-                  const labels: Record<string, string> = { default: 'Default', all: '🔔 All', mentions: '🔕 @only', none: '🚫 Off' };
-                  return (
-                    <button key={level} onClick={() => { setChannelNotifLevel(connectedServerId, roomContextMenu.name, level); setRoomContextMenu(null); }}
-                      className={`flex-1 py-1 rounded text-[9px] transition-all ${active ? 'bg-green-900/60 text-green-300 font-bold' : 'text-green-700 hover:bg-green-900/30 hover:text-green-500'}`}>
-                      {labels[level]}
-                    </button>
-                  );
-                })}
+          {roomContextMenu.type === 'text' && connectedServerId && (() => {
+            const levels = ['default', 'all', 'mentions', 'none'] as const;
+            const icons: Record<string, React.ReactNode> = {
+              default: <Bell className="w-3 h-3" />,
+              all: <Bell className="w-3 h-3 text-green-400" />,
+              mentions: <Bell className="w-3 h-3 text-yellow-500" />,
+              none: <BellOff className="w-3 h-3 text-red-500" />,
+            };
+            const labels: Record<string, string> = { default: 'Default', all: 'All', mentions: 'Mentions only', none: 'Muted' };
+            const current = (notifPrefs[connectedServerId]?.[roomContextMenu.name] ?? 'default') as typeof levels[number];
+            return (
+              <div className="border-t border-green-900/30 mt-1 pt-1 px-1 pb-1 group/notif">
+                <div className="w-full px-3 py-2 rounded-lg text-green-700 hover:bg-green-900/20 hover:text-green-500 transition-all flex items-center gap-2 text-sm cursor-default select-none">
+                  {icons[current]}
+                  <span className="flex-1">Notifications: <span className="text-green-500">{labels[current]}</span></span>
+                  <ChevronRight className="w-3 h-3 opacity-40" />
+                </div>
+                <div className="hidden group-hover/notif:flex flex-col gap-0.5 pl-2 pb-1">
+                  {levels.map(level => {
+                    const active = current === level;
+                    return (
+                      <button key={level}
+                        onClick={() => { setChannelNotifLevel(connectedServerId, roomContextMenu.name, level); setRoomContextMenu(null); }}
+                        className={`w-full px-3 py-1.5 rounded-lg flex items-center gap-2 text-sm transition-all ${
+                          active ? 'bg-green-900/40 text-green-300 font-semibold' : 'text-green-700 hover:bg-green-900/20 hover:text-green-500'
+                        }`}>
+                        {icons[level]}
+                        <span>{labels[level]}</span>
+                        {active && <Check className="w-3 h-3 ml-auto" />}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
