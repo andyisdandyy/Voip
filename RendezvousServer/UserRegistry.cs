@@ -58,6 +58,15 @@ public class UserRegistry
     public string? GetPublicKey(string username) =>
         _users.TryGetValue(username, out var entry) ? entry.PublicKey : null;
 
+    public bool UpdatePublicKey(string username, string publicKey)
+    {
+        if (!_users.TryGetValue(username, out var existing)) return false;
+        if (string.IsNullOrWhiteSpace(publicKey)) return false;
+        _users[username] = existing with { PublicKey = publicKey };
+        Save();
+        return true;
+    }
+
     public bool Exists(string username) => _users.ContainsKey(username);
 
     // ── PBKDF2-SHA512 ───────────────────────────────────────────────────────

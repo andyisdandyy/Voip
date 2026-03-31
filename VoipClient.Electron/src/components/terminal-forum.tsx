@@ -25,7 +25,7 @@ interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: bo
 interface DmTab { username: string; serverId: string; rendezvousId?: string }
 interface DmMessage { id: string; sender: string; body: string; timestamp: number }
 interface Friend { username: string; serverId: string }
-interface RendezvousServer { id: string; host: string; port: number; serverName: string; username: string; token: string }
+interface RendezvousServer { id: string; host: string; port: number; serverName: string; username: string; token: string; tokenExpired?: boolean }
 interface RendezvousFriend { username: string; rendezvousId: string; addedAt: string }
 interface FriendRequest { id: string; from: string; rendezvousId: string; sentAt: string; direction: 'incoming' | 'outgoing' }
 
@@ -1247,6 +1247,18 @@ export function TerminalForum() {
   useEffect(() => { try { localStorage.setItem('voip-rendezvous-servers', JSON.stringify(rendezvousServers)); } catch {} }, [rendezvousServers]);
   useEffect(() => { try { localStorage.setItem('voip-rendezvous-friends', JSON.stringify(rendezvousFriends)); } catch {} }, [rendezvousFriends]);
   useEffect(() => { try { localStorage.setItem('voip-friend-requests', JSON.stringify(friendRequests)); } catch {} }, [friendRequests]);
+
+  // ── Auto-poll rendezvous inbox (DMs + friend requests) every 30 s ────────
+  const checkAllInboxesRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    checkAllInboxesRef.current = () => {
+      rendezvousServers.forEach(srv => checkRendezvousInbox(srv));
+    };
+  });
+  useEffect(() => {
+    const id = setInterval(() => checkAllInboxesRef.current(), 30_000);
+    return () => clearInterval(id);
+  }, []);
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
     perUserSettingsRef.current = perUserSettings;
@@ -3267,6 +3279,13 @@ export function TerminalForum() {
     });
     if (!auth || auth.status !== 200) { setRendezvousFormStatus(auth?.data?.error || 'Login failed'); return; }
 
+    // Always push the current ECDH public key so peers can encrypt to us after any restart
+    await window.electronAPI.rendezvousRequest({
+      method: 'PUT', host, port, path: '/pubkey',
+      token: auth.data.token,
+      body: { publicKey },
+    });
+
     const info = await window.electronAPI.rendezvousRequest({ method: 'GET', host, port, path: '/' });
     const serverName: string = info?.data?.name || `${host}:${port}`;
 
@@ -3376,6 +3395,10 @@ export function TerminalForum() {
     const result = await window.electronAPI.rendezvousRequest({
       method: 'GET', host: srv.host, port: srv.port, path: '/messages', token: srv.token,
     });
+    if (result?.status === 401) {
+      setRendezvousServers(prev => prev.map(s => s.id === srv.id ? { ...s, tokenExpired: true } : s));
+      return;
+    }
     if (result?.status !== 200 || !Array.isArray(result.data)) return;
     const incoming: FriendRequest[] = [];
     for (const msg of result.data) {
@@ -3393,6 +3416,8 @@ export function TerminalForum() {
           ? prev : [...prev, { username: fromUser, serverId: '', rendezvousId: srv.id }]);
         if (activeDmTabRef.current !== fromUser) {
           setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
+          if (notificationSoundsRef.current) playUiSound('message');
+          window.electronAPI.showNotification(`DM from ${fromUser}`, decrypted.substring(0, 100));
         }
         await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${msg.id}`, token: srv.token });
         continue;
@@ -3809,7 +3834,9 @@ export function TerminalForum() {
   //  CONNECT SCREEN
   // ═════════════════════════════════════════════════════════
 
-  if ((!isConnected || showHome) && !showSettings) {
+  const hasActiveRdvDm = !!(activeDmTab && openDmTabs.some(t => t.username === activeDmTab && !!t.rendezvousId));
+
+  if ((!isConnected || showHome) && !showSettings && !hasActiveRdvDm) {
     return (
       <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
         {/* ── Draggable titlebar ── */}
@@ -4174,7 +4201,10 @@ export function TerminalForum() {
                           <div className="text-sm text-green-400 font-bold truncate">{srv.serverName}</div>
                           <div className="text-xs text-green-700 truncate">{srv.username} · {srv.host}:{srv.port}</div>
                         </div>
-                        {pendingIn.length > 0 && (
+                        {srv.tokenExpired && (
+                          <span className="text-[9px] text-red-500 shrink-0" title="Session expired — click to reconnect">EXPIRED</span>
+                        )}
+                        {!srv.tokenExpired && pendingIn.length > 0 && (
                           <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 animate-pulse">
                             {pendingIn.length}
                           </span>
@@ -4182,7 +4212,19 @@ export function TerminalForum() {
                         <ChevronDown className={`w-3.5 h-3.5 text-green-700 transition-transform shrink-0 ${isActive ? 'rotate-180' : ''}`} />
                       </button>
 
-                      {isActive && (
+                      {isActive && srv.tokenExpired && (
+                        <div className="px-4 pb-3 pt-2 border-t border-red-900/20">
+                          <div className="text-xs text-red-500 mb-2">Session expired. Please reconnect.</div>
+                          <button onClick={() => {
+                            setRendezvousForm(f => ({ ...f, address: `${srv.host}:${srv.port}`, username: srv.username, tab: 'login' }));
+                            setRendezvousDialog(true);
+                          }} className="w-full py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded text-xs transition-all">
+                            Reconnect
+                          </button>
+                        </div>
+                      )}
+
+                      {isActive && !srv.tokenExpired && (
                         <div className="px-4 pb-4 space-y-3 border-t border-green-900/20 pt-3">
                           {/* Search */}
                           <div className="flex gap-2">

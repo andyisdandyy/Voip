@@ -16,6 +16,7 @@ using System.Text.Json;
 ///   DELETE /presence             — mark self offline (auth)
 ///   GET  /presence/{username}    — check online status + address + publicKey (auth)
 ///   GET  /pubkey/{username}      — get a user's public key (no auth required)
+///   PUT  /pubkey                  — update caller's ECDH public key (auth) {publicKey}
 ///   POST /messages/{recipient}   — store encrypted message for offline user (auth) {ciphertext, nonce}
 ///   GET  /messages               — fetch inbox (auth)
 ///   DELETE /messages/{id}        — acknowledge and delete a delivered message (auth)
@@ -157,6 +158,10 @@ public class RendezvousHttpServer
             {
                 await HandlePubkeyGetAsync(path["/pubkey/".Length..], res).ConfigureAwait(false);
             }
+            else if (method == "PUT" && path == "/pubkey")
+            {
+                await HandlePubkeyPutAsync(req, res).ConfigureAwait(false);
+            }
             else if (method == "POST" && path.StartsWith("/messages/"))
             {
                 await HandleMessageSendAsync(path["/messages/".Length..], req, res).ConfigureAwait(false);
@@ -257,6 +262,19 @@ public class RendezvousHttpServer
         if (publicKey is null) { await WriteJsonAsync(res, 404, new { error = "User not found" }); return; }
 
         await WriteJsonAsync(res, 200, new { publicKey }).ConfigureAwait(false);
+    }
+
+    private async Task HandlePubkeyPutAsync(HttpListenerRequest req, HttpListenerResponse res)
+    {
+        var username = AuthenticateRequest(req);
+        if (username is null) { await WriteJsonAsync(res, 401, new { error = "Unauthorized" }); return; }
+
+        var body = await ReadJsonAsync<RegisterRequest>(req).ConfigureAwait(false);
+        if (body?.PublicKey is null) { await WriteJsonAsync(res, 400, new { error = "publicKey is required" }); return; }
+
+        _users.UpdatePublicKey(username, body.PublicKey);
+        _log?.Invoke($"[Rendezvous] Public key updated: {username}");
+        await WriteJsonAsync(res, 200, new { success = true }).ConfigureAwait(false);
     }
 
     private async Task HandleMessageSendAsync(string recipient, HttpListenerRequest req, HttpListenerResponse res)
