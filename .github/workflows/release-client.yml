@@ -6,7 +6,31 @@ on:
       - 'client-v*'   # Push a tag like client-v1.1.0 to trigger a release
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.id }}
+    steps:
+      - name: Create GitHub Release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = process.env.GITHUB_REF.replace('refs/tags/', '');
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: tag,
+              draft: false,
+              prerelease: false,
+            });
+            core.setOutput('id', release.data.id);
+
   build-windows:
+    needs: create-release
     runs-on: windows-latest
     permissions:
       contents: write
@@ -42,9 +66,10 @@ jobs:
         working-directory: VoipClient.Electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build && npx electron-builder --win --x64 --publish always
+        run: npm run build && npx electron-builder --win --x64 --publish onTag
 
   build-mac-x64:
+    needs: create-release
     runs-on: macos-14
     permissions:
       contents: write
@@ -77,9 +102,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run build && npx electron-builder --mac --x64 --publish always
+        run: npm run build && npx electron-builder --mac --x64 --publish onTag
 
   build-mac-arm64:
+    needs: create-release
     runs-on: macos-14
     permissions:
       contents: write
@@ -112,9 +138,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run build && npx electron-builder --mac --arm64 --publish always
+        run: npm run build && npx electron-builder --mac --arm64 --publish onTag
 
   build-linux:
+    needs: create-release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -146,4 +173,4 @@ jobs:
         working-directory: VoipClient.Electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build && npx electron-builder --linux --x64 --publish always
+        run: npm run build && npx electron-builder --linux --x64 --publish onTag
