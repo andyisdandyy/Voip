@@ -113,6 +113,12 @@ for real-time mention notifications without requiring a full TCP session.
   correct dead-client removal (avoids the ConcurrentBag arbitrary-remove pitfall).
   Clients are eagerly removed from the subscriber bag on disconnect (in the `finally`
   block) and lazily cleaned during `PushMentionAsync` if a write fails.
+- **Presence integration**: `NotificationServer` exposes `GetConnectedUsernames()` and
+  an `OnPresenceChanged` callback (`Func<Task>?`). `ChatServer` sets this callback to
+  `BroadcastUserListAsync` so that when a user connects or disconnects via SSE, all
+  TCP clients immediately receive an updated `USERS:` list showing the SSE user as
+  online (with `Status: "online"`, no voice room). This makes autoconnect users visible
+  to everyone on the server in real time.
 - **Retry**: The server sends `retry: 15000\n\n` on connect so clients auto-reconnect after 15s.
 - **Port**: Configured via `SsePort` in `server-config.json` (defaults to `TcpPort + 2`).
 

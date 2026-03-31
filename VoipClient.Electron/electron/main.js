@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, systemPreferences, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, systemPreferences, Notification, Tray, Menu, dialog, nativeImage } = require('electron');
 const path = require('path');
 const net = require('net');
 const tls = require('tls');
 const dgram = require('dgram');
 const nodeCrypto = require('crypto');
+const zlib = require('zlib');
 const { StringDecoder } = require('string_decoder');
 const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
@@ -82,6 +83,42 @@ let selectedShareSource = null;
 let shareWithAudio = false;
 let shareIsWindow = false;
 const popoutWindows = new Map(); // username → BrowserWindow
+
+// ── Close behavior (minimize to tray vs quit) ───────────────
+let closeBehavior = null; // null = not asked yet, 'minimize', or 'close'
+let tray = null;
+let forceQuit = false;
+
+function getClosePrefPath() {
+  return path.join(app.getPath('userData'), 'close-behavior.json');
+}
+
+function loadCloseBehavior() {
+  try {
+    const data = JSON.parse(fs.readFileSync(getClosePrefPath(), 'utf8'));
+    closeBehavior = data.behavior || null;
+  } catch {}
+}
+
+function saveCloseBehavior(behavior) {
+  try {
+    fs.writeFileSync(getClosePrefPath(), JSON.stringify({ behavior }), 'utf8');
+  } catch {}
+}
+
+function createTray() {
+  if (tray) return;
+  const iconPath = path.join(__dirname, '..', 'build-resources', 'icon.png');
+  tray = new Tray(iconPath);
+  tray.setToolTip('Echo');
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'Show Echo', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+    { type: 'separator' },
+    { label: 'Quit', click: () => { forceQuit = true; app.quit(); } },
+  ]);
+  tray.setContextMenu(contextMenu);
+  tray.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
+}
 
 // ── E2EE (End-to-End Encryption) ────────────────────────────
 // Uses AES-256-GCM with a PBKDF2-derived key. When enabled, audio
@@ -263,12 +300,52 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 
+  mainWindow.on('close', (event) => {
+    if (forceQuit) return;
+    if (closeBehavior === 'minimize') {
+      event.preventDefault();
+      mainWindow.hide();
+      createTray();
+      return;
+    }
+    if (closeBehavior === null) {
+      event.preventDefault();
+      dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        title: 'Close Echo',
+        message: 'What would you like to do?',
+        buttons: ['Minimize to tray', 'Close'],
+        defaultId: 0,
+        cancelId: 1,
+      }).then(({ response }) => {
+        if (response === 0) {
+          closeBehavior = 'minimize';
+          saveCloseBehavior('minimize');
+          mainWindow?.hide();
+          createTray();
+        } else {
+          closeBehavior = 'close';
+          saveCloseBehavior('close');
+          forceQuit = true;
+          mainWindow?.close();
+        }
+      });
+      return;
+    }
+    // closeBehavior === 'close': allow default close
+    forceQuit = true;
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
 
+app.on('before-quit', () => { forceQuit = true; });
+
 app.whenReady().then(async () => {
+  loadCloseBehavior();
+
   // Request media permissions on macOS
   if (process.platform === 'darwin') {
     try { await systemPreferences.askForMediaAccess('microphone'); } catch {}
@@ -384,6 +461,83 @@ function setupAutoUpdater() {
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
   }, 30 * 60 * 1000);
+}
+
+// ── Taskbar / dock badge ─────────────────────────────────────
+// macOS/Linux: app.setBadgeCount(n) — native numbered badge on dock icon.
+// Windows: setOverlayIcon() with a programmatically generated 16×16 RGBA
+// PNG red circle (transparent background). Built once and cached.
+
+const _crc32Table = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c;
+  }
+  return t;
+})();
+
+function _crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (const b of buf) c = _crc32Table[(c ^ b) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function _pngChunk(type, data) {
+  const len = Buffer.allocUnsafe(4);
+  len.writeUInt32BE(data.length);
+  const typeB = Buffer.from(type, 'ascii');
+  const crc = Buffer.allocUnsafe(4);
+  crc.writeUInt32BE(_crc32(Buffer.concat([typeB, data])));
+  return Buffer.concat([len, typeB, data, crc]);
+}
+
+let _badgePng = null;
+
+function _createBadgePng() {
+  const size = 16;
+  const pixels = [];
+  for (let y = 0; y < size; y++) {
+    pixels.push(0); // PNG filter byte = None
+    for (let x = 0; x < size; x++) {
+      const dx = x - 7.5, dy = y - 7.5;
+      if (Math.sqrt(dx * dx + dy * dy) <= 7.5) {
+        pixels.push(231, 76, 60, 255); // #e74c3c, opaque
+      } else {
+        pixels.push(0, 0, 0, 0); // transparent
+      }
+    }
+  }
+  const compressed = zlib.deflateSync(Buffer.from(pixels), { level: 6 });
+  const ihdr = Buffer.allocUnsafe(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    _pngChunk('IHDR', ihdr),
+    _pngChunk('IDAT', compressed),
+    _pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function setAppBadge(count) {
+  if (process.platform === 'darwin' || process.platform === 'linux') {
+    try { app.setBadgeCount(count); } catch {}
+  } else if (process.platform === 'win32' && mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      if (count > 0) {
+        if (!_badgePng) _badgePng = _createBadgePng();
+        const img = nativeImage.createFromBuffer(_badgePng);
+        mainWindow.setOverlayIcon(img, count > 99 ? '99+' : String(count));
+      } else {
+        mainWindow.setOverlayIcon(null, '');
+      }
+    } catch (err) {
+      console.error('[Badge] setOverlayIcon failed:', err.message);
+    }
+  }
 }
 
 // ── IPC Setup ───────────────────────────────────────────────
@@ -665,6 +819,11 @@ function setupIPC() {
   // ── HTTP file upload (to server's file server) ─────────────
   ipcMain.handle('file:upload', async (_event, host, port, token, fileName, mimeType, base64Data) => {
     return uploadFileToServer(host, port, token, fileName, mimeType, base64Data);
+  });
+
+  // ── Taskbar / dock badge ──────────────────────────────────
+  ipcMain.on('badge:set', (_event, count) => {
+    setAppBadge(typeof count === 'number' ? count : 0);
   });
 }
 

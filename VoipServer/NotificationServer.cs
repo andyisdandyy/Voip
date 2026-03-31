@@ -22,6 +22,16 @@ public class NotificationServer
     /// <summary>Issued tokens: token string → username (for validation).</summary>
     private readonly ConcurrentDictionary<string, (string username, DateTime issuedAt)> _tokens = new();
 
+    /// <summary>
+    /// Optional callback invoked (fire-and-forget) when an SSE subscriber connects or disconnects.
+    /// Used by <see cref="ChatServer"/> to broadcast an updated user list.
+    /// </summary>
+    public Func<Task>? OnPresenceChanged { get; set; }
+
+    /// <summary>Returns the usernames of all currently SSE-connected clients.</summary>
+    public IReadOnlyCollection<string> GetConnectedUsernames() =>
+        _subscribers.Where(kv => !kv.Value.IsEmpty).Select(kv => kv.Key).ToArray();
+
     private static readonly TimeSpan TokenLifetime = TimeSpan.FromDays(7);
 
     private record SseClient(StreamWriter Writer, CancellationTokenSource Cts, SemaphoreSlim WriteLock);
@@ -238,6 +248,7 @@ public class NotificationServer
         bag.TryAdd(client, 0);
 
         _log?.Invoke($"[SSE] '{username}' subscribed for notifications");
+        if (OnPresenceChanged is { } onConnect) _ = Task.Run(onConnect);
 
         try
         {
@@ -265,6 +276,7 @@ public class NotificationServer
             bag.TryRemove(client, out _);
             cts.Cancel();
             _log?.Invoke($"[SSE] '{username}' disconnected from notifications");
+            if (OnPresenceChanged is { } onDisconnect) _ = Task.Run(onDisconnect);
             try { writer.Dispose(); } catch { }
             try { response.Close(); } catch { }
         }

@@ -147,4 +147,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── HTTP file upload (to server's file server) ─────────────
   uploadFile: (host, port, token, fileName, mimeType, base64) => ipcRenderer.invoke('file:upload', host, port, token, fileName, mimeType, base64),
+
+  // ── Taskbar / dock badge ──────────────────────────────────
+  setBadge: (count) => ipcRenderer.send('badge:set', count),
 });

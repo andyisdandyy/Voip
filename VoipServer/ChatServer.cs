@@ -67,6 +67,8 @@ public class ChatServer
         _emojiStore = emojiStore;
         _log = log;
         _notificationServer = notificationServer;
+        if (_notificationServer != null)
+            _notificationServer.OnPresenceChanged = BroadcastUserListAsync;
         _banStore = banStore ?? new BanStore();
         _inviteStore = inviteStore ?? new InviteStore();
     }
@@ -1566,6 +1568,31 @@ public class ChatServer
                 Camera = _cameraActive.ContainsKey(c.name),
                 Screen = _screenActive.ContainsKey(c.name),
             });
+        }
+
+        // Include SSE-connected (autoconnect) users as online
+        if (_notificationServer != null)
+        {
+            foreach (var sseUser in _notificationServer.GetConnectedUsernames())
+            {
+                if (!onlineNames.Add(sseUser)) continue;
+                var highest = _roleStore.GetHighestRole(sseUser);
+                _userStatus.TryGetValue(sseUser, out var sseStatus);
+                users.Add(new
+                {
+                    Name = sseUser,
+                    VoiceRoom = (string?)null,
+                    Online = true,
+                    Status = sseStatus ?? "online",
+                    Roles = _roleStore.GetUserRoleNames(sseUser),
+                    RoleColor = highest?.Color,
+                    Avatar = _avatarStore.GetAvatar(sseUser),
+                    Muted = false,
+                    Deafened = false,
+                    Camera = false,
+                    Screen = false,
+                });
+            }
         }
 
         foreach (var name in _userStore.GetAllUsernames())

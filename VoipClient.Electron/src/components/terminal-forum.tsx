@@ -17,7 +17,7 @@ interface ChatMsg   { id: string; msgId: string; sender: string; body: string; t
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean; screenMuted: boolean; screenVolume: number }
-interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; logo?: string; authToken?: string; ssePort?: number; trusted?: boolean }
+interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; autoConnectTcp?: boolean; logo?: string; authToken?: string; ssePort?: number; trusted?: boolean }
 interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string; ssePort?: number; fileServerPort?: number }
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
@@ -324,7 +324,7 @@ export function TerminalForum() {
         id: s.id, name: s.name,
         address: s.address || `${s.host || '127.0.0.1'}:${s.port || s.tcpPort || '5001'}`,
         username: s.username, password: s.password, serverPassword: s.serverPassword,
-        autoConnect: s.autoConnect, logo: s.logo, authToken: s.authToken, ssePort: s.ssePort,
+        autoConnect: s.autoConnect, autoConnectTcp: s.autoConnectTcp, logo: s.logo, authToken: s.authToken, ssePort: s.ssePort,
         trusted: s.trusted ?? false,
       }));
     } catch { return []; }
@@ -333,6 +333,7 @@ export function TerminalForum() {
   const [serverContextMenu, setServerContextMenu] = useState<ServerContextMenu | null>(null);
   const [friendContextMenu, setFriendContextMenu] = useState<{ username: string; serverId: string; x: number; y: number } | null>(null);
   const [addServerDialog, setAddServerDialog] = useState(false);
+  const [untrustedConfirm, setUntrustedConfirm] = useState<PinnedServer | null>(null);
   const [newServerName, setNewServerName] = useState('');
   const [newServerAddress, setNewServerAddress] = useState('');
   const [newServerTrusted, setNewServerTrusted] = useState(false);
@@ -2120,13 +2121,14 @@ export function TerminalForum() {
     return () => unsubs.forEach(fn => fn());
   }, [handleServerMessage]);
 
-  // ── Autoconnect background mention listeners ──────────────
+  // ── Autoconnect background mention listeners (SSE) ────────
 
   useEffect(() => {
     const unsub = window.electronAPI.onMention((serverId, room, sender, text) => {
       setServerMentions(prev => ({ ...prev, [serverId]: (prev[serverId] || 0) + 1 }));
       const server = pinnedServers.find(s => s.id === serverId);
       const title = server ? server.name : 'Echo';
+      playUiSound('message');
       window.electronAPI.showNotification(`${title} — @${sender} i #${room}`, text.substring(0, 100));
     });
     return unsub;
@@ -2148,7 +2150,46 @@ export function TerminalForum() {
     }
   }, [pinnedServers, connectedServerIds, connectingToServerId]);
 
-  // ── Audio lifecycle (tied to currentVoiceRoom) ────────────
+  // ── Autoconnect TCP (connect on startup) ──────────────────
+
+  const _tcpAutoConnectDone = useRef(false);
+
+  useEffect(() => {
+    if (_tcpAutoConnectDone.current) return;
+    _tcpAutoConnectDone.current = true;
+
+    const targets = pinnedServers.filter(s => s.autoConnectTcp && s.username && s.password);
+    if (targets.length === 0) return;
+
+    (async () => {
+      for (const server of targets) {
+        if (connectedServerIds.has(server.id)) continue;
+        const { host, port } = parseAddress(server.address);
+        setConnecting(true);
+        setConnectingToServerId(server.id);
+        nicknameRef.current = server.username!;
+        connectedHostRef.current = host;
+        connectedServerIdRef.current = server.id;
+        try {
+          await window.electronAPI.connectChat(server.id, host, port, server.username!, server.password!, false, server.serverPassword);
+          setNickname(server.username!);
+          setServerIp(host);
+          setTcpPort(String(port));
+          setConnectedServerId(server.id);
+          setIsConnected(true);
+          setStatus('Connected');
+          setShowHome(false);
+          addToOpenTabs(server.id);
+          setConnectedServerIds(prev => new Set(prev).add(server.id));
+        } catch (err: any) {
+          connectedServerIdRef.current = null;
+          console.warn(`[AutoConnectTCP] Failed to connect to ${server.name}:`, err?.message);
+        }
+        setConnectingToServerId(null);
+        setConnecting(false);
+      }
+    })();
+  }, []); // runs once on mount — pinnedServers is synchronously loaded from localStorage
   // When switching server tabs, currentVoiceRoom changes to the target
   // server's value (often null). If the user is still in voice on another
   // server (voiceServerIdRef is set), we must NOT tear down the audio
@@ -2701,7 +2742,7 @@ export function TerminalForum() {
     if (!currentTextRoom) return;
     const maxBytes = (serverInfo?.maxFileSizeKB || 2048) * 1024;
     if (file.size > maxBytes) {
-      setStatus(`Fil for stor (maks ${serverInfo?.maxFileSizeKB || 2048} KB)`);
+      setStatus(`File too large (max ${serverInfo?.maxFileSizeKB || 2048} KB)`);
       return;
     }
     const reader = new FileReader();
@@ -2983,6 +3024,14 @@ export function TerminalForum() {
     const iv = setInterval(() => setCallDuration(d => d + 1), 1000);
     return () => clearInterval(iv);
   }, [currentVoiceRoom]);
+
+  // ── Taskbar / dock badge ──────────────────────────────────
+
+  useEffect(() => {
+    const mentionTotal = Object.values(mentionedRooms).reduce((s, n) => s + n, 0);
+    const dmTotal = Object.values(dmUnreadCounts).reduce((s, n) => s + n, 0);
+    window.electronAPI.setBadge(mentionTotal + dmTotal);
+  }, [mentionedRooms, dmUnreadCounts]);
 
   // ── Auto‑scroll ───────────────────────────────────────────
 
@@ -3298,6 +3347,13 @@ export function TerminalForum() {
   const toggleAutoConnect = (serverId: string) => {
     setPinnedServers(prev => prev.map(s =>
       s.id === serverId ? { ...s, autoConnect: !s.autoConnect } : s
+    ));
+    setServerContextMenu(null);
+  };
+
+  const toggleAutoConnectTcp = (serverId: string) => {
+    setPinnedServers(prev => prev.map(s =>
+      s.id === serverId ? { ...s, autoConnectTcp: !s.autoConnectTcp } : s
     ));
     setServerContextMenu(null);
   };
@@ -3658,7 +3714,15 @@ export function TerminalForum() {
                   const mentions = (serverMentions[server.id] || 0) + activeMentionTotal;
                   return (
                   <button key={server.id}
-                    onClick={() => { pushNav({ type: 'server', serverId: server.id, view: 'text', textRoom: null }); setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; }); connectToPinnedServer(server); }}
+                    onClick={() => {
+                      pushNav({ type: 'server', serverId: server.id, view: 'text', textRoom: null });
+                      setServerMentions(prev => { const n = { ...prev }; delete n[server.id]; return n; });
+                      if (!server.trusted && !connectedServerIds.has(server.id)) {
+                        setUntrustedConfirm(server);
+                      } else {
+                        connectToPinnedServer(server);
+                      }
+                    }}
                     onContextMenu={(e) => { e.preventDefault(); setServerContextMenu({ serverId: server.id, x: e.clientX, y: e.clientY }); }}
                     disabled={connecting}
                     className="group flex flex-col items-center gap-2 transition-all disabled:opacity-50">
@@ -3676,13 +3740,18 @@ export function TerminalForum() {
                           {mentions > 9 ? '9+' : mentions}
                         </div>
                       )}
-                      {server.autoConnect && server.authToken && (
-                        <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Autoconnect active">
+                      {server.autoConnectTcp && server.username && (
+                        <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Auto-connect on startup">
                           <Wifi className="w-2 h-2 text-white" />
                         </div>
                       )}
+                      {!server.autoConnectTcp && server.autoConnect && server.authToken && (
+                        <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-blue-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Background mentions active">
+                          <Bell className="w-2 h-2 text-white" />
+                        </div>
+                      )}
                       {!server.trusted && (
-                        <div className="absolute -top-1 -left-1 w-4 h-4 bg-yellow-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Untrusted server — GIFs blocked, file downloads may be unsafe">
+                        <div className="absolute -top-1 -left-1 w-4 h-4 bg-red-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Untrusted server — GIFs blocked, file downloads may be unsafe">
                           <Shield className="w-2.5 h-2.5 text-white" />
                         </div>
                       )}
@@ -3865,6 +3934,36 @@ export function TerminalForum() {
           );
         })()}
 
+        {/* ── Untrusted Server Confirmation ── */}
+        {untrustedConfirm && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-[#0d120d]/95 border border-red-900/50 rounded-lg shadow-2xl shadow-red-900/30 w-full max-w-sm">
+              <div className="bg-red-900/30 p-5 border-b border-red-900/40 flex items-center gap-3">
+                <Shield className="w-5 h-5 text-red-400 shrink-0" />
+                <h2 className="text-base font-bold text-red-400">Untrusted Server</h2>
+              </div>
+              <div className="p-5 flex flex-col gap-4">
+                <p className="text-sm text-red-300/80 leading-relaxed">
+                  <span className="font-semibold text-red-300">{untrustedConfirm.name}</span> is marked as untrusted. The server operator can see your username, password, and all non-DM messages.
+                </p>
+                <p className="text-xs text-red-500/70">Make sure you trust this server before joining. Use a unique password.</p>
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={() => { const s = untrustedConfirm; setUntrustedConfirm(null); connectToPinnedServer(s); }}
+                    className="flex-1 px-4 py-2 rounded-lg bg-red-900/40 hover:bg-red-900/60 text-red-300 text-sm font-semibold transition-all">
+                    Join anyway
+                  </button>
+                  <button
+                    onClick={() => setUntrustedConfirm(null)}
+                    className="flex-1 px-4 py-2 rounded-lg bg-green-900/20 hover:bg-green-900/40 text-green-400 text-sm font-semibold transition-all">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── Add Server Dialog ── */}
         {addServerDialog && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -3907,8 +4006,8 @@ export function TerminalForum() {
                   ADD SERVER
                 </button>
                 {!newServerTrusted && (
-                  <div className="flex items-start gap-2 bg-yellow-900/20 border border-yellow-800/30 rounded-lg px-3 py-2.5 text-[10px] text-yellow-700 leading-relaxed">
-                    <Shield className="w-3 h-3 mt-0.5 flex-shrink-0 text-yellow-700" />
+                  <div className="flex items-start gap-2 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2.5 text-[10px] text-red-700 leading-relaxed">
+                    <Shield className="w-3 h-3 mt-0.5 flex-shrink-0 text-red-700" />
                     <span>Untrusted — GIFs will be blocked and file downloads will show a warning. The server operator can still see your username, password, and all non-DM messages. Use a unique password.</span>
                   </div>
                 )}
@@ -3946,10 +4045,17 @@ export function TerminalForum() {
               style={{ left: Math.min(serverContextMenu.x, window.innerWidth - 200), top: Math.min(serverContextMenu.y, window.innerHeight - 150) }}
               onClick={e => e.stopPropagation()}>
               {server.username && (
-                <button onClick={() => toggleAutoConnect(server.id)}
+                <button onClick={() => toggleAutoConnectTcp(server.id)}
                   className="w-full px-4 py-2.5 rounded-lg text-green-400 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
-                  {server.autoConnect ? <WifiOff className="w-4 h-4" /> : <Wifi className="w-4 h-4" />}
-                  <span>{server.autoConnect ? 'Disable autoconnect' : 'Enable autoconnect'}</span>
+                  {server.autoConnectTcp ? <WifiOff className="w-4 h-4" /> : <Wifi className="w-4 h-4" />}
+                  <span>{server.autoConnectTcp ? 'Disable auto-connect' : 'Enable auto-connect'}</span>
+                </button>
+              )}
+              {server.username && server.authToken && server.ssePort && (
+                <button onClick={() => toggleAutoConnect(server.id)}
+                  className="w-full px-4 py-2.5 rounded-lg text-blue-400 hover:bg-blue-900/30 transition-all flex items-center gap-2 text-sm">
+                  {server.autoConnect ? <BellOff className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
+                  <span>{server.autoConnect ? 'Disable background mentions' : 'Enable background mentions'}</span>
                 </button>
               )}
               {server.username && (
@@ -5126,7 +5232,7 @@ export function TerminalForum() {
                         );
                       })()}
                       <button onClick={() => { if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId, view: 'voice' }); setViewModeTracked('voice'); }} className="ml-auto text-green-600 hover:text-green-400 transition-colors">
-                        Vis voice
+                        Show voice
                       </button>
                       <button onClick={leaveVoice} className="text-red-500 hover:text-red-400 transition-colors ml-2">
                         <PhoneOff className="w-3.5 h-3.5" />
@@ -5137,7 +5243,7 @@ export function TerminalForum() {
                 <div className="flex items-center gap-2">
                   <Hash className="w-5 h-5" />
                   <span className="font-bold">{currentTextRoom}</span>
-                  <span className="text-xs text-green-700 ml-2">{currentMessages.length} beskeder</span>
+                  <span className="text-xs text-green-700 ml-2">{currentMessages.length} messages</span>
                   <button onClick={() => setShowPins(p => !p)}
                     className={`ml-auto p-2 rounded-lg transition-all flex items-center gap-1.5 ${
                       showPins ? 'bg-green-900/40 text-green-400' : 'text-green-700 hover:text-green-400 hover:bg-green-900/20'
@@ -5259,7 +5365,6 @@ export function TerminalForum() {
                           <UserAvatar name={msg.sender} size="sm" />
                           <span className="text-sm font-bold" style={senderColor ? { color: senderColor } : undefined}>{msg.sender}</span>
                           <span className="text-[10px] text-green-700">{dateStr}{timeStr}</span>
-                          {msg.edited && <span className="text-[9px] text-green-800 italic">(edited)</span>}
                         </div>
                         {isEditing ? (
                           <EditInput body={editingMsg!.body} onSave={async (newBody) => {
@@ -5269,7 +5374,7 @@ export function TerminalForum() {
                           }} onCancel={() => setEditingMsg(null)} />
                         ) : (
                           <div className="text-sm text-green-400 mt-0.5 pl-8 flex items-start gap-1">
-                            <span className="flex-1">{renderMessageBody(msg.body)}</span>
+                            <span className="flex-1">{renderMessageBody(msg.body)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}</span>
                             {canEdit && <button onClick={() => setEditingMsg({ msgId: msg.msgId, room: currentTextRoom!, body: msg.body })}
                               className="opacity-0 group-hover:opacity-100 p-0.5 text-green-800 hover:text-green-500 transition-all shrink-0 mt-0.5">
                               <Pencil className="w-3 h-3" />
@@ -5280,7 +5385,7 @@ export function TerminalForum() {
                       </div>
                     ) : (
                       <div className="relative hover:bg-green-900/10 rounded px-2 py-0.5 -mx-2 transition-all group/cont">
-                        <span className="absolute left-2 text-green-800 opacity-0 group-hover/cont:opacity-100 text-[10px] leading-5 select-none transition-opacity">{timeStr}{msg.edited ? ' (edited)' : ''}</span>
+                        <span className="absolute left-2 text-green-800 opacity-0 group-hover/cont:opacity-100 text-[10px] leading-5 select-none transition-opacity">{timeStr}</span>
                         {isEditing ? (
                           <div className="pl-8">
                             <EditInput body={editingMsg!.body} onSave={async (newBody) => {
@@ -5291,7 +5396,7 @@ export function TerminalForum() {
                           </div>
                         ) : (
                           <div className="text-sm text-green-400 pl-8 flex items-start gap-1">
-                            <span className="flex-1">{renderMessageBody(msg.body)}</span>
+                            <span className="flex-1">{renderMessageBody(msg.body)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}</span>
                             {canEdit && <button onClick={() => setEditingMsg({ msgId: msg.msgId, room: currentTextRoom!, body: msg.body })}
                               className="opacity-0 group-hover:opacity-100 p-0.5 text-green-800 hover:text-green-500 transition-all shrink-0 mt-0.5">
                               <Pencil className="w-3 h-3" />
@@ -5472,11 +5577,11 @@ export function TerminalForum() {
                     }}
                     onPaste={handlePaste}
                     className="flex-1 bg-transparent outline-none text-green-500 placeholder-green-800"
-                    placeholder={pendingFile ? 'Tilføj en besked (valgfrit)...' : 'Skriv en besked...'} autoComplete="off" />
+                    placeholder={pendingFile ? 'Add a message (optional)...' : 'Type a message...'} autoComplete="off" />
                   <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
                   <button type="button" onClick={() => fileInputRef.current?.click()}
                     className={`p-2 rounded-lg transition-all ${pendingFile ? 'text-green-400 bg-green-900/30' : 'text-green-700 hover:text-green-400 hover:bg-green-900/20'}`}
-                    title={`Upload fil (maks ${serverInfo?.maxFileSizeKB || 2048} KB)`}>
+                    title={`Upload file (max ${serverInfo?.maxFileSizeKB || 2048} KB)`}>
                     <Paperclip className="w-4 h-4" />
                   </button>
                   <div className="relative" ref={emojiPickerRef}>
@@ -5560,7 +5665,7 @@ export function TerminalForum() {
                   <button type="submit"
                     className={`p-2 rounded-lg transition-all ${(input.trim() || pendingFile) && !fileUploadStatus ? 'text-green-400 hover:bg-green-900/30' : 'text-green-800 cursor-default'}`}
                     disabled={(!input.trim() && !pendingFile) || !!fileUploadStatus}
-                    title="Send besked">
+                    title="Send message">
                     <Send className="w-4 h-4" />
                   </button>
                 </form>

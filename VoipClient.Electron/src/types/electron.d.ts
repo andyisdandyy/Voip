@@ -62,6 +62,9 @@ interface ElectronAPI {
 
   // HTTP file upload (to server's file server for video transcoding)
   uploadFile: (host: string, port: number, token: string, fileName: string, mimeType: string, base64: string) => Promise<{ fileId: string; fileName: string; mimeType: string } | null>;
+
+  // Taskbar / dock badge
+  setBadge: (count: number) => void;
 }
 
 declare global {
