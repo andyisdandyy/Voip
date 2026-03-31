@@ -25,6 +25,9 @@ interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: bo
 interface DmTab { username: string; serverId: string }
 interface DmMessage { id: string; sender: string; body: string; timestamp: number }
 interface Friend { username: string; serverId: string }
+interface RendezvousServer { id: string; host: string; port: number; serverName: string; username: string; token: string }
+interface RendezvousFriend { username: string; rendezvousId: string; addedAt: string }
+interface FriendRequest { id: string; from: string; rendezvousId: string; sentAt: string; direction: 'incoming' | 'outgoing' }
 
 const VIDEO_RESOLUTIONS = {
   '720p':  { label: '720p',  width: 1280, height: 720 },
@@ -371,6 +374,25 @@ export function TerminalForum() {
     try { return JSON.parse(localStorage.getItem('voip-friends') || '[]'); }
     catch { return []; }
   });
+  const [rendezvousServers, setRendezvousServers] = useState<RendezvousServer[]>(() => {
+    try { return JSON.parse(localStorage.getItem('voip-rendezvous-servers') || '[]'); }
+    catch { return []; }
+  });
+  const [rendezvousFriends, setRendezvousFriends] = useState<RendezvousFriend[]>(() => {
+    try { return JSON.parse(localStorage.getItem('voip-rendezvous-friends') || '[]'); }
+    catch { return []; }
+  });
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>(() => {
+    try { return JSON.parse(localStorage.getItem('voip-friend-requests') || '[]'); }
+    catch { return []; }
+  });
+  const [activeRendezvousId, setActiveRendezvousId] = useState<string | null>(null);
+  const [rendezvousDialog, setRendezvousDialog] = useState(false);
+  const [rendezvousForm, setRendezvousForm] = useState({ address: '', username: '', password: '', tab: 'login' as 'login' | 'register' });
+  const [rendezvousFormStatus, setRendezvousFormStatus] = useState('');
+  const [rendezvousSearch, setRendezvousSearch] = useState('');
+  const [rendezvousSearchStatus, setRendezvousSearchStatus] = useState('');
+  const [rendezvousSearchResult, setRendezvousSearchResult] = useState<{ username: string; found: boolean } | null>(null);
   const dmMessagesEndRef = useRef<HTMLDivElement>(null);
   const dmInputRef = useRef<HTMLInputElement>(null);
   const dmFileInputRef = useRef<HTMLInputElement>(null);
@@ -506,9 +528,7 @@ export function TerminalForum() {
     setE2eeActive(false); setE2eePrompt(false); e2eeKeyRef.current = null;
     setSelectedVideoFeed(null);
     setActiveDmTab(null); setOpenDmTabs([]); setDmMessages({}); setDmKeyFingerprints({});
-    // Clear ECDH DM state
-    ecdhPrivateKeyRef.current = null;
-    ecdhPublicKeyB64Ref.current = '';
+    // Clear per-server DM shared keys (not the session key pair itself)
     dmSharedKeysRef.current.clear();
     pendingDmKeyCallbacksRef.current.forEach(cbs => cbs.forEach(cb => cb(null)));
     pendingDmKeyCallbacksRef.current.clear();
@@ -518,18 +538,22 @@ export function TerminalForum() {
 
   async function generateAndPublishEcdhKey() {
     try {
-      const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
-      ecdhPrivateKeyRef.current = pair.privateKey;
-      const spki = await crypto.subtle.exportKey('spki', pair.publicKey);
-      const bytes = new Uint8Array(spki);
-      let binary = '';
-      const CHUNK = 8192;
-      for (let i = 0; i < bytes.length; i += CHUNK)
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)) as unknown as number[]);
-      const b64 = btoa(binary);
-      ecdhPublicKeyB64Ref.current = b64;
-      sendToServer(`CMD:SET_DM_KEY:${b64}`);
-      console.log('[ECDH] DM key pair generated and published');
+      // Generate a new key pair only once per session; reuse it for every server
+      // so that the public key published to server A stays valid when server B connects.
+      if (!ecdhPrivateKeyRef.current) {
+        const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+        ecdhPrivateKeyRef.current = pair.privateKey;
+        const spki = await crypto.subtle.exportKey('spki', pair.publicKey);
+        const bytes = new Uint8Array(spki);
+        let binary = '';
+        const CHUNK = 8192;
+        for (let i = 0; i < bytes.length; i += CHUNK)
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)) as unknown as number[]);
+        ecdhPublicKeyB64Ref.current = btoa(binary);
+        console.log('[ECDH] DM key pair generated');
+      }
+      sendToServer(`CMD:SET_DM_KEY:${ecdhPublicKeyB64Ref.current}`);
+      console.log('[ECDH] DM key published to server');
     } catch (err) {
       console.error('[ECDH] Key generation failed:', err);
     }
@@ -1220,6 +1244,9 @@ export function TerminalForum() {
   useEffect(() => { try { localStorage.setItem('voip-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
   useEffect(() => { try { localStorage.setItem('voip-open-tabs', JSON.stringify(openTabs)); } catch {} }, [openTabs]);
   useEffect(() => { try { localStorage.setItem('voip-friends', JSON.stringify(friends)); } catch {} }, [friends]);
+  useEffect(() => { try { localStorage.setItem('voip-rendezvous-servers', JSON.stringify(rendezvousServers)); } catch {} }, [rendezvousServers]);
+  useEffect(() => { try { localStorage.setItem('voip-rendezvous-friends', JSON.stringify(rendezvousFriends)); } catch {} }, [rendezvousFriends]);
+  useEffect(() => { try { localStorage.setItem('voip-friend-requests', JSON.stringify(friendRequests)); } catch {} }, [friendRequests]);
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
     perUserSettingsRef.current = perUserSettings;
@@ -1549,6 +1576,7 @@ export function TerminalForum() {
       setJoinedText(prev => new Set(prev).add(room));
       setRoomMessages(prev => ({ ...prev, [room]: [] }));
       setCurrentText(room);
+      setTimeout(() => inputRef.current?.focus(), 0);
     } else if (line.startsWith('LEFT_TEXT:')) {
       const room = line.substring(10);
       setJoinedText(prev => { const s = new Set(prev); s.delete(room); return s; });
@@ -1895,7 +1923,13 @@ export function TerminalForum() {
         };
         if (rawText.startsWith('DMENC:')) {
           const cachedKey = dmSharedKeysRef.current.get(target);
-          (cachedKey ? dmDecrypt(rawText, cachedKey) : Promise.resolve(rawText)).then(handleDecrypted);
+          if (cachedKey) {
+            dmDecrypt(rawText, cachedKey).then(handleDecrypted);
+          } else {
+            getDmSharedKey(target).then(key => {
+              (key ? dmDecrypt(rawText, key) : Promise.resolve(rawText)).then(handleDecrypted);
+            });
+          }
         } else {
           handleDecrypted(rawText);
         }
@@ -2189,7 +2223,6 @@ export function TerminalForum() {
           setConnectedServerId(server.id);
           setIsConnected(true);
           setStatus('Connected');
-          setShowHome(false);
           addToOpenTabs(server.id);
           setConnectedServerIds(prev => new Set(prev).add(server.id));
         } catch (err: any) {
@@ -3168,6 +3201,7 @@ export function TerminalForum() {
   };
 
   const getFriendOnlineStatus = (friend: Friend): { status: 'online' | 'away' | 'offline'; online: boolean } => {
+    // Check the specific server this friend was added from
     if (connectedServerId === friend.serverId) {
       const u = onlineUsers.find(u => u.name === friend.username);
       if (u) return { status: u.status, online: u.online };
@@ -3177,7 +3211,167 @@ export function TerminalForum() {
       const u = snap.onlineUsers.find(u => u.name === friend.username);
       if (u) return { status: u.status, online: u.online };
     }
+    // Fallback: check the active server and all background snapshots by username.
+    // This handles UUID mismatches (server re-added) and cross-server presence.
+    if (connectedServerId && connectedServerId !== friend.serverId) {
+      const u = onlineUsers.find(u => u.name === friend.username && u.online);
+      if (u) return { status: u.status, online: true };
+    }
+    for (const bgSnap of Object.values(serverStatesRef.current)) {
+      if (bgSnap === snap) continue;
+      const u = bgSnap.onlineUsers.find(u => u.name === friend.username && u.online);
+      if (u) return { status: u.status, online: true };
+    }
     return { status: 'offline', online: false };
+  };
+
+  // ── Rendezvous helpers ────────────────────────────────────
+
+  function getRendezvousIdentity(): string {
+    let id = localStorage.getItem('voip-rendezvous-identity');
+    if (!id) {
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      id = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem('voip-rendezvous-identity', id);
+    }
+    return id;
+  }
+
+  const connectRendezvousServer = async () => {
+    const addr = rendezvousForm.address.trim();
+    if (!addr || !rendezvousForm.username.trim() || !rendezvousForm.password) {
+      setRendezvousFormStatus('All fields are required');
+      return;
+    }
+    const colonIdx = addr.lastIndexOf(':');
+    const host = colonIdx > 0 ? addr.slice(0, colonIdx) : addr;
+    const port = colonIdx > 0 ? parseInt(addr.slice(colonIdx + 1)) : 5010;
+    if (!host || isNaN(port)) { setRendezvousFormStatus('Invalid address (use host:port)'); return; }
+
+    setRendezvousFormStatus('Connecting…');
+    const publicKey = getRendezvousIdentity();
+
+    if (rendezvousForm.tab === 'register') {
+      const reg = await window.electronAPI.rendezvousRequest({
+        method: 'POST', host, port, path: '/register',
+        body: { username: rendezvousForm.username, password: rendezvousForm.password, publicKey },
+      });
+      if (!reg || reg.status !== 200) { setRendezvousFormStatus(reg?.data?.error || 'Registration failed'); return; }
+    }
+
+    const auth = await window.electronAPI.rendezvousRequest({
+      method: 'POST', host, port, path: '/auth',
+      body: { username: rendezvousForm.username, password: rendezvousForm.password },
+    });
+    if (!auth || auth.status !== 200) { setRendezvousFormStatus(auth?.data?.error || 'Login failed'); return; }
+
+    const info = await window.electronAPI.rendezvousRequest({ method: 'GET', host, port, path: '/' });
+    const serverName: string = info?.data?.name || `${host}:${port}`;
+
+    const newSrv: RendezvousServer = {
+      id: crypto.randomUUID(),
+      host, port, serverName,
+      username: rendezvousForm.username.trim(),
+      token: auth.data.token,
+    };
+    setRendezvousServers(prev => [
+      ...prev.filter(s => !(s.host === host && s.port === port && s.username === newSrv.username)),
+      newSrv,
+    ]);
+    setRendezvousFormStatus('✓ Connected');
+    setTimeout(() => {
+      setRendezvousDialog(false);
+      setRendezvousFormStatus('');
+      setRendezvousForm({ address: '', username: '', password: '', tab: 'login' });
+    }, 700);
+  };
+
+  const handleRendezvousSearch = async (srv: RendezvousServer) => {
+    const query = rendezvousSearch.trim();
+    if (!query) return;
+    setRendezvousSearchStatus('Searching…');
+    setRendezvousSearchResult(null);
+    const result = await window.electronAPI.rendezvousRequest({
+      method: 'GET', host: srv.host, port: srv.port, path: `/pubkey/${encodeURIComponent(query)}`,
+    });
+    if (result?.status === 200) {
+      setRendezvousSearchResult({ username: query, found: true });
+      setRendezvousSearchStatus('');
+    } else if (result?.status === 404) {
+      setRendezvousSearchResult({ username: query, found: false });
+      setRendezvousSearchStatus('');
+    } else {
+      setRendezvousSearchStatus(result?.data?.error || 'Request failed');
+    }
+  };
+
+  const sendFriendRequest = async (srv: RendezvousServer, targetUsername: string) => {
+    const payload = { type: 'friend_request', from: srv.username };
+    const result = await window.electronAPI.rendezvousRequest({
+      method: 'POST', host: srv.host, port: srv.port,
+      path: `/messages/${encodeURIComponent(targetUsername)}`,
+      token: srv.token,
+      body: { ciphertext: btoa(JSON.stringify(payload)), nonce: 'rendezvous_v1' },
+    });
+    if (result?.status === 200) {
+      setFriendRequests(prev => [
+        ...prev.filter(r => !(r.from === targetUsername && r.rendezvousId === srv.id && r.direction === 'outgoing')),
+        { id: result.data.id, from: targetUsername, rendezvousId: srv.id, sentAt: new Date().toISOString(), direction: 'outgoing' },
+      ]);
+      setRendezvousSearchStatus(`✓ Friend request sent to ${targetUsername}`);
+      setRendezvousSearchResult(null);
+      setRendezvousSearch('');
+    } else {
+      setRendezvousSearchStatus(result?.data?.error || 'Failed to send request');
+    }
+  };
+
+  const checkRendezvousInbox = async (srv: RendezvousServer) => {
+    const result = await window.electronAPI.rendezvousRequest({
+      method: 'GET', host: srv.host, port: srv.port, path: '/messages', token: srv.token,
+    });
+    if (result?.status !== 200 || !Array.isArray(result.data)) return;
+    const incoming: FriendRequest[] = [];
+    for (const msg of result.data) {
+      if (msg.nonce !== 'rendezvous_v1') continue;
+      try {
+        const payload = JSON.parse(atob(msg.ciphertext));
+        if (payload.type === 'friend_request') {
+          if (!friendRequests.some(r => r.id === msg.id)) {
+            incoming.push({ id: msg.id, from: payload.from || msg.from, rendezvousId: srv.id, sentAt: msg.sentAt, direction: 'incoming' });
+          }
+        } else if (payload.type === 'friend_accept') {
+          const accepter: string = payload.from || msg.from;
+          setRendezvousFriends(prev => prev.some(f => f.username === accepter && f.rendezvousId === srv.id)
+            ? prev : [...prev, { username: accepter, rendezvousId: srv.id, addedAt: new Date().toISOString() }]);
+          setFriendRequests(prev => prev.filter(r => !(r.from === accepter && r.rendezvousId === srv.id && r.direction === 'outgoing')));
+          await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${msg.id}`, token: srv.token });
+        }
+      } catch {}
+    }
+    if (incoming.length > 0) {
+      setFriendRequests(prev => [...prev.filter(r => !(r.rendezvousId === srv.id && r.direction === 'incoming')), ...incoming]);
+    }
+  };
+
+  const acceptFriendRequest = async (req: FriendRequest, srv: RendezvousServer) => {
+    setRendezvousFriends(prev => prev.some(f => f.username === req.from && f.rendezvousId === srv.id)
+      ? prev : [...prev, { username: req.from, rendezvousId: srv.id, addedAt: new Date().toISOString() }]);
+    const payload = { type: 'friend_accept', from: srv.username };
+    await window.electronAPI.rendezvousRequest({
+      method: 'POST', host: srv.host, port: srv.port,
+      path: `/messages/${encodeURIComponent(req.from)}`,
+      token: srv.token,
+      body: { ciphertext: btoa(JSON.stringify(payload)), nonce: 'rendezvous_v1' },
+    });
+    await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${req.id}`, token: srv.token });
+    setFriendRequests(prev => prev.filter(r => r.id !== req.id));
+  };
+
+  const declineFriendRequest = async (req: FriendRequest, srv: RendezvousServer) => {
+    await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${req.id}`, token: srv.token });
+    setFriendRequests(prev => prev.filter(r => r.id !== req.id));
   };
 
   const openInlineDm = (username: string, serverId: string) => {
@@ -3486,7 +3680,7 @@ export function TerminalForum() {
   const joinText = (room: TextRoom) => {
     if (connectedServerId) pushNav({ type: 'server', serverId: connectedServerId, view: 'text', textRoom: room.name });
     setViewModeTracked('text');
-    if (joinedTextRooms.has(room.name)) { setCurrentText(room.name); return; }
+    if (joinedTextRooms.has(room.name)) { setCurrentText(room.name); setTimeout(() => inputRef.current?.focus(), 0); return; }
     sendToServer(`CMD:JOIN_TEXT:${room.name}`);
   };
 
@@ -3859,6 +4053,144 @@ export function TerminalForum() {
               <div>{'>'} Status: <span className="text-green-500">{status}</span></div>
               <div>{'>'} Protocol: <span className="text-green-500">UDP + TCP</span></div>
             </div>
+
+            {/* Rendezvous Servers */}
+            <div className="mb-10 mt-10">
+              <div className="flex items-center justify-center gap-2 mb-4">
+                <div className="text-xs text-green-600 tracking-widest">RENDEZVOUS</div>
+                <button onClick={() => { setRendezvousDialog(true); setRendezvousFormStatus(''); }}
+                  className="w-4 h-4 flex items-center justify-center text-green-600 hover:text-green-400 transition-colors">
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {rendezvousServers.length === 0 && (
+                <div className="text-xs text-green-800 text-center">Add a rendezvous server to find and add friends</div>
+              )}
+              <div className="space-y-2 max-w-md mx-auto">
+                {rendezvousServers.map(srv => {
+                  const isActive = activeRendezvousId === srv.id;
+                  const pendingIn = friendRequests.filter(r => r.rendezvousId === srv.id && r.direction === 'incoming');
+                  const srvFriends = rendezvousFriends.filter(f => f.rendezvousId === srv.id);
+                  return (
+                    <div key={srv.id} className="bg-[#0d120d]/60 border border-green-900/20 rounded-lg overflow-hidden">
+                      <button onClick={() => { setActiveRendezvousId(isActive ? null : srv.id); setRendezvousSearch(''); setRendezvousSearchResult(null); setRendezvousSearchStatus(''); }}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-green-900/10 transition-all">
+                        <div className="w-8 h-8 rounded-lg bg-green-900/40 flex items-center justify-center text-xs font-bold text-green-400">
+                          {srv.serverName.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="flex-1 text-left min-w-0">
+                          <div className="text-sm text-green-400 font-bold truncate">{srv.serverName}</div>
+                          <div className="text-xs text-green-700 truncate">{srv.username} · {srv.host}:{srv.port}</div>
+                        </div>
+                        {pendingIn.length > 0 && (
+                          <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 animate-pulse">
+                            {pendingIn.length}
+                          </span>
+                        )}
+                        <ChevronDown className={`w-3.5 h-3.5 text-green-700 transition-transform shrink-0 ${isActive ? 'rotate-180' : ''}`} />
+                      </button>
+
+                      {isActive && (
+                        <div className="px-4 pb-4 space-y-3 border-t border-green-900/20 pt-3">
+                          {/* Search */}
+                          <div className="flex gap-2">
+                            <input value={rendezvousSearch}
+                              onChange={e => { setRendezvousSearch(e.target.value); setRendezvousSearchResult(null); setRendezvousSearchStatus(''); }}
+                              onKeyDown={e => e.key === 'Enter' && handleRendezvousSearch(srv)}
+                              placeholder="Search username…"
+                              className="flex-1 bg-black/40 border border-green-900/40 rounded px-3 py-1.5 text-xs text-green-300 placeholder-green-900 outline-none focus:border-green-700" />
+                            <button onClick={() => handleRendezvousSearch(srv)}
+                              className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded text-xs transition-all">
+                              Find
+                            </button>
+                          </div>
+                          {rendezvousSearchStatus && (
+                            <div className={`text-xs ${rendezvousSearchStatus.startsWith('✓') ? 'text-green-500' : 'text-green-700'}`}>
+                              {rendezvousSearchStatus}
+                            </div>
+                          )}
+                          {rendezvousSearchResult && (
+                            <div className="flex items-center gap-2 bg-black/20 rounded px-3 py-2">
+                              <div className="w-7 h-7 rounded-full bg-green-900/40 flex items-center justify-center text-xs font-bold text-green-400 shrink-0">
+                                {rendezvousSearchResult.username.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs text-green-400 font-bold truncate">{rendezvousSearchResult.username}</div>
+                                <div className="text-[10px] text-green-700">{rendezvousSearchResult.found ? 'Found on server' : 'Not found'}</div>
+                              </div>
+                              {rendezvousSearchResult.found && rendezvousSearchResult.username !== srv.username && (
+                                <button onClick={() => sendFriendRequest(srv, rendezvousSearchResult.username)}
+                                  className="flex items-center gap-1 px-2 py-1 bg-green-900/40 hover:bg-green-700/40 text-green-400 rounded text-[10px] transition-all shrink-0">
+                                  <UserPlus className="w-3 h-3" />
+                                  Add
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Incoming friend requests */}
+                          {pendingIn.length > 0 && (
+                            <div className="space-y-1.5">
+                              <div className="text-[10px] text-green-700 uppercase tracking-widest">Friend Requests</div>
+                              {pendingIn.map(req => (
+                                <div key={req.id} className="flex items-center gap-2 bg-black/20 rounded px-3 py-2">
+                                  <div className="w-6 h-6 rounded-full bg-green-900/40 flex items-center justify-center text-[10px] font-bold text-green-400 shrink-0">
+                                    {req.from.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-xs text-green-400 font-bold truncate">{req.from}</div>
+                                    <div className="text-[10px] text-green-700">wants to add you</div>
+                                  </div>
+                                  <button onClick={() => acceptFriendRequest(req, srv)}
+                                    className="px-2 py-1 bg-green-900/50 hover:bg-green-700/50 text-green-400 rounded text-[10px] transition-all shrink-0">
+                                    Accept
+                                  </button>
+                                  <button onClick={() => declineFriendRequest(req, srv)}
+                                    className="px-2 py-1 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded text-[10px] transition-all shrink-0">
+                                    Decline
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Rendezvous friends */}
+                          {srvFriends.length > 0 && (
+                            <div className="space-y-1.5">
+                              <div className="text-[10px] text-green-700 uppercase tracking-widest">Friends</div>
+                              {srvFriends.map(f => (
+                                <div key={f.username} className="flex items-center gap-2 bg-black/20 rounded px-3 py-2">
+                                  <div className="w-6 h-6 rounded-full bg-green-900/40 flex items-center justify-center text-[10px] font-bold text-green-400 shrink-0">
+                                    {f.username.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div className="flex-1 text-xs text-green-400 font-bold truncate">{f.username}</div>
+                                  <button onClick={() => setRendezvousFriends(prev => prev.filter(x => !(x.username === f.username && x.rendezvousId === srv.id)))}
+                                    className="text-green-900 hover:text-red-600 transition-colors shrink-0">
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Refresh / Remove */}
+                          <div className="flex gap-2 pt-1">
+                            <button onClick={() => checkRendezvousInbox(srv)}
+                              className="flex-1 py-1.5 bg-green-900/20 hover:bg-green-900/40 text-green-700 hover:text-green-400 rounded text-xs transition-all">
+                              Refresh inbox
+                            </button>
+                            <button onClick={() => { setRendezvousServers(prev => prev.filter(s => s.id !== srv.id)); setActiveRendezvousId(null); }}
+                              className="px-3 py-1.5 bg-red-900/10 hover:bg-red-900/30 text-red-900 hover:text-red-500 rounded text-xs transition-all">
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -3870,7 +4202,7 @@ export function TerminalForum() {
             <span className="text-xs text-green-700 font-mono">{fmt(callDuration)}</span>
             <button onClick={() => { if (connectedServerId) pushNav(serverNavEntry(connectedServerId)); setShowHome(false); }}
               className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-xs transition-all font-bold">
-              Tilbage
+              Back
             </button>
           </div>
         )}
@@ -3970,6 +4302,62 @@ export function TerminalForum() {
                     Cancel
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Add Rendezvous Dialog ── */}
+        {rendezvousDialog && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
+              <div className="bg-green-900/40 p-5 border-b border-green-900/50 flex items-center justify-between">
+                <h2 className="text-base font-bold text-green-400">ADD RENDEZVOUS SERVER</h2>
+                <button onClick={() => { setRendezvousDialog(false); setRendezvousFormStatus(''); }}
+                  className="p-1.5 text-green-600 hover:text-green-400">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs text-green-700">{'>'} SERVER ADDRESS</label>
+                  <input value={rendezvousForm.address}
+                    onChange={e => setRendezvousForm(p => ({ ...p, address: e.target.value }))}
+                    placeholder="relay.example.com:5010"
+                    className="w-full bg-black/40 border border-green-900/40 rounded px-3 py-2 text-sm text-green-300 placeholder-green-900 outline-none focus:border-green-600" />
+                </div>
+                <div className="flex gap-2">
+                  {(['login', 'register'] as const).map(tab => (
+                    <button key={tab} onClick={() => setRendezvousForm(p => ({ ...p, tab }))}
+                      className={`flex-1 py-1.5 rounded text-xs font-bold transition-all ${rendezvousForm.tab === tab ? 'bg-green-900/60 text-green-400 border border-green-700/40' : 'bg-black/20 text-green-700 hover:text-green-500 border border-transparent'}`}>
+                      {tab === 'login' ? 'LOG IN' : 'REGISTER'}
+                    </button>
+                  ))}
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-green-700">{'>'} USERNAME</label>
+                  <input value={rendezvousForm.username}
+                    onChange={e => setRendezvousForm(p => ({ ...p, username: e.target.value }))}
+                    placeholder="your username"
+                    className="w-full bg-black/40 border border-green-900/40 rounded px-3 py-2 text-sm text-green-300 placeholder-green-900 outline-none focus:border-green-600" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-green-700">{'>'} PASSWORD</label>
+                  <input type="password" value={rendezvousForm.password}
+                    onChange={e => setRendezvousForm(p => ({ ...p, password: e.target.value }))}
+                    onKeyDown={e => e.key === 'Enter' && connectRendezvousServer()}
+                    placeholder="••••••••"
+                    className="w-full bg-black/40 border border-green-900/40 rounded px-3 py-2 text-sm text-green-300 placeholder-green-900 outline-none focus:border-green-600" />
+                </div>
+                {rendezvousFormStatus && (
+                  <div className={`text-xs ${rendezvousFormStatus.startsWith('✓') ? 'text-green-500' : 'text-red-400'}`}>
+                    {rendezvousFormStatus}
+                  </div>
+                )}
+                <button onClick={connectRendezvousServer}
+                  className="w-full py-2.5 bg-green-900/50 hover:bg-green-700/50 text-green-300 hover:text-green-100 rounded-lg text-sm font-bold transition-all">
+                  {rendezvousForm.tab === 'login' ? 'LOG IN' : 'REGISTER & CONNECT'}
+                </button>
               </div>
             </div>
           </div>

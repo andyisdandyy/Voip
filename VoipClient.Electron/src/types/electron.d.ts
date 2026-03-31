@@ -63,6 +63,9 @@ interface ElectronAPI {
   // HTTP file upload (to server's file server for video transcoding)
   uploadFile: (host: string, port: number, token: string, fileName: string, mimeType: string, base64: string) => Promise<{ fileId: string; fileName: string; mimeType: string } | null>;
 
+  // Rendezvous server HTTP requests
+  rendezvousRequest: (opts: { method: string; host: string; port: number; path: string; token?: string; body?: object }) => Promise<{ status: number; data: any; error?: string }>;
+
   // Taskbar / dock badge
   setBadge: (count: number) => void;
 }

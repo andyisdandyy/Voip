@@ -8,10 +8,19 @@
 
 ```
 Echo/
+├── GUIDE.md                  # User-facing guide — setup, features, troubleshooting
 ├── .github/
 │   └── workflows/
 │       ├── release-server.yml  # GitHub Actions — builds & publishes server releases on tag push
 │       └── release-client.yml  # GitHub Actions — builds & publishes client releases (Win/Mac/Linux) on tag push
+│
+├── RendezvousServer/        # .NET 10 console application (P2P rendezvous server)
+│   ├── Program.cs           # Entry point — starts HTTP rendezvous server
+│   ├── RendezvousConfig.cs  # Configuration (rendezvous-config.json) — port, TTL, bind
+│   ├── UserRegistry.cs      # User registration — username + PBKDF2 password + ECDH public key (rendezvous-users.json)
+│   ├── PresenceTracker.cs   # In-memory online presence — username → address + last-seen (stale after 5 min)
+│   ├── OfflineMailbox.cs    # Encrypted offline message store with TTL purge (rendezvous-mailbox.json)
+│   └── RendezvousHttpServer.cs # HTTP API — register, auth, presence, pubkey lookup, offline mailbox
 │
 ├── VoipServer/              # .NET 10 console application (server)
 │   ├── Program.cs           # Entry point — starts TCP chat server + UDP voice loop
@@ -1065,3 +1074,41 @@ npm run dist:mac     # macOS DMG (universal)
 > - Changes to the repository structure (new files/folders)
 >
 > Keeping this document in sync ensures that Copilot (and any contributor) can quickly understand the project without re-reading every source file.
+
+---
+
+## Rendezvous Server Architecture (RendezvousServer)
+
+### Purpose
+Lightweight HTTP broker for P2P friend connections. Handles user registration, presence tracking, public key exchange, and encrypted offline message store-and-forward.
+
+### Technology
+- .NET 10 console app, no NuGet dependencies
+- Single HTTP port (default 5010)
+- Presence is in-memory only; users and mailbox are flat JSON files
+
+### HTTP API
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | / | - | Server info |
+| GET | /myip | - | Returns caller IP |
+| POST | /register | - | Register username+password+publicKey |
+| POST | /auth | - | Login, receive bearer token |
+| PUT | /presence | Bearer | Mark online with address (heartbeat) |
+| DELETE | /presence | Bearer | Mark offline |
+| GET | /presence/{username} | Bearer | online status + address + publicKey |
+| GET | /pubkey/{username} | - | Public key lookup |
+| POST | /messages/{recipient} | Bearer | Store encrypted blob {ciphertext, nonce} |
+| GET | /messages | Bearer | Fetch inbox |
+| DELETE | /messages/{id} | Bearer | Acknowledge and delete message |
+
+### Security Model
+- Server stores only opaque ciphertext � cannot decrypt any message
+- GET /myip removes need for external STUN server
+- Server observes metadata only: who talks to who, timing, message size
+
+### Data Files
+- rendezvous-config.json � port, bind, TTL
+- rendezvous-users.json � username, PBKDF2 hash, public key
+- rendezvous-mailbox.json � pending offline messages
+- logs/rendezvous_debug.txt � append-only log

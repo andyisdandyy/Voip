@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, desktopCapturer, session, systemPreferences
 const path = require('path');
 const net = require('net');
 const tls = require('tls');
+const http = require('http');
 const dgram = require('dgram');
 const nodeCrypto = require('crypto');
 const zlib = require('zlib');
@@ -819,6 +820,36 @@ function setupIPC() {
   // ── HTTP file upload (to server's file server) ─────────────
   ipcMain.handle('file:upload', async (_event, host, port, token, fileName, mimeType, base64Data) => {
     return uploadFileToServer(host, port, token, fileName, mimeType, base64Data);
+  });
+
+  // ── Rendezvous Server HTTP requests ───────────────────────
+  ipcMain.handle('rendezvous:request', (_event, { method, host, port, path: urlPath, token, body }) => {
+    return new Promise((resolve) => {
+      const bodyStr = body ? JSON.stringify(body) : null;
+      const options = {
+        hostname: host,
+        port: port,
+        path: urlPath,
+        method: method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
+        },
+      };
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
+          catch { resolve({ status: res.statusCode, data: null }); }
+        });
+      });
+      req.on('error', (err) => resolve({ status: 0, data: null, error: err.message }));
+      req.setTimeout(8000, () => { req.destroy(); resolve({ status: 0, data: null, error: 'Timeout' }); });
+      if (bodyStr) req.write(bodyStr);
+      req.end();
+    });
   });
 
   // ── Taskbar / dock badge ──────────────────────────────────
