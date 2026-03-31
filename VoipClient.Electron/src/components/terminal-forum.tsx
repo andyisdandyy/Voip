@@ -5,7 +5,7 @@ import {
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
   Plus, LogOut, Command, Wifi, WifiOff, Home, Paperclip, Download, FileText, Send, Smile, Moon, Image as ImageIcon,
   Music, Upload, Play, Trash, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Eye, EyeOff, Shield, Sliders, Users, Check,
-  PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil, SmilePlus,
+  PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil, SmilePlus, RefreshCw,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
@@ -345,6 +345,7 @@ export function TerminalForum() {
   const [serverMentions, setServerMentions] = useState<Record<string, number>>({});
   const [updateReady, setUpdateReady] = useState<string | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   const [openTabs, setOpenTabs] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('voip-open-tabs') || '[]'); }
@@ -3482,7 +3483,7 @@ export function TerminalForum() {
   //  CONNECT SCREEN
   // ═════════════════════════════════════════════════════════
 
-  if (!isConnected || showHome) {
+  if ((!isConnected || showHome) && !showSettings) {
     return (
       <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
         {/* ── Draggable titlebar ── */}
@@ -3507,7 +3508,12 @@ export function TerminalForum() {
                 <Terminal className="w-4 h-4 shrink-0 mr-2 ml-2" />
                 <span className="text-xs font-bold">ECHO</span>
               </div>
-              <div className="w-[70px] flex items-center justify-end pr-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+              <div className="w-auto flex items-center justify-end pr-2 gap-0.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                <button onClick={() => { setCheckingUpdates(true); window.electronAPI.checkForUpdates(); setTimeout(() => setCheckingUpdates(false), 3000); }}
+                  className="p-2 rounded-lg text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-colors"
+                  title={checkingUpdates ? 'Checking...' : 'Check for updates'}>
+                  <RefreshCw className={`w-4 h-4 ${checkingUpdates ? 'animate-spin' : ''}`} />
+                </button>
                 <button onClick={() => { setShowSettings(true); refreshDevices(); }}
                   className="p-2 rounded-lg text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-colors"
                   title="Settings">
@@ -3534,6 +3540,11 @@ export function TerminalForum() {
                 <span className="text-xs font-bold">ECHO</span>
               </div>
               <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                <button onClick={() => { setCheckingUpdates(true); window.electronAPI.checkForUpdates(); setTimeout(() => setCheckingUpdates(false), 3000); }}
+                  className="px-3 py-2 text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-colors"
+                  title={checkingUpdates ? 'Checking...' : 'Check for updates'}>
+                  <RefreshCw className={`w-4 h-4 ${checkingUpdates ? 'animate-spin' : ''}`} />
+                </button>
                 <button onClick={() => { setShowSettings(true); refreshDevices(); }}
                   className="px-3 py-2 text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-colors"
                   title="Settings">
@@ -3553,7 +3564,7 @@ export function TerminalForum() {
                 </button>
               </div>
             </>
-                )}
+          )}
         </div>
 
         {/* ── Server Tab Bar ──────────────────────────────────── */}
@@ -4122,6 +4133,12 @@ export function TerminalForum() {
                     title="Servere">
                     <Home className="w-4 h-4" />
                   </button>
+                  <button onClick={() => { setCheckingUpdates(true); window.electronAPI.checkForUpdates(); setTimeout(() => setCheckingUpdates(false), 3000); }}
+                    className="px-3 py-2 text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-colors"
+                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    title={checkingUpdates ? 'Checking...' : 'Check for updates'}>
+                    <RefreshCw className={`w-4 h-4 ${checkingUpdates ? 'animate-spin' : ''}`} />
+                  </button>
                   <button onClick={disconnect}
                     className="px-3 py-2 text-xs text-red-500 hover:text-red-400 hover:bg-red-900/20 transition-colors"
                     style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -4159,6 +4176,11 @@ export function TerminalForum() {
                DISCONNECT
              </button>
              <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+             <button onClick={() => { setCheckingUpdates(true); window.electronAPI.checkForUpdates(); setTimeout(() => setCheckingUpdates(false), 3000); }}
+               className="px-3 py-2 text-green-700 hover:text-green-400 hover:bg-green-900/20 transition-colors"
+               title={checkingUpdates ? 'Checking...' : 'Check for updates'}>
+               <RefreshCw className={`w-4 h-4 ${checkingUpdates ? 'animate-spin' : ''}`} />
+             </button>
              <button onClick={() => window.electronAPI.minimizeWindow()}
                className="px-3 py-2 text-green-600 hover:bg-green-900/30 transition-colors" title="Minimize">
                <Minus className="w-4 h-4" />
