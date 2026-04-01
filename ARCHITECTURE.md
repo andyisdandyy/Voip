@@ -747,7 +747,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Autoconnect (start, stop, mention listener)
 - Auto-updater (version, check, install, progress/status listeners)
 - Video pop-out (open, close, closed listener)
-- Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows)
+- Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows). Each DM tab is identified by a composite key `dmTabKey(dm)` = `"${serverId}:${username}"` (or `"rdv:${rendezvousId}:${username}"` for rendezvous DMs). This key is used for `activeDmTab`, `dmMessages`, `dmUnreadCounts`, and `dmKeyFingerprints`, preventing collisions when two different servers have users with the same username.
 - HTTP file upload — `uploadFile(host, port, token, fileName, mimeType, base64)` (upload to server's file server for server-side transcoding)
 
 ### AudioWorklet Processors

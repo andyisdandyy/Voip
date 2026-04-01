@@ -24,7 +24,12 @@ interface RoleInfo { name: string; color: string; priority: number; permissions:
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
 interface DmTab { username: string; serverId: string; rendezvousId?: string }
 interface DmMessage { id: string; sender: string; body: string; timestamp: number }
-interface Friend { username: string; serverId: string }
+
+// Unique key for a DM tab — prevents collisions when two servers have users with the same name
+const dmTabKey = (dm: Pick<DmTab, 'username' | 'serverId' | 'rendezvousId'>): string =>
+  `${dm.rendezvousId != null ? 'rdv:' + dm.rendezvousId : dm.serverId}:${dm.username}`;
+
+interface Friend
 interface RendezvousServer { id: string; host: string; port: number; serverName: string; username: string; token: string; tokenExpired?: boolean }
 interface RendezvousFriend { username: string; rendezvousId: string; addedAt: string }
 interface FriendRequest { id: string; from: string; rendezvousId: string; sentAt: string; direction: 'incoming' | 'outgoing' }
@@ -196,7 +201,7 @@ export function TerminalForum() {
   type NavEntry =
     | { type: 'home' }
     | { type: 'server'; serverId: string; view: 'voice' | 'text'; textRoom?: string | null }
-    | { type: 'dm'; username: string };
+    | { type: 'dm'; username: string; key: string };
   const navHistoryRef = useRef<NavEntry[]>([{ type: 'home' }]);
   const navIndexRef = useRef(0);
   const isNavRestoreRef = useRef(false);  // true while applying a back/forward entry
@@ -618,7 +623,7 @@ export function TerminalForum() {
   const navEntriesEqual = (a: NavEntry, b: NavEntry): boolean => {
     if (a.type !== b.type) return false;
     if (a.type === 'server' && b.type === 'server') return a.serverId === b.serverId && a.view === b.view && (a.textRoom ?? null) === (b.textRoom ?? null);
-    if (a.type === 'dm' && b.type === 'dm') return a.username === b.username;
+    if (a.type === 'dm' && b.type === 'dm') return a.key === b.key;
     return true;
   };
 
@@ -685,7 +690,7 @@ export function TerminalForum() {
         }
       }
     } else if (entry.type === 'dm') {
-      setActiveDmTab(entry.username);
+      setActiveDmTab(entry.key);
       setShowHome(false);
     }
     isNavRestoreRef.current = false;
@@ -1891,7 +1896,7 @@ export function TerminalForum() {
           crypto.subtle.digest('SHA-256', raw).then(hash => {
             const fp = Array.from(new Uint8Array(hash).slice(0, 8))
               .map(b => b.toString(16).padStart(2, '0')).join(':');
-            setDmKeyFingerprints(prev => ({ ...prev, [username]: fp }));
+            setDmKeyFingerprints(prev => ({ ...prev, [`${serverId}:${username}`]: fp }));
           });
         } else {
           callbacks.forEach(cb => cb(null));
@@ -1904,14 +1909,15 @@ export function TerminalForum() {
         const fromUser = line.substring(3, i1);
         const rawText = line.substring(i1 + 1);
         const handleDecrypted = (body: string) => {
+          const dmKey_str = `${serverId}:${fromUser}`;
           const msg: DmMessage = { id: crypto.randomUUID(), sender: fromUser, body, timestamp: Date.now() };
-          setDmMessages(prev => ({ ...prev, [fromUser]: [...(prev[fromUser] || []), msg] }));
+          setDmMessages(prev => ({ ...prev, [dmKey_str]: [...(prev[dmKey_str] || []), msg] }));
           setOpenDmTabs(prev => {
-            if (prev.some(t => t.username === fromUser)) return prev;
+            if (prev.some(t => t.username === fromUser && t.serverId === serverId)) return prev;
             return [...prev, { username: fromUser, serverId }];
           });
-          if (activeDmTabRef.current !== fromUser) {
-            setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
+          if (activeDmTabRef.current !== dmKey_str) {
+            setDmUnreadCounts(prev => ({ ...prev, [dmKey_str]: (prev[dmKey_str] || 0) + 1 }));
           }
           const dmLevel = resolveNotifLevel(connectedServerIdRef.current ?? '');
           if (notificationSoundsRef.current && dmLevel !== 'none') playUiSound('message');
@@ -1937,8 +1943,9 @@ export function TerminalForum() {
         const target = line.substring(8, i1);
         const rawText = line.substring(i1 + 1);
         const handleDecrypted = (body: string) => {
+          const dmKey_str = `${serverId}:${target}`;
           const msg: DmMessage = { id: crypto.randomUUID(), sender: nicknameRef.current, body, timestamp: Date.now() };
-          setDmMessages(prev => ({ ...prev, [target]: [...(prev[target] || []), msg] }));
+          setDmMessages(prev => ({ ...prev, [dmKey_str]: [...(prev[dmKey_str] || []), msg] }));
         };
         if (rawText.startsWith('DMENC:')) {
           const cachedKey = dmSharedKeysRef.current.get(target);
@@ -3388,7 +3395,7 @@ export function TerminalForum() {
       crypto.subtle.digest('SHA-256', raw).then(hash => {
         const fp = Array.from(new Uint8Array(hash).slice(0, 8))
           .map(b => b.toString(16).padStart(2, '0')).join(':');
-        setDmKeyFingerprints(prev => ({ ...prev, [username]: fp }));
+        setDmKeyFingerprints(prev => ({ ...prev, [dmTabKey({ username, serverId: '', rendezvousId: srv.id })]: fp }));
       });
     }
     return key;
@@ -3396,15 +3403,16 @@ export function TerminalForum() {
 
   const openRendezvousDm = (username: string, srv: RendezvousServer) => {
     if (username === srv.username) return;
+    const key = dmTabKey({ username, serverId: '', rendezvousId: srv.id });
     setOpenDmTabs(prev => {
       if (prev.some(t => t.username === username && t.rendezvousId === srv.id)) return prev;
       return [...prev, { username, serverId: '', rendezvousId: srv.id }];
     });
-    pushNav({ type: 'dm', username });
-    setActiveDmTab(username);
+    pushNav({ type: 'dm', username, key });
+    setActiveDmTab(key);
     setDmInput('');
     setShowHome(false);
-    setDmUnreadCounts(prev => { const n = { ...prev }; delete n[username]; return n; });
+    setDmUnreadCounts(prev => { const n = { ...prev }; delete n[key]; return n; });
     getRendezvousDmKey(username, srv);
   };
 
@@ -3421,18 +3429,19 @@ export function TerminalForum() {
 
         if (msg.nonce === 'rdv_dm_v1') {
           const fromUser: string = msg.from;
+          const tabKey = dmTabKey({ username: fromUser, serverId: '', rendezvousId: srv.id });
           const key = await getRendezvousDmKey(fromUser, srv);
           const decrypted = key ? await dmDecrypt(msg.ciphertext, key) : msg.ciphertext;
           const dmMsg: DmMessage = { id: msg.id, sender: fromUser, body: decrypted, timestamp: new Date(msg.sentAt).getTime() };
           setDmMessages(prev => {
-            const existing = prev[fromUser] || [];
+            const existing = prev[tabKey] || [];
             if (existing.some(m => m.id === msg.id)) return prev;
-            return { ...prev, [fromUser]: [...existing, dmMsg] };
+            return { ...prev, [tabKey]: [...existing, dmMsg] };
           });
           setOpenDmTabs(prev => prev.some(t => t.username === fromUser && t.rendezvousId === srv.id)
             ? prev : [...prev, { username: fromUser, serverId: '', rendezvousId: srv.id }]);
-          if (activeDmTabRef.current !== fromUser) {
-            setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
+          if (activeDmTabRef.current !== tabKey) {
+            setDmUnreadCounts(prev => ({ ...prev, [tabKey]: (prev[tabKey] || 0) + 1 }));
             if (notificationSoundsRef.current) playUiSound('message');
             window.electronAPI.showNotification(`DM from ${fromUser}`, decrypted.substring(0, 100));
           }
@@ -3536,15 +3545,16 @@ export function TerminalForum() {
 
   const openInlineDm = (username: string, serverId: string) => {
     if (username === nickname) return;
+    const key = dmTabKey({ username, serverId });
     setOpenDmTabs(prev => {
       if (prev.some(t => t.username === username && t.serverId === serverId)) return prev;
       return [...prev, { username, serverId }];
     });
-    pushNav({ type: 'dm', username });
-    setActiveDmTab(username);
+    pushNav({ type: 'dm', username, key });
+    setActiveDmTab(key);
     setDmInput('');
     setShowHome(false);
-    setDmUnreadCounts(prev => { const n = { ...prev }; delete n[username]; return n; });
+    setDmUnreadCounts(prev => { const n = { ...prev }; delete n[key]; return n; });
   };
 
   const connectToPinnedServer = async (server: PinnedServer) => {
@@ -5062,11 +5072,12 @@ export function TerminalForum() {
        })}
        {/* ── DM tabs ──────────────────────────────────────── */}
        {openDmTabs.map(dm => {
-         const isActiveDm = activeDmTab === dm.username;
-         const dmUnread = dmUnreadCounts[dm.username] || 0;
+         const key = dmTabKey(dm);
+         const isActiveDm = activeDmTab === key;
+         const dmUnread = dmUnreadCounts[key] || 0;
          return (
-           <div key={`dm-${dm.username}`}
-             onClick={() => { pushNav({ type: 'dm', username: dm.username }); setActiveDmTab(dm.username); setDmInput(''); setShowHome(false); setDmUnreadCounts(prev => { const n = { ...prev }; delete n[dm.username]; return n; }); }}
+           <div key={`dm-${key}`}
+             onClick={() => { pushNav({ type: 'dm', username: dm.username, key }); setActiveDmTab(key); setDmInput(''); setShowHome(false); setDmUnreadCounts(prev => { const n = { ...prev }; delete n[key]; return n; }); }}
              className={`group flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-xs transition-all shrink-0 max-w-[200px] border-b-2 select-none cursor-pointer ${
                isActiveDm
                  ? 'bg-[#0a0e0a] text-green-400 border-green-500'
@@ -5084,7 +5095,7 @@ export function TerminalForum() {
              <button
                onClick={(e) => {
                  e.stopPropagation();
-                 setOpenDmTabs(prev => prev.filter(t => t.username !== dm.username));
+                 setOpenDmTabs(prev => prev.filter(t => dmTabKey(t) !== key));
                  if (isActiveDm) setActiveDmTab(null);
                }}
                className="p-0.5 rounded text-green-800 hover:text-red-400 hover:bg-red-900/30 opacity-0 group-hover:opacity-100 transition-all shrink-0 ml-auto"
@@ -5101,8 +5112,8 @@ export function TerminalForum() {
      <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? '' : 'p-1.5 gap-1.5'}`}>
 
       {/* ── Inline DM Chat ─────────────────────────────────── */}
-      {activeDmTab && openDmTabs.some(t => t.username === activeDmTab) ? (() => {
-        const dmTab = openDmTabs.find(t => t.username === activeDmTab);
+      {activeDmTab && openDmTabs.some(t => dmTabKey(t) === activeDmTab) ? (() => {
+        const dmTab = openDmTabs.find(t => dmTabKey(t) === activeDmTab);
         if (!dmTab) return null;
         const msgs = dmMessages[activeDmTab] || [];
         return (
@@ -5110,7 +5121,7 @@ export function TerminalForum() {
             {/* DM header */}
             <div className="px-4 py-3 border-b border-green-900/30 flex items-center gap-3 shrink-0">
               <Send className="w-4 h-4 text-green-600" />
-              <span className="text-sm text-green-400 font-bold">DM — {activeDmTab}</span>
+              <span className="text-sm text-green-400 font-bold">DM — {dmTab.username}</span>
               <div className="ml-auto flex flex-col items-end gap-0.5">
                 <span className="flex items-center gap-1 text-[10px] text-green-700" title="End-to-end encrypted with ECDH P-256 + AES-256-GCM">
                   <Lock className="w-3 h-3 text-green-600" />
@@ -5235,7 +5246,7 @@ export function TerminalForum() {
                         body: { ciphertext: body, nonce: 'rdv_dm_v1' },
                       });
                       const sentMsg: DmMessage = { id: crypto.randomUUID(), sender: rdvSrv.username, body: dmInput, timestamp: Date.now() };
-                      setDmMessages(prev => ({ ...prev, [dmTab.username]: [...(prev[dmTab.username] || []), sentMsg] }));
+                      setDmMessages(prev => ({ ...prev, [dmTabKey(dmTab)]: [...(prev[dmTabKey(dmTab)] || []), sentMsg] }));
                     }
                   } else {
                     const dmKey = await getDmSharedKey(dmTab.username);
@@ -5251,7 +5262,7 @@ export function TerminalForum() {
                   type="text"
                   value={dmInput}
                   onChange={e => setDmInput(e.target.value)}
-                  placeholder={pendingDmFile ? 'Add a message (optional)...' : `Message ${activeDmTab}...`}
+                  placeholder={pendingDmFile ? 'Add a message (optional)...' : `Message ${dmTab.username}...`}
                   className="flex-1 bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2.5 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-1 focus:ring-green-900/50 transition-all text-sm"
                   autoFocus
                 />
