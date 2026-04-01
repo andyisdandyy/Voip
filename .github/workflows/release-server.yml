@@ -22,11 +22,11 @@ jobs:
 
       - name: Publish linux-x64
         run: |
-          dotnet publish VoipServer/VoipServer.csproj \
-            -c Release \
-            -r linux-x64 \
-            --self-contained \
-            -p:PublishSingleFile=true \
+          dotnet publish VoipServer/VoipServer.csproj `
+            -c Release `
+            -r linux-x64 `
+            --self-contained `
+            -p:PublishSingleFile=true `
             -o ./artifacts/linux-x64
 
       - name: Package
@@ -37,62 +37,5 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          files: VoipServer-linux-x64.tar.gz
-
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate version
-        id: gen
-        run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          else
-            COMMIT_TAG=$(git tag --points-at HEAD | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
-            if [ -n "$COMMIT_TAG" ]; then
-              echo "version=${COMMIT_TAG}" >> $GITHUB_OUTPUT
-            else
-              COUNT=$(git rev-list --count HEAD)
-              echo "version=1.0.${COUNT}" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          dotnet-quality: 'preview'
-
-      - name: Publish linux-x64
-        run: |
-          dotnet publish VoipServer/VoipServer.csproj \
-            -c Release \
-            -r linux-x64 \
-            --self-contained \
-            -p:PublishSingleFile=true \
-            -o ./artifacts/linux-x64
-
-      - name: Package
-        run: |
-          cd artifacts/linux-x64
-          tar czf ../../VoipServer-linux-x64.tar.gz .
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: server-v${{ steps.gen.outputs.version }}
-          name: VoIP Server v${{ steps.gen.outputs.version }}
           generate_release_notes: true
           files: VoipServer-linux-x64.tar.gz

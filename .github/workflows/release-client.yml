@@ -34,34 +34,27 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - name: Install dependencies
         working-directory: VoipClient.Electron
         run: npm install
-
       - name: Install native addon dependencies
         working-directory: VoipClient.Electron/native/audio-loopback
         run: npm install
-
       - name: Build native addon
         working-directory: VoipClient.Electron
         run: npm run rebuild-native
-
       - name: Sync version from tag
         working-directory: VoipClient.Electron
         shell: bash
         run: |
           TAG="${GITHUB_REF#refs/tags/client-v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
-
       - name: Build & publish (Windows)
         working-directory: VoipClient.Electron
         env:
@@ -73,30 +66,24 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - name: Setup Python (for native module rebuilds)
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         working-directory: VoipClient.Electron
         run: npm install
-
       - name: Sync version from tag
         working-directory: VoipClient.Electron
         run: |
           TAG="${GITHUB_REF#refs/tags/client-v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
-
       - name: Build & publish (macOS x64)
         working-directory: VoipClient.Electron
         env:
@@ -109,30 +96,24 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - name: Setup Python (for native module rebuilds)
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         working-directory: VoipClient.Electron
         run: npm install
-
       - name: Sync version from tag
         working-directory: VoipClient.Electron
         run: |
           TAG="${GITHUB_REF#refs/tags/client-v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
-
       - name: Build & publish (macOS arm64)
         working-directory: VoipClient.Electron
         env:
@@ -145,233 +126,26 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - name: Setup Python (for native module rebuilds)
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         working-directory: VoipClient.Electron
         run: npm install
-
       - name: Sync version from tag
         working-directory: VoipClient.Electron
         run: |
           TAG="${GITHUB_REF#refs/tags/client-v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
-
       - name: Build & publish (Linux)
         working-directory: VoipClient.Electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run build && npx electron-builder --linux --x64 --publish onTag
-
-
-jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      release_id: ${{ steps.create.outputs.id }}
-      version: ${{ steps.gen.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate version
-        id: gen
-        run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          else
-            COMMIT_TAG=$(git tag --points-at HEAD | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
-            if [ -n "$COMMIT_TAG" ]; then
-              echo "version=${COMMIT_TAG}" >> $GITHUB_OUTPUT
-            else
-              COUNT=$(git rev-list --count HEAD)
-              echo "version=1.0.${COUNT}" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-      - name: Create GitHub Release
-        id: create
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const version = '${{ steps.gen.outputs.version }}';
-            const tag = `v${version}`;
-            try {
-              const release = await github.rest.repos.createRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag_name: tag,
-                name: `Echo ${tag}`,
-                target_commitish: context.sha,
-                draft: false,
-                prerelease: false,
-              });
-              core.setOutput('id', release.data.id);
-            } catch (err) {
-              if (err.status === 422) {
-                // Release already exists — tag push and branch push both fired for the same commit
-                const existing = await github.rest.repos.getReleaseByTag({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  tag: tag,
-                });
-                core.setOutput('id', existing.data.id);
-              } else {
-                throw err;
-              }
-            }
-
-  build-windows:
-    needs: create-release
-    runs-on: windows-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        working-directory: VoipClient.Electron
-        run: npm install
-
-      - name: Install native addon dependencies
-        working-directory: VoipClient.Electron/native/audio-loopback
-        run: npm install
-
-      - name: Build native addon
-        working-directory: VoipClient.Electron
-        run: npm run rebuild-native
-
-      - name: Set version
-        working-directory: VoipClient.Electron
-        shell: bash
-        run: npm version "${{ needs.create-release.outputs.version }}" --no-git-tag-version --allow-same-version
-
-      - name: Build & publish (Windows)
-        working-directory: VoipClient.Electron
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build && npx electron-builder --win --x64 --publish always
-
-  build-mac-x64:
-    needs: create-release
-    runs-on: macos-14
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup Python (for native module rebuilds)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        working-directory: VoipClient.Electron
-        run: npm install
-
-      - name: Set version
-        working-directory: VoipClient.Electron
-        run: npm version "${{ needs.create-release.outputs.version }}" --no-git-tag-version --allow-same-version
-
-      - name: Build & publish (macOS x64)
-        working-directory: VoipClient.Electron
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run build && npx electron-builder --mac --x64 --publish always
-
-  build-mac-arm64:
-    needs: create-release
-    runs-on: macos-14
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup Python (for native module rebuilds)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        working-directory: VoipClient.Electron
-        run: npm install
-
-      - name: Set version
-        working-directory: VoipClient.Electron
-        run: npm version "${{ needs.create-release.outputs.version }}" --no-git-tag-version --allow-same-version
-
-      - name: Build & publish (macOS arm64)
-        working-directory: VoipClient.Electron
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run build && npx electron-builder --mac --arm64 --publish always
-
-  build-linux:
-    needs: create-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup Python (for native module rebuilds)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        working-directory: VoipClient.Electron
-        run: npm install
-
-      - name: Set version
-        working-directory: VoipClient.Electron
-        run: npm version "${{ needs.create-release.outputs.version }}" --no-git-tag-version --allow-same-version
-
-      - name: Build & publish (Linux)
-        working-directory: VoipClient.Electron
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build && npx electron-builder --linux --x64 --publish always
