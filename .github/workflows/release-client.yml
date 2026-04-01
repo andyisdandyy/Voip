@@ -36,8 +36,13 @@ jobs:
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            COUNT=$(git rev-list --count HEAD)
-            echo "version=1.0.${COUNT}" >> $GITHUB_OUTPUT
+            COMMIT_TAG=$(git tag --points-at HEAD | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+            if [ -n "$COMMIT_TAG" ]; then
+              echo "version=${COMMIT_TAG}" >> $GITHUB_OUTPUT
+            else
+              COUNT=$(git rev-list --count HEAD)
+              echo "version=1.0.${COUNT}" >> $GITHUB_OUTPUT
+            fi
           fi
 
       - name: Create GitHub Release
@@ -47,16 +52,30 @@ jobs:
           script: |
             const version = '${{ steps.gen.outputs.version }}';
             const tag = `v${version}`;
-            const release = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: tag,
-              name: `Echo ${tag}`,
-              target_commitish: context.sha,
-              draft: false,
-              prerelease: false,
-            });
-            core.setOutput('id', release.data.id);
+            try {
+              const release = await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: tag,
+                name: `Echo ${tag}`,
+                target_commitish: context.sha,
+                draft: false,
+                prerelease: false,
+              });
+              core.setOutput('id', release.data.id);
+            } catch (err) {
+              if (err.status === 422) {
+                // Release already exists — tag push and branch push both fired for the same commit
+                const existing = await github.rest.repos.getReleaseByTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag: tag,
+                });
+                core.setOutput('id', existing.data.id);
+              } else {
+                throw err;
+              }
+            }
 
   build-windows:
     needs: create-release

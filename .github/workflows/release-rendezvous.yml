@@ -34,17 +34,14 @@ jobs:
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            COUNT=$(git rev-list --count HEAD)
-            echo "version=1.0.${COUNT}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          dotnet-quality: 'preview'
-
-      - name: Publish linux-x64
+            COMMIT_TAG=$(git tag --points-at HEAD | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+            if [ -n "$COMMIT_TAG" ]; then
+              echo "version=${COMMIT_TAG}" >> $GITHUB_OUTPUT
+            else
+              COUNT=$(git rev-list --count HEAD)
+              echo "version=1.0.${COUNT}" >> $GITHUB_OUTPUT
+            fi
+          fi          dotnet-quality: 'preview'
         run: |
           dotnet publish RendezvousServer/RendezvousServer.csproj \
             -c Release \
