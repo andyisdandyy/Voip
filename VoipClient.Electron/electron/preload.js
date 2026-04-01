@@ -129,6 +129,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('updater:downloaded', handler);
     return () => ipcRenderer.removeListener('updater:downloaded', handler);
   },
+  onUpdateNotAvailable: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('updater:not-available', handler);
+    return () => ipcRenderer.removeListener('updater:not-available', handler);
+  },
 
   // ── Video Pop-out ──────────────────────────────────────────
   openPopout: (username) => ipcRenderer.invoke('popout:open', username),

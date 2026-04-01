@@ -440,6 +440,12 @@ app.on('window-all-closed', () => {
 // Downloads updates in the background and notifies the renderer
 // so the UI can prompt the user to restart.
 
+// Track updater state so manual re-checks can reply immediately without
+// re-triggering a network request when an update is already known.
+let _updaterAvailableVersion = null;
+let _updaterDownloadedVersion = null;
+let _updaterProgress = null;
+
 function setupAutoUpdater() {
   if (!app.isPackaged) return; // skip in dev
 
@@ -452,28 +458,37 @@ function setupAutoUpdater() {
 
   autoUpdater.on('update-available', (info) => {
     console.log(`[Updater] Update available: ${info.version}`);
+    _updaterAvailableVersion = info.version;
     mainWindow?.webContents.send('updater:available', info.version);
   });
 
   autoUpdater.on('update-not-available', () => {
     console.log('[Updater] Up to date');
+    mainWindow?.webContents.send('updater:not-available');
   });
 
   autoUpdater.on('download-progress', (progress) => {
-    mainWindow?.webContents.send('updater:progress', Math.round(progress.percent));
+    _updaterProgress = Math.round(progress.percent);
+    mainWindow?.webContents.send('updater:progress', _updaterProgress);
   });
 
   autoUpdater.on('update-downloaded', (info) => {
     console.log(`[Updater] Update downloaded: ${info.version}`);
+    _updaterDownloadedVersion = info.version;
+    _updaterAvailableVersion = null;
+    _updaterProgress = null;
     mainWindow?.webContents.send('updater:downloaded', info.version);
   });
 
   autoUpdater.on('error', (err) => {
     console.error('[Updater] Error:', err.message);
+    mainWindow?.webContents.send('updater:not-available');
   });
 
   // Check immediately, then every 30 minutes
-  autoUpdater.checkForUpdates().catch(() => {});
+  autoUpdater.checkForUpdates().catch(() => {
+    mainWindow?.webContents.send('updater:not-available');
+  });
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
   }, 30 * 60 * 1000);
@@ -765,7 +780,28 @@ function setupIPC() {
   });
 
   ipcMain.on('updater:check', () => {
-    if (app.isPackaged) autoUpdater.checkForUpdates().catch(() => {});
+    if (!app.isPackaged) {
+      // Dev mode — nothing to check; let the renderer reset its spinner
+      mainWindow?.webContents.send('updater:not-available');
+      return;
+    }
+    // If already downloaded, just re-notify so the renderer can show the prompt
+    if (_updaterDownloadedVersion) {
+      mainWindow?.webContents.send('updater:downloaded', _updaterDownloadedVersion);
+      return;
+    }
+    // If currently downloading, re-send progress so the renderer re-shows the toast
+    if (_updaterAvailableVersion) {
+      mainWindow?.webContents.send('updater:available', _updaterAvailableVersion);
+      if (_updaterProgress !== null) {
+        mainWindow?.webContents.send('updater:progress', _updaterProgress);
+      }
+      return;
+    }
+    // No cached state — trigger a fresh network check
+    autoUpdater.checkForUpdates().catch(() => {
+      mainWindow?.webContents.send('updater:not-available');
+    });
   });
 
   ipcMain.handle('get-app-version', () => app.getVersion());

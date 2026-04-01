@@ -29,7 +29,7 @@ interface DmMessage { id: string; sender: string; body: string; timestamp: numbe
 const dmTabKey = (dm: Pick<DmTab, 'username' | 'serverId' | 'rendezvousId'>): string =>
   `${dm.rendezvousId != null ? 'rdv:' + dm.rendezvousId : dm.serverId}:${dm.username}`;
 
-interface Friend
+interface Friend { username: string; serverId: string }
 interface RendezvousServer { id: string; host: string; port: number; serverName: string; username: string; token: string; tokenExpired?: boolean }
 interface RendezvousFriend { username: string; rendezvousId: string; addedAt: string }
 interface FriendRequest { id: string; from: string; rendezvousId: string; sentAt: string; direction: 'incoming' | 'outgoing' }
@@ -341,6 +341,7 @@ export function TerminalForum() {
   const [serverContextMenu, setServerContextMenu] = useState<ServerContextMenu | null>(null);
   const [friendContextMenu, setFriendContextMenu] = useState<{ username: string; serverId: string; x: number; y: number } | null>(null);
   const [rdvFriendContextMenu, setRdvFriendContextMenu] = useState<{ username: string; rendezvousId: string; x: number; y: number } | null>(null);
+  const [rdvServerContextMenu, setRdvServerContextMenu] = useState<{ serverId: string; x: number; y: number } | null>(null);
   const [addServerDialog, setAddServerDialog] = useState(false);
   const [untrustedConfirm, setUntrustedConfirm] = useState<PinnedServer | null>(null);
   const [newServerName, setNewServerName] = useState('');
@@ -1235,6 +1236,7 @@ export function TerminalForum() {
   // Auto-updater listener
   useEffect(() => {
     const unsubAvailable = window.electronAPI.onUpdateAvailable((version) => {
+      setCheckingUpdates(false);
       setUpdateAvailable(version);
       setUpdateDismissed(false);
     });
@@ -1242,12 +1244,16 @@ export function TerminalForum() {
       setUpdateProgress(percent);
     });
     const unsub = window.electronAPI.onUpdateDownloaded((version) => {
+      setCheckingUpdates(false);
       setUpdateAvailable(null);
       setUpdateProgress(null);
       setUpdateReady(version);
       setUpdateDismissed(false);
     });
-    return () => { unsubAvailable(); unsubProgress(); unsub(); };
+    const unsubNotAvailable = window.electronAPI.onUpdateNotAvailable(() => {
+      setCheckingUpdates(false);
+    });
+    return () => { unsubAvailable(); unsubProgress(); unsub(); unsubNotAvailable(); };
   }, []);
   useEffect(() => { try { localStorage.setItem('voip-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
   useEffect(() => { try { localStorage.setItem('voip-open-tabs', JSON.stringify(openTabs)); } catch {} }, [openTabs]);
@@ -1288,15 +1294,15 @@ export function TerminalForum() {
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null); setRdvFriendContextMenu(null); setRoomContextMenu(null);
+      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null); setRdvFriendContextMenu(null); setRdvServerContextMenu(null); setRoomContextMenu(null);
       if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target as Node)) setShowEmojiPicker(false);
       if (gifPickerRef.current && !gifPickerRef.current.contains(e.target as Node)) { setShowGifPicker(false); setGifQuery(''); setGifResults([]); }
     };
-    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || rdvFriendContextMenu || roomContextMenu || showEmojiPicker || reactionPickerMsgId) {
+    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || rdvFriendContextMenu || rdvServerContextMenu || roomContextMenu || showEmojiPicker || reactionPickerMsgId) {
       document.addEventListener('click', handleClick);
       return () => document.removeEventListener('click', handleClick);
     }
-  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, rdvFriendContextMenu, roomContextMenu, showEmojiPicker, reactionPickerMsgId]);
+  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, rdvFriendContextMenu, rdvServerContextMenu, roomContextMenu, showEmojiPicker, reactionPickerMsgId]);
 
   // Close reaction picker on outside click
   useEffect(() => {
@@ -4273,9 +4279,12 @@ export function TerminalForum() {
                   const srvFriends = rendezvousFriends.filter(f => f.rendezvousId === srv.id);
                   return (
                     <div key={srv.id} className="bg-[#0d120d]/60 border border-green-900/20 rounded-lg overflow-hidden">
-                      <button onClick={() => { setActiveRendezvousId(isActive ? null : srv.id); setRendezvousSearch(''); setRendezvousSearchResult(null); setRendezvousSearchStatus(''); }}
-                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-green-900/10 transition-all">
-                        <div className="w-8 h-8 rounded-lg bg-green-900/40 flex items-center justify-center text-xs font-bold text-green-400">
+                      <div
+                        role="button"
+                        onClick={() => { setActiveRendezvousId(isActive ? null : srv.id); setRendezvousSearch(''); setRendezvousSearchResult(null); setRendezvousSearchStatus(''); }}
+                        onContextMenu={(e) => { e.preventDefault(); setRdvServerContextMenu({ serverId: srv.id, x: e.clientX, y: e.clientY }); }}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-green-900/10 transition-all cursor-pointer select-none">
+                        <div className="w-8 h-8 rounded-lg bg-green-900/40 flex items-center justify-center text-xs font-bold text-green-400 shrink-0">
                           {srv.serverName.charAt(0).toUpperCase()}
                         </div>
                         <div className="flex-1 text-left min-w-0">
@@ -4291,17 +4300,23 @@ export function TerminalForum() {
                           </span>
                         )}
                         <ChevronDown className={`w-3.5 h-3.5 text-green-700 transition-transform shrink-0 ${isActive ? 'rotate-180' : ''}`} />
-                      </button>
+                      </div>
 
                       {isActive && srv.tokenExpired && (
                         <div className="px-4 pb-3 pt-2 border-t border-red-900/20">
                           <div className="text-xs text-red-500 mb-2">Session expired. Please reconnect.</div>
-                          <button onClick={() => {
-                            setRendezvousForm(f => ({ ...f, address: `${srv.host}:${srv.port}`, username: srv.username, tab: 'login' }));
-                            setRendezvousDialog(true);
-                          }} className="w-full py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded text-xs transition-all">
-                            Reconnect
-                          </button>
+                          <div className="flex gap-2">
+                            <button onClick={() => {
+                              setRendezvousForm(f => ({ ...f, address: `${srv.host}:${srv.port}`, username: srv.username, tab: 'login' }));
+                              setRendezvousDialog(true);
+                            }} className="flex-1 py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded text-xs transition-all">
+                              Reconnect
+                            </button>
+                            <button onClick={() => { setRendezvousServers(prev => prev.filter(s => s.id !== srv.id)); setRendezvousFriends(prev => prev.filter(f => f.rendezvousId !== srv.id)); setFriendRequests(prev => prev.filter(r => r.rendezvousId !== srv.id)); setActiveRendezvousId(null); sseConnectionsRef.current.get(srv.id)?.close(); sseConnectionsRef.current.delete(srv.id); }}
+                              className="px-3 py-1.5 bg-red-900/10 hover:bg-red-900/30 text-red-900 hover:text-red-500 rounded text-xs transition-all">
+                              Remove
+                            </button>
+                          </div>
                         </div>
                       )}
 
@@ -4401,7 +4416,7 @@ export function TerminalForum() {
                               className="flex-1 py-1.5 bg-green-900/20 hover:bg-green-900/40 text-green-700 hover:text-green-400 rounded text-xs transition-all">
                               Refresh inbox
                             </button>
-                            <button onClick={() => { setRendezvousServers(prev => prev.filter(s => s.id !== srv.id)); setActiveRendezvousId(null); }}
+                            <button onClick={() => { setRendezvousServers(prev => prev.filter(s => s.id !== srv.id)); setRendezvousFriends(prev => prev.filter(f => f.rendezvousId !== srv.id)); setFriendRequests(prev => prev.filter(r => r.rendezvousId !== srv.id)); setActiveRendezvousId(null); sseConnectionsRef.current.get(srv.id)?.close(); sseConnectionsRef.current.delete(srv.id); }}
                               className="px-3 py-1.5 bg-red-900/10 hover:bg-red-900/30 text-red-900 hover:text-red-500 rounded text-xs transition-all">
                               Remove
                             </button>
@@ -4679,6 +4694,30 @@ export function TerminalForum() {
                 className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
                 <X className="w-4 h-4" />
                 <span>Remove friend</span>
+              </button>
+            </div>
+          );
+        })()}
+
+        {/* ── Rendezvous Server Context Menu ── */}
+        {rdvServerContextMenu && (() => {
+          const srv = rendezvousServers.find(s => s.id === rdvServerContextMenu.serverId);
+          if (!srv) return null;
+          return (
+            <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[160px] z-50"
+              style={{ left: Math.min(rdvServerContextMenu.x, window.innerWidth - 180), top: Math.min(rdvServerContextMenu.y, window.innerHeight - 100) }}
+              onClick={e => e.stopPropagation()}>
+              {srv.tokenExpired && (
+                <button onClick={() => { setRendezvousForm(f => ({ ...f, address: `${srv.host}:${srv.port}`, username: srv.username, tab: 'login' })); setRendezvousDialog(true); setRdvServerContextMenu(null); }}
+                  className="w-full px-4 py-2.5 rounded-lg text-yellow-400 hover:bg-yellow-900/30 transition-all flex items-center gap-2 text-sm">
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Reconnect</span>
+                </button>
+              )}
+              <button onClick={() => { setRendezvousServers(prev => prev.filter(s => s.id !== srv.id)); setRendezvousFriends(prev => prev.filter(f => f.rendezvousId !== srv.id)); setFriendRequests(prev => prev.filter(r => r.rendezvousId !== srv.id)); setActiveRendezvousId(null); sseConnectionsRef.current.get(srv.id)?.close(); sseConnectionsRef.current.delete(srv.id); setRdvServerContextMenu(null); }}
+                className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
+                <Trash2 className="w-4 h-4" />
+                <span>Remove</span>
               </button>
             </div>
           );

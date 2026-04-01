@@ -1,110 +1,68 @@
-using System.Text.Json;
-
-/// <summary>
-/// Store-and-forward mailbox for encrypted messages sent to offline users.
-/// Messages are opaque ciphertext blobs — the server cannot read them.
-/// Undelivered messages are automatically purged after <see cref="_ttlDays"/> days.
+﻿/// <summary>
+/// Store-and-forward mailbox for encrypted messages.
+/// Messages are opaque ciphertext blobs -- the server cannot read them.
+/// Uses SQLite with monotonic AUTOINCREMENT IDs and server-issued timestamps.
 /// </summary>
 public class OfflineMailbox
 {
-    public record MailMessage(
-        string Id,
-        string From,
-        string To,
-        string Ciphertext,
-        string Nonce,
-        DateTime SentAt);
+    public record MailMessage(long Id, string From, string To, string Ciphertext, string Nonce, DateTime SentAt);
 
-    private static readonly JsonSerializerOptions _jsonOpts = new()
-    {
-        WriteIndented = true,
-        PropertyNameCaseInsensitive = true,
-    };
-
-    private readonly string _filePath;
+    private readonly RendezvousDb _db;
     private readonly int _ttlDays;
-    private readonly List<MailMessage> _messages = new();
-    private readonly object _lock = new();
 
-    public OfflineMailbox(string filePath, int ttlDays = 30)
+    public OfflineMailbox(RendezvousDb db, int ttlDays = 30)
     {
-        _filePath = filePath;
+        _db = db;
         _ttlDays = ttlDays;
-        Load();
     }
 
-    /// <summary>Stores an encrypted message blob for a recipient. Returns the assigned message ID.</summary>
-    public string Store(string from, string to, string ciphertext, string nonce)
+    /// <summary>Stores a message durably. Returns the monotonic ID.</summary>
+    public long Store(string from, string to, string ciphertext, string nonce)
     {
-        var id = Guid.NewGuid().ToString("N");
-        lock (_lock)
-        {
-            _messages.Add(new MailMessage(id, from, to, ciphertext, nonce, DateTime.UtcNow));
-            Save();
-        }
-        return id;
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT INTO messages (from_user, to_user, ciphertext, nonce, sent_at) VALUES ($f, $t, $c, $n, $s); SELECT last_insert_rowid();";
+        cmd.Parameters.AddWithValue("$f", from);
+        cmd.Parameters.AddWithValue("$t", to);
+        cmd.Parameters.AddWithValue("$c", ciphertext);
+        cmd.Parameters.AddWithValue("$n", nonce);
+        cmd.Parameters.AddWithValue("$s", DateTime.UtcNow.ToString("O"));
+        return (long)cmd.ExecuteScalar()!;
     }
 
-    /// <summary>Returns all pending messages for the given recipient.</summary>
+    /// <summary>Returns all pending messages for the recipient, ordered by ID.</summary>
     public List<MailMessage> GetInbox(string username)
     {
-        lock (_lock)
-        {
-            return _messages
-                .Where(m => string.Equals(m.To, username, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id, from_user, to_user, ciphertext, nonce, sent_at FROM messages WHERE to_user = $u ORDER BY id";
+        cmd.Parameters.AddWithValue("$u", username);
+        var list = new List<MailMessage>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            list.Add(new MailMessage(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), DateTime.Parse(reader.GetString(5))));
+        return list;
     }
 
-    /// <summary>
-    /// Deletes a message by ID after the recipient confirms delivery.
-    /// Returns false if the message does not exist or does not belong to the recipient.
-    /// </summary>
-    public bool Delete(string id, string recipient)
+    /// <summary>Deletes a message by ID after the recipient ACKs it. Idempotent.</summary>
+    public bool Delete(long id, string recipient)
     {
-        lock (_lock)
-        {
-            var msg = _messages.FirstOrDefault(m =>
-                m.Id == id &&
-                string.Equals(m.To, recipient, StringComparison.OrdinalIgnoreCase));
-
-            if (msg is null) return false;
-            _messages.Remove(msg);
-            Save();
-            return true;
-        }
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM messages WHERE id = $id AND to_user = $u";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$u", recipient);
+        return cmd.ExecuteNonQuery() > 0;
     }
 
-    /// <summary>Removes all messages older than the configured TTL. Called periodically by the server.</summary>
-    public void CleanupExpired()
+    /// <summary>Removes all messages older than the configured TTL.</summary>
+    public int CleanupExpired()
     {
-        var cutoff = DateTime.UtcNow.AddDays(-_ttlDays);
-        lock (_lock)
-        {
-            var removed = _messages.RemoveAll(m => m.SentAt < cutoff);
-            if (removed > 0) Save();
-        }
-    }
-
-    // ── Persistence ─────────────────────────────────────────────────────────
-    private void Load()
-    {
-        if (!File.Exists(_filePath)) return;
-        try
-        {
-            var json = File.ReadAllText(_filePath);
-            var list = JsonSerializer.Deserialize<List<MailMessage>>(json, _jsonOpts);
-            if (list is not null) _messages.AddRange(list);
-        }
-        catch { }
-    }
-
-    private void Save()
-    {
-        try
-        {
-            File.WriteAllText(_filePath, JsonSerializer.Serialize(_messages, _jsonOpts));
-        }
-        catch { }
+        var cutoff = DateTime.UtcNow.AddDays(-_ttlDays).ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM messages WHERE sent_at < $cutoff";
+        cmd.Parameters.AddWithValue("$cutoff", cutoff);
+        return cmd.ExecuteNonQuery();
     }
 }
