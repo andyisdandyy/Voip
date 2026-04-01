@@ -23,6 +23,7 @@ using System.Text.Json;
 ///   GET  /friends                — list confirmed friends (auth)
 ///   POST /friends/{target}       — record a confirmed friendship (auth)
 ///   DELETE /friends/{target}     — remove a friendship (auth)
+///   GET  /events                 — SSE stream for real-time delivery (auth via ?token=)
 ///
 /// The server never holds decryption keys. All message payloads are opaque ciphertext blobs.
 /// </summary>
@@ -34,6 +35,7 @@ public class RendezvousHttpServer
     private readonly PresenceTracker _presence;
     private readonly OfflineMailbox _mailbox;
     private readonly FriendStore _friends;
+    private readonly SseConnectionTracker _sse = new();
     private readonly Action<string>? _log;
     private readonly byte[] _hmacKey;
 
@@ -186,6 +188,10 @@ public class RendezvousHttpServer
             {
                 await HandleFriendRemoveAsync(path["/friends/".Length..], req, res).ConfigureAwait(false);
             }
+            else if (method == "GET" && path == "/events")
+            {
+                await HandleSseAsync(req, res).ConfigureAwait(false);
+            }
             else
             {
                 await WriteJsonAsync(res, 404, new { error = "Not found" }).ConfigureAwait(false);
@@ -291,9 +297,22 @@ public class RendezvousHttpServer
             return;
         }
 
+        // Always store in mailbox first — guarantees delivery even if the SSE connection drops
         var id = _mailbox.Store(username, recipient, body.Ciphertext, body.Nonce);
-        _log?.Invoke($"[Rendezvous] Message stored: {username} → {recipient} ({id})");
-        await WriteJsonAsync(res, 200, new { id }).ConfigureAwait(false);
+
+        // Try to push to the recipient's live SSE connection for instant delivery
+        var eventJson = JsonSerializer.Serialize(new
+        {
+            Id = id,
+            From = username,
+            body.Ciphertext,
+            body.Nonce,
+            SentAt = DateTime.UtcNow.ToString("O"),
+        }, _jsonOut);
+        var delivered = _sse.TryPush(recipient, "message", eventJson);
+
+        _log?.Invoke($"[Rendezvous] Message {(delivered ? "pushed" : "stored")}: {username} → {recipient} ({id})");
+        await WriteJsonAsync(res, 200, new { id, delivered }).ConfigureAwait(false);
     }
 
     private async Task HandleMessageInboxAsync(HttpListenerRequest req, HttpListenerResponse res)
@@ -362,6 +381,71 @@ public class RendezvousHttpServer
         _friends.Remove(username, target);
         _log?.Invoke($"[Rendezvous] Friendship removed: {username} <-> {target}");
         await WriteJsonAsync(res, 200, new { success = true }).ConfigureAwait(false);
+    }
+
+    private async Task HandleSseAsync(HttpListenerRequest req, HttpListenerResponse res)
+    {
+        // EventSource cannot set headers, so the token is passed as a query parameter
+        var token = req.QueryString["token"];
+        if (string.IsNullOrEmpty(token)) { await WriteJsonAsync(res, 401, new { error = "token required" }); return; }
+        var username = ValidateToken(token);
+        if (username is null) { await WriteJsonAsync(res, 401, new { error = "Unauthorized" }); return; }
+
+        res.StatusCode = 200;
+        res.ContentType = "text/event-stream; charset=utf-8";
+        res.Headers.Set("Cache-Control", "no-cache");
+        res.Headers.Set("X-Accel-Buffering", "no"); // disable nginx proxy buffering
+        res.SendChunked = true;
+
+        // Register the channel first so any concurrent sends are queued immediately
+        var ch = _sse.Register(username);
+        _log?.Invoke($"[SSE] {username} connected (total: {_sse.ConnectionCount})");
+
+        using var cts = new CancellationTokenSource();
+
+        // Flush any pending mailbox messages straight to the stream
+        foreach (var msg in _mailbox.GetInbox(username))
+        {
+            var json = JsonSerializer.Serialize(new
+            {
+                msg.Id, msg.From, msg.Ciphertext, msg.Nonce,
+                SentAt = msg.SentAt.ToString("O"),
+            }, _jsonOut);
+            var bytes = Encoding.UTF8.GetBytes($"event: message\ndata: {json}\n\n");
+            try { await res.OutputStream.WriteAsync(bytes, cts.Token); await res.OutputStream.FlushAsync(cts.Token); }
+            catch { cts.Cancel(); break; }
+        }
+
+        // Heartbeat: write a comment every 25 s to keep the connection alive through proxies
+        _ = Task.Run(async () =>
+        {
+            while (!cts.Token.IsCancellationRequested)
+            {
+                await Task.Delay(25_000, cts.Token).ConfigureAwait(false);
+                ch.Writer.TryWrite(": heartbeat\n\n");
+            }
+        }, cts.Token);
+
+        // Stream events from the channel until the client disconnects
+        try
+        {
+            await foreach (var payload in ch.Reader.ReadAllAsync(cts.Token))
+            {
+                var bytes = Encoding.UTF8.GetBytes(payload);
+                await res.OutputStream.WriteAsync(bytes, cts.Token).ConfigureAwait(false);
+                await res.OutputStream.FlushAsync(cts.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (HttpListenerException) { }
+        catch (IOException) { }
+        finally
+        {
+            cts.Cancel();
+            _sse.Unregister(username, ch);
+            _log?.Invoke($"[SSE] {username} disconnected (total: {_sse.ConnectionCount})");
+            try { res.Close(); } catch { }
+        }
     }
 
     // ── Token auth ───────────────────────────────────────────────────────────

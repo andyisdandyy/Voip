@@ -476,6 +476,8 @@ export function TerminalForum() {
   const ecdhPublicKeyB64Ref = useRef<string>('');
   const dmSharedKeysRef = useRef<Map<string, CryptoKey>>(new Map());
   const pendingDmKeyCallbacksRef = useRef<Map<string, Array<(key: CryptoKey | null) => void>>>(new Map());
+  const sseConnectionsRef = useRef<Map<string, EventSource>>(new Map());
+  const rendezvousServersRef = useRef<RendezvousServer[]>([]);
 
   // ── Multi-server state cache ──────────────────────────────
   // Stores per-server state snapshots for background servers.
@@ -1248,16 +1250,20 @@ export function TerminalForum() {
   useEffect(() => { try { localStorage.setItem('voip-rendezvous-friends', JSON.stringify(rendezvousFriends)); } catch {} }, [rendezvousFriends]);
   useEffect(() => { try { localStorage.setItem('voip-friend-requests', JSON.stringify(friendRequests)); } catch {} }, [friendRequests]);
 
-  // ── Auto-poll rendezvous inbox (DMs + friend requests) every 30 s ────────
+  // ── Auto-poll rendezvous inbox every 5 min as SSE offline fallback ────────
   const checkAllInboxesRef = useRef<() => void>(() => {});
   useEffect(() => {
+    rendezvousServersRef.current = rendezvousServers;
     checkAllInboxesRef.current = () => {
       rendezvousServers.forEach(srv => checkRendezvousInbox(srv));
     };
   });
   useEffect(() => {
-    const id = setInterval(() => checkAllInboxesRef.current(), 30_000);
+    const id = setInterval(() => checkAllInboxesRef.current(), 5 * 60_000);
     return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    return () => { sseConnectionsRef.current.forEach(es => es.close()); };
   }, []);
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
@@ -3317,6 +3323,7 @@ export function TerminalForum() {
     }
 
     setRendezvousFormStatus('✓ Connected');
+    openSseConnection(newSrv);
     setTimeout(() => {
       setRendezvousDialog(false);
       setRendezvousFormStatus('');
@@ -3389,6 +3396,59 @@ export function TerminalForum() {
     setShowHome(false);
     setDmUnreadCounts(prev => { const n = { ...prev }; delete n[username]; return n; });
     getRendezvousDmKey(username, srv);
+  };
+
+  const openSseConnection = (srv: RendezvousServer) => {
+    const existing = sseConnectionsRef.current.get(srv.id);
+    if (existing) { existing.close(); sseConnectionsRef.current.delete(srv.id); }
+
+    const es = new EventSource(`http://${srv.host}:${srv.port}/events?token=${encodeURIComponent(srv.token)}`);
+    sseConnectionsRef.current.set(srv.id, es);
+
+    es.addEventListener('message', async (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(event.data as string);
+
+        if (msg.nonce === 'rdv_dm_v1') {
+          const fromUser: string = msg.from;
+          const key = await getRendezvousDmKey(fromUser, srv);
+          const decrypted = key ? await dmDecrypt(msg.ciphertext, key) : msg.ciphertext;
+          const dmMsg: DmMessage = { id: msg.id, sender: fromUser, body: decrypted, timestamp: new Date(msg.sentAt).getTime() };
+          setDmMessages(prev => {
+            const existing = prev[fromUser] || [];
+            if (existing.some(m => m.id === msg.id)) return prev;
+            return { ...prev, [fromUser]: [...existing, dmMsg] };
+          });
+          setOpenDmTabs(prev => prev.some(t => t.username === fromUser && t.rendezvousId === srv.id)
+            ? prev : [...prev, { username: fromUser, serverId: '', rendezvousId: srv.id }]);
+          if (activeDmTabRef.current !== fromUser) {
+            setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
+            if (notificationSoundsRef.current) playUiSound('message');
+            window.electronAPI.showNotification(`DM from ${fromUser}`, decrypted.substring(0, 100));
+          }
+        } else if (msg.nonce === 'rendezvous_v1') {
+          // Friend request or accept — let the inbox handler process and delete it
+          checkRendezvousInbox(srv);
+          return;
+        }
+
+        // Ack: remove from mailbox now that it's been delivered via SSE
+        window.electronAPI.rendezvousRequest({
+          method: 'DELETE', host: srv.host, port: srv.port,
+          path: `/messages/${msg.id}`, token: srv.token,
+        });
+      } catch {}
+    });
+
+    es.onerror = () => {
+      sseConnectionsRef.current.delete(srv.id);
+      es.close();
+      // Reconnect after 15 s using the latest server state
+      setTimeout(() => {
+        const current = rendezvousServersRef.current.find(s => s.id === srv.id);
+        if (current && !current.tokenExpired) openSseConnection(current);
+      }, 15_000);
+    };
   };
 
   const checkRendezvousInbox = async (srv: RendezvousServer) => {
