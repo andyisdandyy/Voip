@@ -22,17 +22,14 @@ interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: strin
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
-interface DmTab { username: string; serverId: string; rendezvousId?: string }
+interface DmTab { username: string; serverId: string }
 interface DmMessage { id: string; sender: string; body: string; timestamp: number }
 
 // Unique key for a DM tab — prevents collisions when two servers have users with the same name
-const dmTabKey = (dm: Pick<DmTab, 'username' | 'serverId' | 'rendezvousId'>): string =>
-  `${dm.rendezvousId != null ? 'rdv:' + dm.rendezvousId : dm.serverId}:${dm.username}`;
+const dmTabKey = (dm: Pick<DmTab, 'username' | 'serverId'>): string =>
+  `${dm.serverId}:${dm.username}`;
 
 interface Friend { username: string; serverId: string }
-interface RendezvousServer { id: string; host: string; port: number; serverName: string; username: string; token: string; tokenExpired?: boolean }
-interface RendezvousFriend { username: string; rendezvousId: string; addedAt: string }
-interface FriendRequest { id: string; from: string; rendezvousId: string; sentAt: string; direction: 'incoming' | 'outgoing' }
 
 const VIDEO_RESOLUTIONS = {
   '720p':  { label: '720p',  width: 1280, height: 720 },
@@ -340,8 +337,6 @@ export function TerminalForum() {
   const [loginDialog, setLoginDialog] = useState<string | null>(null);
   const [serverContextMenu, setServerContextMenu] = useState<ServerContextMenu | null>(null);
   const [friendContextMenu, setFriendContextMenu] = useState<{ username: string; serverId: string; x: number; y: number } | null>(null);
-  const [rdvFriendContextMenu, setRdvFriendContextMenu] = useState<{ username: string; rendezvousId: string; x: number; y: number } | null>(null);
-  const [rdvServerContextMenu, setRdvServerContextMenu] = useState<{ serverId: string; x: number; y: number } | null>(null);
   const [addServerDialog, setAddServerDialog] = useState(false);
   const [untrustedConfirm, setUntrustedConfirm] = useState<PinnedServer | null>(null);
   const [newServerName, setNewServerName] = useState('');
@@ -381,25 +376,6 @@ export function TerminalForum() {
     try { return JSON.parse(localStorage.getItem('voip-friends') || '[]'); }
     catch { return []; }
   });
-  const [rendezvousServers, setRendezvousServers] = useState<RendezvousServer[]>(() => {
-    try { return JSON.parse(localStorage.getItem('voip-rendezvous-servers') || '[]'); }
-    catch { return []; }
-  });
-  const [rendezvousFriends, setRendezvousFriends] = useState<RendezvousFriend[]>(() => {
-    try { return JSON.parse(localStorage.getItem('voip-rendezvous-friends') || '[]'); }
-    catch { return []; }
-  });
-  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>(() => {
-    try { return JSON.parse(localStorage.getItem('voip-friend-requests') || '[]'); }
-    catch { return []; }
-  });
-  const [activeRendezvousId, setActiveRendezvousId] = useState<string | null>(null);
-  const [rendezvousDialog, setRendezvousDialog] = useState(false);
-  const [rendezvousForm, setRendezvousForm] = useState({ address: '', username: '', password: '', tab: 'login' as 'login' | 'register' });
-  const [rendezvousFormStatus, setRendezvousFormStatus] = useState('');
-  const [rendezvousSearch, setRendezvousSearch] = useState('');
-  const [rendezvousSearchStatus, setRendezvousSearchStatus] = useState('');
-  const [rendezvousSearchResult, setRendezvousSearchResult] = useState<{ username: string; found: boolean } | null>(null);
   const dmMessagesEndRef = useRef<HTMLDivElement>(null);
   const dmInputRef = useRef<HTMLInputElement>(null);
   const dmFileInputRef = useRef<HTMLInputElement>(null);
@@ -483,8 +459,6 @@ export function TerminalForum() {
   const ecdhPublicKeyB64Ref = useRef<string>('');
   const dmSharedKeysRef = useRef<Map<string, CryptoKey>>(new Map());
   const pendingDmKeyCallbacksRef = useRef<Map<string, Array<(key: CryptoKey | null) => void>>>(new Map());
-  const sseConnectionsRef = useRef<Map<string, EventSource>>(new Map());
-  const rendezvousServersRef = useRef<RendezvousServer[]>([]);
 
   // ── Multi-server state cache ──────────────────────────────
   // Stores per-server state snapshots for background servers.
@@ -1258,25 +1232,7 @@ export function TerminalForum() {
   useEffect(() => { try { localStorage.setItem('voip-pinned-servers', JSON.stringify(pinnedServers)); } catch {} }, [pinnedServers]);
   useEffect(() => { try { localStorage.setItem('voip-open-tabs', JSON.stringify(openTabs)); } catch {} }, [openTabs]);
   useEffect(() => { try { localStorage.setItem('voip-friends', JSON.stringify(friends)); } catch {} }, [friends]);
-  useEffect(() => { try { localStorage.setItem('voip-rendezvous-servers', JSON.stringify(rendezvousServers)); } catch {} }, [rendezvousServers]);
-  useEffect(() => { try { localStorage.setItem('voip-rendezvous-friends', JSON.stringify(rendezvousFriends)); } catch {} }, [rendezvousFriends]);
-  useEffect(() => { try { localStorage.setItem('voip-friend-requests', JSON.stringify(friendRequests)); } catch {} }, [friendRequests]);
 
-  // ── Auto-poll rendezvous inbox every 5 min as SSE offline fallback ────────
-  const checkAllInboxesRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    rendezvousServersRef.current = rendezvousServers;
-    checkAllInboxesRef.current = () => {
-      rendezvousServers.forEach(srv => checkRendezvousInbox(srv));
-    };
-  });
-  useEffect(() => {
-    const id = setInterval(() => checkAllInboxesRef.current(), 5 * 60_000);
-    return () => clearInterval(id);
-  }, []);
-  useEffect(() => {
-    return () => { sseConnectionsRef.current.forEach(es => es.close()); };
-  }, []);
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
     perUserSettingsRef.current = perUserSettings;
@@ -1294,15 +1250,15 @@ export function TerminalForum() {
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null); setRdvFriendContextMenu(null); setRdvServerContextMenu(null); setRoomContextMenu(null);
+      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null); setRoomContextMenu(null);
       if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target as Node)) setShowEmojiPicker(false);
       if (gifPickerRef.current && !gifPickerRef.current.contains(e.target as Node)) { setShowGifPicker(false); setGifQuery(''); setGifResults([]); }
     };
-    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || rdvFriendContextMenu || rdvServerContextMenu || roomContextMenu || showEmojiPicker || reactionPickerMsgId) {
+    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || roomContextMenu || showEmojiPicker || reactionPickerMsgId) {
       document.addEventListener('click', handleClick);
       return () => document.removeEventListener('click', handleClick);
     }
-  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, rdvFriendContextMenu, rdvServerContextMenu, roomContextMenu, showEmojiPicker, reactionPickerMsgId]);
+  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, roomContextMenu, showEmojiPicker, reactionPickerMsgId]);
 
   // Close reaction picker on outside click
   useEffect(() => {
@@ -3257,298 +3213,6 @@ export function TerminalForum() {
     return { status: 'offline', online: false };
   };
 
-  // ── Rendezvous helpers ────────────────────────────────────
-
-  function getRendezvousIdentity(): string {
-    let id = localStorage.getItem('voip-rendezvous-identity');
-    if (!id) {
-      const bytes = new Uint8Array(32);
-      crypto.getRandomValues(bytes);
-      id = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-      localStorage.setItem('voip-rendezvous-identity', id);
-    }
-    return id;
-  }
-
-  const connectRendezvousServer = async () => {
-    const addr = rendezvousForm.address.trim();
-    if (!addr || !rendezvousForm.username.trim() || !rendezvousForm.password) {
-      setRendezvousFormStatus('All fields are required');
-      return;
-    }
-    const colonIdx = addr.lastIndexOf(':');
-    const host = colonIdx > 0 ? addr.slice(0, colonIdx) : addr;
-    const port = colonIdx > 0 ? parseInt(addr.slice(colonIdx + 1)) : 5010;
-    if (!host || isNaN(port)) { setRendezvousFormStatus('Invalid address (use host:port)'); return; }
-
-    setRendezvousFormStatus('Connecting…');
-    if (!ecdhPrivateKeyRef.current) await generateAndPublishEcdhKey();
-    const publicKey = ecdhPublicKeyB64Ref.current || getRendezvousIdentity();
-
-    if (rendezvousForm.tab === 'register') {
-      const reg = await window.electronAPI.rendezvousRequest({
-        method: 'POST', host, port, path: '/register',
-        body: { username: rendezvousForm.username, password: rendezvousForm.password, publicKey },
-      });
-      if (!reg || reg.status !== 200) { setRendezvousFormStatus(reg?.data?.error || 'Registration failed'); return; }
-    }
-
-    const auth = await window.electronAPI.rendezvousRequest({
-      method: 'POST', host, port, path: '/auth',
-      body: { username: rendezvousForm.username, password: rendezvousForm.password },
-    });
-    if (!auth || auth.status !== 200) { setRendezvousFormStatus(auth?.data?.error || 'Login failed'); return; }
-
-    // Always push the current ECDH public key so peers can encrypt to us after any restart
-    await window.electronAPI.rendezvousRequest({
-      method: 'PUT', host, port, path: '/pubkey',
-      token: auth.data.token,
-      body: { publicKey },
-    });
-
-    const info = await window.electronAPI.rendezvousRequest({ method: 'GET', host, port, path: '/' });
-    const serverName: string = info?.data?.name || `${host}:${port}`;
-
-    const newSrv: RendezvousServer = {
-      id: crypto.randomUUID(),
-      host, port, serverName,
-      username: rendezvousForm.username.trim(),
-      token: auth.data.token,
-    };
-    setRendezvousServers(prev => [
-      ...prev.filter(s => !(s.host === host && s.port === port && s.username === newSrv.username)),
-      newSrv,
-    ]);
-
-    // Fetch server-side friend list and merge into local state
-    const friendsRes = await window.electronAPI.rendezvousRequest({
-      method: 'GET', host, port, path: '/friends', token: auth.data.token,
-    });
-    if (friendsRes?.status === 200 && Array.isArray(friendsRes.data)) {
-      setRendezvousFriends(prev => {
-        const next = [...prev];
-        for (const f of friendsRes.data as string[]) {
-          if (!next.some(x => x.username === f && x.rendezvousId === newSrv.id)) {
-            next.push({ username: f, rendezvousId: newSrv.id, addedAt: new Date().toISOString() });
-          }
-        }
-        return next;
-      });
-    }
-
-    setRendezvousFormStatus('✓ Connected');
-    openSseConnection(newSrv);
-    setTimeout(() => {
-      setRendezvousDialog(false);
-      setRendezvousFormStatus('');
-      setRendezvousForm({ address: '', username: '', password: '', tab: 'login' });
-    }, 700);
-  };
-
-  const handleRendezvousSearch = async (srv: RendezvousServer) => {
-    const query = rendezvousSearch.trim();
-    if (!query) return;
-    setRendezvousSearchStatus('Searching…');
-    setRendezvousSearchResult(null);
-    const result = await window.electronAPI.rendezvousRequest({
-      method: 'GET', host: srv.host, port: srv.port, path: `/pubkey/${encodeURIComponent(query)}`,
-    });
-    if (result?.status === 200) {
-      setRendezvousSearchResult({ username: query, found: true });
-      setRendezvousSearchStatus('');
-    } else if (result?.status === 404) {
-      setRendezvousSearchResult({ username: query, found: false });
-      setRendezvousSearchStatus('');
-    } else {
-      setRendezvousSearchStatus(result?.data?.error || 'Request failed');
-    }
-  };
-
-  const sendFriendRequest = async (srv: RendezvousServer, targetUsername: string) => {
-    const payload = { type: 'friend_request', from: srv.username };
-    const result = await window.electronAPI.rendezvousRequest({
-      method: 'POST', host: srv.host, port: srv.port,
-      path: `/messages/${encodeURIComponent(targetUsername)}`,
-      token: srv.token,
-      body: { ciphertext: btoa(JSON.stringify(payload)), nonce: 'rendezvous_v1' },
-    });
-    if (result?.status === 200) {
-      setFriendRequests(prev => [
-        ...prev.filter(r => !(r.from === targetUsername && r.rendezvousId === srv.id && r.direction === 'outgoing')),
-        { id: result.data.id, from: targetUsername, rendezvousId: srv.id, sentAt: new Date().toISOString(), direction: 'outgoing' },
-      ]);
-      setRendezvousSearchStatus(`✓ Friend request sent to ${targetUsername}`);
-      setRendezvousSearchResult(null);
-      setRendezvousSearch('');
-    } else {
-      setRendezvousSearchStatus(result?.data?.error || 'Failed to send request');
-    }
-  };
-
-  const getRendezvousDmKey = async (username: string, srv: RendezvousServer): Promise<CryptoKey | null> => {
-    const cached = dmSharedKeysRef.current.get(username);
-    if (cached) return cached;
-    if (!ecdhPrivateKeyRef.current) await generateAndPublishEcdhKey();
-    const result = await window.electronAPI.rendezvousRequest({
-      method: 'GET', host: srv.host, port: srv.port, path: `/pubkey/${encodeURIComponent(username)}`,
-    });
-    if (result?.status !== 200 || !result.data?.publicKey) return null;
-    const pubKeyB64: string = result.data.publicKey;
-    const key = await deriveDmSharedKey(pubKeyB64);
-    if (key) {
-      dmSharedKeysRef.current.set(username, key);
-      const raw = Uint8Array.from(atob(pubKeyB64), c => c.charCodeAt(0));
-      crypto.subtle.digest('SHA-256', raw).then(hash => {
-        const fp = Array.from(new Uint8Array(hash).slice(0, 8))
-          .map(b => b.toString(16).padStart(2, '0')).join(':');
-        setDmKeyFingerprints(prev => ({ ...prev, [dmTabKey({ username, serverId: '', rendezvousId: srv.id })]: fp }));
-      });
-    }
-    return key;
-  };
-
-  const openRendezvousDm = (username: string, srv: RendezvousServer) => {
-    if (username === srv.username) return;
-    const key = dmTabKey({ username, serverId: '', rendezvousId: srv.id });
-    setOpenDmTabs(prev => {
-      if (prev.some(t => t.username === username && t.rendezvousId === srv.id)) return prev;
-      return [...prev, { username, serverId: '', rendezvousId: srv.id }];
-    });
-    pushNav({ type: 'dm', username, key });
-    setActiveDmTab(key);
-    setDmInput('');
-    setShowHome(false);
-    setDmUnreadCounts(prev => { const n = { ...prev }; delete n[key]; return n; });
-    getRendezvousDmKey(username, srv);
-  };
-
-  const openSseConnection = (srv: RendezvousServer) => {
-    const existing = sseConnectionsRef.current.get(srv.id);
-    if (existing) { existing.close(); sseConnectionsRef.current.delete(srv.id); }
-
-    const es = new EventSource(`http://${srv.host}:${srv.port}/events?token=${encodeURIComponent(srv.token)}`);
-    sseConnectionsRef.current.set(srv.id, es);
-
-    es.addEventListener('message', async (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data as string);
-
-        if (msg.nonce === 'rdv_dm_v1') {
-          const fromUser: string = msg.from;
-          const tabKey = dmTabKey({ username: fromUser, serverId: '', rendezvousId: srv.id });
-          const key = await getRendezvousDmKey(fromUser, srv);
-          const decrypted = key ? await dmDecrypt(msg.ciphertext, key) : msg.ciphertext;
-          const dmMsg: DmMessage = { id: msg.id, sender: fromUser, body: decrypted, timestamp: new Date(msg.sentAt).getTime() };
-          setDmMessages(prev => {
-            const existing = prev[tabKey] || [];
-            if (existing.some(m => m.id === msg.id)) return prev;
-            return { ...prev, [tabKey]: [...existing, dmMsg] };
-          });
-          setOpenDmTabs(prev => prev.some(t => t.username === fromUser && t.rendezvousId === srv.id)
-            ? prev : [...prev, { username: fromUser, serverId: '', rendezvousId: srv.id }]);
-          if (activeDmTabRef.current !== tabKey) {
-            setDmUnreadCounts(prev => ({ ...prev, [tabKey]: (prev[tabKey] || 0) + 1 }));
-            if (notificationSoundsRef.current) playUiSound('message');
-            window.electronAPI.showNotification(`DM from ${fromUser}`, decrypted.substring(0, 100));
-          }
-        } else if (msg.nonce === 'rendezvous_v1') {
-          // Friend request or accept — let the inbox handler process and delete it
-          checkRendezvousInbox(srv);
-          return;
-        }
-
-        // Ack: remove from mailbox now that it's been delivered via SSE
-        window.electronAPI.rendezvousRequest({
-          method: 'DELETE', host: srv.host, port: srv.port,
-          path: `/messages/${msg.id}`, token: srv.token,
-        });
-      } catch {}
-    });
-
-    es.onerror = () => {
-      sseConnectionsRef.current.delete(srv.id);
-      es.close();
-      // Reconnect after 15 s using the latest server state
-      setTimeout(() => {
-        const current = rendezvousServersRef.current.find(s => s.id === srv.id);
-        if (current && !current.tokenExpired) openSseConnection(current);
-      }, 15_000);
-    };
-  };
-
-  const checkRendezvousInbox = async (srv: RendezvousServer) => {
-    const result = await window.electronAPI.rendezvousRequest({
-      method: 'GET', host: srv.host, port: srv.port, path: '/messages', token: srv.token,
-    });
-    if (result?.status === 401) {
-      setRendezvousServers(prev => prev.map(s => s.id === srv.id ? { ...s, tokenExpired: true } : s));
-      return;
-    }
-    if (result?.status !== 200 || !Array.isArray(result.data)) return;
-    const incoming: FriendRequest[] = [];
-    for (const msg of result.data) {
-      if (msg.nonce === 'rdv_dm_v1') {
-        const fromUser: string = msg.from;
-        const key = await getRendezvousDmKey(fromUser, srv);
-        const decrypted = key ? await dmDecrypt(msg.ciphertext, key) : msg.ciphertext;
-        const dmMsg: DmMessage = { id: msg.id, sender: fromUser, body: decrypted, timestamp: new Date(msg.sentAt).getTime() };
-        setDmMessages(prev => {
-          const existing = prev[fromUser] || [];
-          if (existing.some(m => m.id === msg.id)) return prev;
-          return { ...prev, [fromUser]: [...existing, dmMsg] };
-        });
-        setOpenDmTabs(prev => prev.some(t => t.username === fromUser && t.rendezvousId === srv.id)
-          ? prev : [...prev, { username: fromUser, serverId: '', rendezvousId: srv.id }]);
-        if (activeDmTabRef.current !== fromUser) {
-          setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
-          if (notificationSoundsRef.current) playUiSound('message');
-          window.electronAPI.showNotification(`DM from ${fromUser}`, decrypted.substring(0, 100));
-        }
-        await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${msg.id}`, token: srv.token });
-        continue;
-      }
-      if (msg.nonce !== 'rendezvous_v1') continue;
-      try {
-        const payload = JSON.parse(atob(msg.ciphertext));
-        if (payload.type === 'friend_request') {
-          if (!friendRequests.some(r => r.id === msg.id)) {
-            incoming.push({ id: msg.id, from: payload.from || msg.from, rendezvousId: srv.id, sentAt: msg.sentAt, direction: 'incoming' });
-          }
-        } else if (payload.type === 'friend_accept') {
-          const accepter: string = payload.from || msg.from;
-          setRendezvousFriends(prev => prev.some(f => f.username === accepter && f.rendezvousId === srv.id)
-            ? prev : [...prev, { username: accepter, rendezvousId: srv.id, addedAt: new Date().toISOString() }]);
-          setFriendRequests(prev => prev.filter(r => !(r.from === accepter && r.rendezvousId === srv.id && r.direction === 'outgoing')));
-          await window.electronAPI.rendezvousRequest({ method: 'POST', host: srv.host, port: srv.port, path: `/friends/${encodeURIComponent(accepter)}`, token: srv.token });
-          await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${msg.id}`, token: srv.token });
-        }
-      } catch {}
-    }
-    if (incoming.length > 0) {
-      setFriendRequests(prev => [...prev.filter(r => !(r.rendezvousId === srv.id && r.direction === 'incoming')), ...incoming]);
-    }
-  };
-
-  const acceptFriendRequest = async (req: FriendRequest, srv: RendezvousServer) => {
-    setRendezvousFriends(prev => prev.some(f => f.username === req.from && f.rendezvousId === srv.id)
-      ? prev : [...prev, { username: req.from, rendezvousId: srv.id, addedAt: new Date().toISOString() }]);
-    const payload = { type: 'friend_accept', from: srv.username };
-    await window.electronAPI.rendezvousRequest({
-      method: 'POST', host: srv.host, port: srv.port,
-      path: `/messages/${encodeURIComponent(req.from)}`,
-      token: srv.token,
-      body: { ciphertext: btoa(JSON.stringify(payload)), nonce: 'rendezvous_v1' },
-    });
-    await window.electronAPI.rendezvousRequest({ method: 'POST', host: srv.host, port: srv.port, path: `/friends/${encodeURIComponent(req.from)}`, token: srv.token });
-    await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${req.id}`, token: srv.token });
-    setFriendRequests(prev => prev.filter(r => r.id !== req.id));
-  };
-
-  const declineFriendRequest = async (req: FriendRequest, srv: RendezvousServer) => {
-    await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/messages/${req.id}`, token: srv.token });
-    setFriendRequests(prev => prev.filter(r => r.id !== req.id));
-  };
-
   const openInlineDm = (username: string, serverId: string) => {
     if (username === nickname) return;
     const key = dmTabKey({ username, serverId });
@@ -3920,9 +3584,7 @@ export function TerminalForum() {
   //  CONNECT SCREEN
   // ═════════════════════════════════════════════════════════
 
-  const hasActiveRdvDm = !!(activeDmTab && openDmTabs.some(t => t.username === activeDmTab && !!t.rendezvousId));
-
-  if ((!isConnected || showHome) && !showSettings && !hasActiveRdvDm) {
+  if ((!isConnected || showHome) && !showSettings) {
     return (
       <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
         {/* ── Draggable titlebar ── */}
@@ -4168,7 +3830,7 @@ export function TerminalForum() {
             </div>
 
             {/* Friends */}
-            {(friends.length > 0 || rendezvousFriends.length > 0) && (() => {
+            {friends.length > 0 && (() => {
               const statusOrder = { online: 0, away: 1, offline: 2 };
               const sorted = [...friends].sort((a, b) => {
                 const sa = getFriendOnlineStatus(a);
@@ -4221,38 +3883,10 @@ export function TerminalForum() {
                         </div>
                       );
                     })}
-                    {rendezvousFriends.map(f => {
-                      const rdvSrv = rendezvousServers.find(s => s.id === f.rendezvousId);
-                      const unread = dmUnreadCounts[f.username] || 0;
-                      return (
-                        <div key={`rdv-${f.username}-${f.rendezvousId}`}
-                          onClick={() => rdvSrv && openRendezvousDm(f.username, rdvSrv)}
-                          onContextMenu={(e) => { e.preventDefault(); setRdvFriendContextMenu({ username: f.username, rendezvousId: f.rendezvousId, x: e.clientX, y: e.clientY }); }}
-                          className="flex items-center gap-3 bg-[#0d120d]/60 border border-indigo-900/20 rounded-lg px-4 py-3 hover:border-indigo-900/40 transition-all select-none cursor-pointer">
-                          <div className="relative shrink-0">
-                            <div className="w-10 h-10 rounded-full bg-green-900/40 flex items-center justify-center text-sm font-bold text-green-400">
-                              {f.username.charAt(0).toUpperCase()}
-                            </div>
-                            <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full ring-2 ring-[#0a0e0a] bg-indigo-500" />
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm text-green-400 font-bold truncate">{f.username}</div>
-                            <div className="text-xs text-indigo-700 truncate">via {rdvSrv?.serverName || 'Rendezvous'}</div>
-                          </div>
-                          {unread > 0 ? (
-                            <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 animate-pulse">
-                              {unread > 9 ? '9+' : unread}
-                            </span>
-                          ) : (
-                            <Send className="w-3.5 h-3.5 text-indigo-900 shrink-0" />
-                          )}
                         </div>
                       );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
+                    })()}
 
             {/* Status */}
             <div className="text-center text-xs text-green-700 space-y-1">
@@ -4260,178 +3894,10 @@ export function TerminalForum() {
               <div>{'>'} Protocol: <span className="text-green-500">UDP + TCP</span></div>
             </div>
 
-            {/* Rendezvous Servers */}
-            <div className="mb-10 mt-10">
-              <div className="flex items-center justify-center gap-2 mb-4">
-                <div className="text-xs text-green-600 tracking-widest">RENDEZVOUS</div>
-                <button onClick={() => { setRendezvousDialog(true); setRendezvousFormStatus(''); }}
-                  className="w-4 h-4 flex items-center justify-center text-green-600 hover:text-green-400 transition-colors">
-                  <Plus className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {rendezvousServers.length === 0 && (
-                <div className="text-xs text-green-800 text-center">Add a rendezvous server to find and add friends</div>
-              )}
-              <div className="space-y-2 max-w-md mx-auto">
-                {rendezvousServers.map(srv => {
-                  const isActive = activeRendezvousId === srv.id;
-                  const pendingIn = friendRequests.filter(r => r.rendezvousId === srv.id && r.direction === 'incoming');
-                  const srvFriends = rendezvousFriends.filter(f => f.rendezvousId === srv.id);
-                  return (
-                    <div key={srv.id} className="bg-[#0d120d]/60 border border-green-900/20 rounded-lg overflow-hidden">
-                      <div
-                        role="button"
-                        onClick={() => { setActiveRendezvousId(isActive ? null : srv.id); setRendezvousSearch(''); setRendezvousSearchResult(null); setRendezvousSearchStatus(''); }}
-                        onContextMenu={(e) => { e.preventDefault(); setRdvServerContextMenu({ serverId: srv.id, x: e.clientX, y: e.clientY }); }}
-                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-green-900/10 transition-all cursor-pointer select-none">
-                        <div className="w-8 h-8 rounded-lg bg-green-900/40 flex items-center justify-center text-xs font-bold text-green-400 shrink-0">
-                          {srv.serverName.charAt(0).toUpperCase()}
-                        </div>
-                        <div className="flex-1 text-left min-w-0">
-                          <div className="text-sm text-green-400 font-bold truncate">{srv.serverName}</div>
-                          <div className="text-xs text-green-700 truncate">{srv.username} · {srv.host}:{srv.port}</div>
-                        </div>
-                        {srv.tokenExpired && (
-                          <span className="text-[9px] text-red-500 shrink-0" title="Session expired — click to reconnect">EXPIRED</span>
-                        )}
-                        {!srv.tokenExpired && pendingIn.length > 0 && (
-                          <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 animate-pulse">
-                            {pendingIn.length}
-                          </span>
-                        )}
-                        <ChevronDown className={`w-3.5 h-3.5 text-green-700 transition-transform shrink-0 ${isActive ? 'rotate-180' : ''}`} />
-                      </div>
-
-                      {isActive && srv.tokenExpired && (
-                        <div className="px-4 pb-3 pt-2 border-t border-red-900/20">
-                          <div className="text-xs text-red-500 mb-2">Session expired. Please reconnect.</div>
-                          <div className="flex gap-2">
-                            <button onClick={() => {
-                              setRendezvousForm(f => ({ ...f, address: `${srv.host}:${srv.port}`, username: srv.username, tab: 'login' }));
-                              setRendezvousDialog(true);
-                            }} className="flex-1 py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded text-xs transition-all">
-                              Reconnect
-                            </button>
-                            <button onClick={() => { setRendezvousServers(prev => prev.filter(s => s.id !== srv.id)); setRendezvousFriends(prev => prev.filter(f => f.rendezvousId !== srv.id)); setFriendRequests(prev => prev.filter(r => r.rendezvousId !== srv.id)); setActiveRendezvousId(null); sseConnectionsRef.current.get(srv.id)?.close(); sseConnectionsRef.current.delete(srv.id); }}
-                              className="px-3 py-1.5 bg-red-900/10 hover:bg-red-900/30 text-red-900 hover:text-red-500 rounded text-xs transition-all">
-                              Remove
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {isActive && !srv.tokenExpired && (
-                        <div className="px-4 pb-4 space-y-3 border-t border-green-900/20 pt-3">
-                          {/* Search */}
-                          <div className="flex gap-2">
-                            <input value={rendezvousSearch}
-                              onChange={e => { setRendezvousSearch(e.target.value); setRendezvousSearchResult(null); setRendezvousSearchStatus(''); }}
-                              onKeyDown={e => e.key === 'Enter' && handleRendezvousSearch(srv)}
-                              placeholder="Search username…"
-                              className="flex-1 bg-black/40 border border-green-900/40 rounded px-3 py-1.5 text-xs text-green-300 placeholder-green-900 outline-none focus:border-green-700" />
-                            <button onClick={() => handleRendezvousSearch(srv)}
-                              className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded text-xs transition-all">
-                              Find
-                            </button>
-                          </div>
-                          {rendezvousSearchStatus && (
-                            <div className={`text-xs ${rendezvousSearchStatus.startsWith('✓') ? 'text-green-500' : 'text-green-700'}`}>
-                              {rendezvousSearchStatus}
-                            </div>
-                          )}
-                          {rendezvousSearchResult && (
-                            <div className="flex items-center gap-2 bg-black/20 rounded px-3 py-2">
-                              <div className="w-7 h-7 rounded-full bg-green-900/40 flex items-center justify-center text-xs font-bold text-green-400 shrink-0">
-                                {rendezvousSearchResult.username.charAt(0).toUpperCase()}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="text-xs text-green-400 font-bold truncate">{rendezvousSearchResult.username}</div>
-                                <div className="text-[10px] text-green-700">{rendezvousSearchResult.found ? 'Found on server' : 'Not found'}</div>
-                              </div>
-                              {rendezvousSearchResult.found && rendezvousSearchResult.username !== srv.username && (
-                                <button onClick={() => sendFriendRequest(srv, rendezvousSearchResult.username)}
-                                  className="flex items-center gap-1 px-2 py-1 bg-green-900/40 hover:bg-green-700/40 text-green-400 rounded text-[10px] transition-all shrink-0">
-                                  <UserPlus className="w-3 h-3" />
-                                  Add
-                                </button>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Incoming friend requests */}
-                          {pendingIn.length > 0 && (
-                            <div className="space-y-1.5">
-                              <div className="text-[10px] text-green-700 uppercase tracking-widest">Friend Requests</div>
-                              {pendingIn.map(req => (
-                                <div key={req.id} className="flex items-center gap-2 bg-black/20 rounded px-3 py-2">
-                                  <div className="w-6 h-6 rounded-full bg-green-900/40 flex items-center justify-center text-[10px] font-bold text-green-400 shrink-0">
-                                    {req.from.charAt(0).toUpperCase()}
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="text-xs text-green-400 font-bold truncate">{req.from}</div>
-                                    <div className="text-[10px] text-green-700">wants to add you</div>
-                                  </div>
-                                  <button onClick={() => acceptFriendRequest(req, srv)}
-                                    className="px-2 py-1 bg-green-900/50 hover:bg-green-700/50 text-green-400 rounded text-[10px] transition-all shrink-0">
-                                    Accept
-                                  </button>
-                                  <button onClick={() => declineFriendRequest(req, srv)}
-                                    className="px-2 py-1 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded text-[10px] transition-all shrink-0">
-                                    Decline
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Rendezvous friends */}
-                          {srvFriends.length > 0 && (
-                            <div className="space-y-1.5">
-                              <div className="text-[10px] text-green-700 uppercase tracking-widest">Friends</div>
-                              {srvFriends.map(f => (
-                                <div key={f.username} className="flex items-center gap-2 bg-black/20 rounded px-3 py-2">
-                                  <div className="w-6 h-6 rounded-full bg-green-900/40 flex items-center justify-center text-[10px] font-bold text-green-400 shrink-0">
-                                    {f.username.charAt(0).toUpperCase()}
-                                  </div>
-                                  <div className="flex-1 text-xs text-green-400 font-bold truncate">{f.username}</div>
-                                  <button onClick={() => openRendezvousDm(f.username, srv)}
-                                    className="text-green-800 hover:text-green-400 transition-colors shrink-0" title="Send message">
-                                    <Send className="w-3 h-3" />
-                                  </button>
-                                  <button onClick={async () => {
-                                    setRendezvousFriends(prev => prev.filter(x => !(x.username === f.username && x.rendezvousId === srv.id)));
-                                    await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/friends/${encodeURIComponent(f.username)}`, token: srv.token });
-                                  }}
-                                    className="text-green-900 hover:text-red-600 transition-colors shrink-0">
-                                    <X className="w-3 h-3" />
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Refresh / Remove */}
-                          <div className="flex gap-2 pt-1">
-                            <button onClick={() => checkRendezvousInbox(srv)}
-                              className="flex-1 py-1.5 bg-green-900/20 hover:bg-green-900/40 text-green-700 hover:text-green-400 rounded text-xs transition-all">
-                              Refresh inbox
-                            </button>
-                            <button onClick={() => { setRendezvousServers(prev => prev.filter(s => s.id !== srv.id)); setRendezvousFriends(prev => prev.filter(f => f.rendezvousId !== srv.id)); setFriendRequests(prev => prev.filter(r => r.rendezvousId !== srv.id)); setActiveRendezvousId(null); sseConnectionsRef.current.get(srv.id)?.close(); sseConnectionsRef.current.delete(srv.id); }}
-                              className="px-3 py-1.5 bg-red-900/10 hover:bg-red-900/30 text-red-900 hover:text-red-500 rounded text-xs transition-all">
-                              Remove
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* ── Voice indicator when browsing servers ── */}
+            {/* ── Voice indicator when browsing servers ── */}
         {showHome && isConnected && currentVoiceRoom && (
           <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg px-5 py-3 flex items-center gap-4 z-40 shadow-2xl shadow-green-900/30">
             <Volume2 className="w-4 h-4 text-green-500 animate-pulse" />
@@ -4544,62 +4010,6 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Add Rendezvous Dialog ── */}
-        {rendezvousDialog && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
-              <div className="bg-green-900/40 p-5 border-b border-green-900/50 flex items-center justify-between">
-                <h2 className="text-base font-bold text-green-400">ADD RENDEZVOUS SERVER</h2>
-                <button onClick={() => { setRendezvousDialog(false); setRendezvousFormStatus(''); }}
-                  className="p-1.5 text-green-600 hover:text-green-400">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="p-5 space-y-4">
-                <div className="space-y-1">
-                  <label className="text-xs text-green-700">{'>'} SERVER ADDRESS</label>
-                  <input value={rendezvousForm.address}
-                    onChange={e => setRendezvousForm(p => ({ ...p, address: e.target.value }))}
-                    placeholder="relay.example.com:5010"
-                    className="w-full bg-black/40 border border-green-900/40 rounded px-3 py-2 text-sm text-green-300 placeholder-green-900 outline-none focus:border-green-600" />
-                </div>
-                <div className="flex gap-2">
-                  {(['login', 'register'] as const).map(tab => (
-                    <button key={tab} onClick={() => setRendezvousForm(p => ({ ...p, tab }))}
-                      className={`flex-1 py-1.5 rounded text-xs font-bold transition-all ${rendezvousForm.tab === tab ? 'bg-green-900/60 text-green-400 border border-green-700/40' : 'bg-black/20 text-green-700 hover:text-green-500 border border-transparent'}`}>
-                      {tab === 'login' ? 'LOG IN' : 'REGISTER'}
-                    </button>
-                  ))}
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-green-700">{'>'} USERNAME</label>
-                  <input value={rendezvousForm.username}
-                    onChange={e => setRendezvousForm(p => ({ ...p, username: e.target.value }))}
-                    placeholder="your username"
-                    className="w-full bg-black/40 border border-green-900/40 rounded px-3 py-2 text-sm text-green-300 placeholder-green-900 outline-none focus:border-green-600" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-green-700">{'>'} PASSWORD</label>
-                  <input type="password" value={rendezvousForm.password}
-                    onChange={e => setRendezvousForm(p => ({ ...p, password: e.target.value }))}
-                    onKeyDown={e => e.key === 'Enter' && connectRendezvousServer()}
-                    placeholder="••••••••"
-                    className="w-full bg-black/40 border border-green-900/40 rounded px-3 py-2 text-sm text-green-300 placeholder-green-900 outline-none focus:border-green-600" />
-                </div>
-                {rendezvousFormStatus && (
-                  <div className={`text-xs ${rendezvousFormStatus.startsWith('✓') ? 'text-green-500' : 'text-red-400'}`}>
-                    {rendezvousFormStatus}
-                  </div>
-                )}
-                <button onClick={connectRendezvousServer}
-                  className="w-full py-2.5 bg-green-900/50 hover:bg-green-700/50 text-green-300 hover:text-green-100 rounded-lg text-sm font-bold transition-all">
-                  {rendezvousForm.tab === 'login' ? 'LOG IN' : 'REGISTER & CONNECT'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ── Add Server Dialog ── */}
         {addServerDialog && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -4671,57 +4081,6 @@ export function TerminalForum() {
             </button>
           </div>
         )}
-
-        {/* ── Rendezvous Friend Context Menu ── */}
-        {rdvFriendContextMenu && (() => {
-          const srv = rendezvousServers.find(s => s.id === rdvFriendContextMenu.rendezvousId);
-          return (
-            <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[180px] z-50"
-              style={{ left: Math.min(rdvFriendContextMenu.x, window.innerWidth - 200), top: Math.min(rdvFriendContextMenu.y, window.innerHeight - 120) }}
-              onClick={e => e.stopPropagation()}>
-              {srv && (
-                <button onClick={() => { openRendezvousDm(rdvFriendContextMenu.username, srv); setRdvFriendContextMenu(null); }}
-                  className="w-full px-4 py-2.5 rounded-lg text-green-400 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
-                  <Send className="w-4 h-4" />
-                  <span>Send message</span>
-                </button>
-              )}
-              <button onClick={async () => {
-                  setRendezvousFriends(prev => prev.filter(x => !(x.username === rdvFriendContextMenu.username && x.rendezvousId === rdvFriendContextMenu.rendezvousId)));
-                  if (srv) await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/friends/${encodeURIComponent(rdvFriendContextMenu.username)}`, token: srv.token });
-                  setRdvFriendContextMenu(null);
-                }}
-                className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
-                <X className="w-4 h-4" />
-                <span>Remove friend</span>
-              </button>
-            </div>
-          );
-        })()}
-
-        {/* ── Rendezvous Server Context Menu ── */}
-        {rdvServerContextMenu && (() => {
-          const srv = rendezvousServers.find(s => s.id === rdvServerContextMenu.serverId);
-          if (!srv) return null;
-          return (
-            <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[160px] z-50"
-              style={{ left: Math.min(rdvServerContextMenu.x, window.innerWidth - 180), top: Math.min(rdvServerContextMenu.y, window.innerHeight - 100) }}
-              onClick={e => e.stopPropagation()}>
-              {srv.tokenExpired && (
-                <button onClick={() => { setRendezvousForm(f => ({ ...f, address: `${srv.host}:${srv.port}`, username: srv.username, tab: 'login' })); setRendezvousDialog(true); setRdvServerContextMenu(null); }}
-                  className="w-full px-4 py-2.5 rounded-lg text-yellow-400 hover:bg-yellow-900/30 transition-all flex items-center gap-2 text-sm">
-                  <RefreshCw className="w-4 h-4" />
-                  <span>Reconnect</span>
-                </button>
-              )}
-              <button onClick={() => { setRendezvousServers(prev => prev.filter(s => s.id !== srv.id)); setRendezvousFriends(prev => prev.filter(f => f.rendezvousId !== srv.id)); setFriendRequests(prev => prev.filter(r => r.rendezvousId !== srv.id)); setActiveRendezvousId(null); sseConnectionsRef.current.get(srv.id)?.close(); sseConnectionsRef.current.delete(srv.id); setRdvServerContextMenu(null); }}
-                className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
-                <Trash2 className="w-4 h-4" />
-                <span>Remove</span>
-              </button>
-            </div>
-          );
-        })()}
 
         {/* ── Server Context Menu ── */}
         {serverContextMenu && (() => {
@@ -5273,25 +4632,9 @@ export function TerminalForum() {
                   setPendingDmFile(null);
                 }
                 if (dmInput.trim()) {
-                  if (dmTab.rendezvousId) {
-                    const rdvSrv = rendezvousServers.find(s => s.id === dmTab.rendezvousId);
-                    if (rdvSrv) {
-                      const dmKey = await getRendezvousDmKey(dmTab.username, rdvSrv);
-                      const body = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
-                      await window.electronAPI.rendezvousRequest({
-                        method: 'POST', host: rdvSrv.host, port: rdvSrv.port,
-                        path: `/messages/${encodeURIComponent(dmTab.username)}`,
-                        token: rdvSrv.token,
-                        body: { ciphertext: body, nonce: 'rdv_dm_v1' },
-                      });
-                      const sentMsg: DmMessage = { id: crypto.randomUUID(), sender: rdvSrv.username, body: dmInput, timestamp: Date.now() };
-                      setDmMessages(prev => ({ ...prev, [dmTabKey(dmTab)]: [...(prev[dmTabKey(dmTab)] || []), sentMsg] }));
-                    }
-                  } else {
-                    const dmKey = await getDmSharedKey(dmTab.username);
-                    const body = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
-                    window.electronAPI.sendDm(dmTab.serverId, dmTab.username, body);
-                  }
+                  const dmKey = await getDmSharedKey(dmTab.username);
+                  const body = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
+                  window.electronAPI.sendDm(dmTab.serverId, dmTab.username, body);
                   setDmInput('');
                 }
                 dmInputRef.current?.focus();

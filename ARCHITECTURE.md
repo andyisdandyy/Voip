@@ -14,14 +14,6 @@ Echo/
 │       ├── release-server.yml  # GitHub Actions — builds & publishes server releases on tag push
 │       └── release-client.yml  # GitHub Actions — builds & publishes client releases (Win/Mac/Linux) on tag push
 │
-├── RendezvousServer/        # .NET 10 console application (P2P rendezvous server)
-│   ├── Program.cs           # Entry point — starts HTTP rendezvous server
-│   ├── RendezvousConfig.cs  # Configuration (rendezvous-config.json) — port, TTL, bind
-│   ├── UserRegistry.cs      # User registration — username + PBKDF2 password + ECDH public key (rendezvous-users.json)
-│   ├── PresenceTracker.cs   # In-memory online presence — username → address + last-seen (stale after 5 min)
-│   ├── OfflineMailbox.cs    # Encrypted offline message store with TTL purge (rendezvous-mailbox.json)
-│   └── RendezvousHttpServer.cs # HTTP API — register, auth, presence, pubkey lookup, offline mailbox
-│
 ├── VoipServer/              # .NET 10 console application (server)
 │   ├── Program.cs           # Entry point — starts TCP chat server + UDP voice loop
 │   ├── ChatServer.cs        # TCP client handler (auth, rooms, commands, video relay)
@@ -224,20 +216,12 @@ Private 1-to-1 messages between users. Two transports are supported:
 - **Echo**: Server sends `DM_SENT:<targetUser>:<text>` back to the sender for delivery confirmation
 - **Offline**: If the target user is not connected, the server responds with `ERROR:User is not online`
 
-**Rendezvous server transport** (no VoIP server required, rendezvous friends only):
-- **Send**: Client POSTs `{ ciphertext, nonce: "rdv_dm_v1" }` to `POST /messages/{recipient}` on the rendezvous server. The ciphertext is the `DMENC:...` blob encrypted with the ECDH shared key.
-- **Receive**: `checkRendezvousInbox` polls `GET /messages`, finds messages with `nonce === "rdv_dm_v1"`, decrypts with `dmDecrypt`, delivers to `dmMessages` state, then deletes from server.
-- **Offline delivery**: Messages persist in the rendezvous mailbox (`OfflineMailbox`) until the recipient refreshes their inbox.
-- **UI**: Click the send icon next to a rendezvous friend in the panel to open a DM tab. No VoIP server needed.
-
-**Shared encryption** (both transports):
+**Encryption**:
 - ECDH P-256 key pair generated once per session (`ecdhPrivateKeyRef` / `ecdhPublicKeyB64Ref`)
-- VoIP DMs: peer key fetched via `CMD:GET_DM_KEY` over TCP, shared secret derived with `deriveDmSharedKey`
-- Rendezvous DMs: peer key fetched from `GET /pubkey/{username}`, same derivation via `getRendezvousDmKey`
-- Rendezvous registration now stores the real ECDH public key so peers can look it up for encryption
+- Peer key fetched via `CMD:GET_DM_KEY` over TCP, shared secret derived with `deriveDmSharedKey`
 - All messages encrypted with AES-256-GCM (`dmEncrypt` / `dmDecrypt`), prefixed `DMENC:`
 
-- **UI (VoIP)**: Double-click a user in the voice sidebar, click "Direct Message" in the context menu, or open from the FRIENDS list (requires shared server connection). DM tab replaces the content area; file uploads supported via paperclip button. Video/audio render inline.
+- **UI**: Double-click a user in the voice sidebar, click "Direct Message" in the context menu, or open from the FRIENDS list (requires shared server connection). DM tab replaces the content area; file uploads supported via paperclip button. Video/audio render inline.
 - **Video transcoding**: When `FfmpegPath` is set in `server-config.json` and a file arrives via the `FILE:` protocol, the server transcodes HEVC to H.264/MP4 via `VideoTranscoder.TryTranscodeAsync`. Applies to channel uploads and VoIP DM attachments.
 - **Offline**: If the target user is not connected to the VoIP server, it responds with `ERROR:User is not online`
 - DMs are **not persisted** on the client -- they exist only in the renderer's in-memory state
@@ -747,7 +731,7 @@ Exposes a typed `window.electronAPI` object with methods for:
 - Autoconnect (start, stop, mention listener)
 - Auto-updater (version, check, install, progress/status listeners)
 - Video pop-out (open, close, closed listener)
-- Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows). Each DM tab is identified by a composite key `dmTabKey(dm)` = `"${serverId}:${username}"` (or `"rdv:${rendezvousId}:${username}"` for rendezvous DMs). This key is used for `activeDmTab`, `dmMessages`, `dmUnreadCounts`, and `dmKeyFingerprints`, preventing collisions when two different servers have users with the same username.
+- Direct messages — `sendDm(serverId, target, text)` (inline tabs, no separate windows). Each DM tab is identified by a composite key `dmTabKey(dm)` = `"${serverId}:${username}"`. This key is used for `activeDmTab`, `dmMessages`, `dmUnreadCounts`, and `dmKeyFingerprints`, preventing collisions when two different servers have users with the same username.
 - HTTP file upload — `uploadFile(host, port, token, fileName, mimeType, base64)` (upload to server's file server for server-side transcoding)
 
 ### AudioWorklet Processors
@@ -1089,41 +1073,3 @@ npm run dist:mac     # macOS DMG (universal)
 > - Changes to the repository structure (new files/folders)
 >
 > Keeping this document in sync ensures that Copilot (and any contributor) can quickly understand the project without re-reading every source file.
-
----
-
-## Rendezvous Server Architecture (RendezvousServer)
-
-### Purpose
-Lightweight HTTP broker for P2P friend connections. Handles user registration, presence tracking, public key exchange, and encrypted offline message store-and-forward.
-
-### Technology
-- .NET 10 console app, no NuGet dependencies
-- Single HTTP port (default 5010)
-- Presence is in-memory only; users and mailbox are flat JSON files
-
-### HTTP API
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | / | - | Server info |
-| GET | /myip | - | Returns caller IP |
-| POST | /register | - | Register username+password+publicKey |
-| POST | /auth | - | Login, receive bearer token |
-| PUT | /presence | Bearer | Mark online with address (heartbeat) |
-| DELETE | /presence | Bearer | Mark offline |
-| GET | /presence/{username} | Bearer | online status + address + publicKey |
-| GET | /pubkey/{username} | - | Public key lookup |
-| POST | /messages/{recipient} | Bearer | Store encrypted blob {ciphertext, nonce} |
-| GET | /messages | Bearer | Fetch inbox |
-| DELETE | /messages/{id} | Bearer | Acknowledge and delete message |
-
-### Security Model
-- Server stores only opaque ciphertext � cannot decrypt any message
-- GET /myip removes need for external STUN server
-- Server observes metadata only: who talks to who, timing, message size
-
-### Data Files
-- rendezvous-config.json � port, bind, TTL
-- rendezvous-users.json � username, PBKDF2 hash, public key
-- rendezvous-mailbox.json � pending offline messages
-- logs/rendezvous_debug.txt � append-only log

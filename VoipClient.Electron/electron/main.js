@@ -873,36 +873,6 @@ function setupIPC() {
     return uploadFileToServer(host, port, token, fileName, mimeType, base64Data);
   });
 
-  // ── Rendezvous Server HTTP requests ───────────────────────
-  ipcMain.handle('rendezvous:request', (_event, { method, host, port, path: urlPath, token, body }) => {
-    return new Promise((resolve) => {
-      const bodyStr = body ? JSON.stringify(body) : null;
-      const options = {
-        hostname: host,
-        port: port,
-        path: urlPath,
-        method: method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-          ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
-        },
-      };
-      const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
-          catch { resolve({ status: res.statusCode, data: null }); }
-        });
-      });
-      req.on('error', (err) => resolve({ status: 0, data: null, error: err.message }));
-      req.setTimeout(8000, () => { req.destroy(); resolve({ status: 0, data: null, error: 'Timeout' }); });
-      if (bodyStr) req.write(bodyStr);
-      req.end();
-    });
-  });
-
   // ── Taskbar / dock badge ──────────────────────────────────
   ipcMain.on('badge:set', (_event, count) => {
     setAppBadge(typeof count === 'number' ? count : 0);
