@@ -3,7 +3,7 @@ using System.Collections.Concurrent;
 /// <summary>
 /// Tracks which users are currently online and their self-reported network address.
 /// Entries expire automatically if not refreshed within <see cref="StalenessThreshold"/>.
-/// The client is expected to call PUT /presence or send HEARTBEAT over WebSocket periodically.
+/// The client is expected to call PUT /presence periodically as a heartbeat.
 /// </summary>
 public class PresenceTracker
 {
@@ -21,13 +21,6 @@ public class PresenceTracker
     /// <summary>Explicitly marks a user as offline.</summary>
     public void SetOffline(string username) =>
         _online.TryRemove(username, out _);
-
-    /// <summary>Refreshes the last-seen timestamp for a user without changing their address.</summary>
-    public void RefreshHeartbeat(string username)
-    {
-        if (_online.TryGetValue(username, out var entry))
-            _online[username] = entry with { LastSeen = DateTime.UtcNow };
-    }
 
     /// <summary>
     /// Returns the presence state of a user.

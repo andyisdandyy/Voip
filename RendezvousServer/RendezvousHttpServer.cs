@@ -1,48 +1,29 @@
 using System.Collections.Concurrent;
 using System.Net;
-using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
 /// <summary>
-/// Rendezvous server with persistent WebSocket connections and HTTP REST fallback.
+/// Lightweight HTTP rendezvous server for P2P friend connections.
 ///
-/// HTTP Endpoints (backward compatible):
-///   GET  /                       — server info (name, type, version)
-///   GET  /myip                   — returns the caller's public IP
+/// Endpoints:
+///   GET  /                       — server info (name, type)
+///   GET  /myip                   — returns the caller's public IP as seen by the server
 ///   POST /register               — register a new user {username, password, publicKey}
 ///   POST /auth                   — authenticate and receive a bearer token {username, password}
 ///   PUT  /presence               — mark self online (auth) {address}; acts as heartbeat
 ///   DELETE /presence             — mark self offline (auth)
 ///   GET  /presence/{username}    — check online status + address + publicKey (auth)
 ///   GET  /pubkey/{username}      — get a user's public key (no auth required)
-///   PUT  /pubkey                 — update caller's ECDH public key (auth) {publicKey}
+///   PUT  /pubkey                  — update caller's ECDH public key (auth) {publicKey}
 ///   POST /messages/{recipient}   — store encrypted message for offline user (auth) {ciphertext, nonce}
 ///   GET  /messages               — fetch inbox (auth)
 ///   DELETE /messages/{id}        — acknowledge and delete a delivered message (auth)
 ///   GET  /friends                — list confirmed friends (auth)
 ///   POST /friends/{target}       — record a confirmed friendship (auth)
 ///   DELETE /friends/{target}     — remove a friendship (auth)
-///
-/// WebSocket Endpoint (v2 — persistent bidirectional):
-///   GET  /ws?token=              — upgrade to WebSocket (auth via query param)
-///
-/// WebSocket Protocol (JSON text frames):
-///   Client → Server:
-///     AUTH        {type:"AUTH", token, deviceId}
-///     SEND_DM     {type:"SEND_DM", to, ciphertext, nonce}
-///     ACK         {type:"ACK", id}
-///     FETCH_MISSED {type:"FETCH_MISSED"}
-///     HEARTBEAT   {type:"HEARTBEAT"}
-///
-///   Server → Client:
-///     DM           {type:"DM", id, from, ciphertext, nonce, sentAt}
-///     DM_ACK       {type:"DM_ACK", id, sentAt}
-///     MISSED_MESSAGES {type:"MISSED_MESSAGES", messages:[...]}
-///     PRESENCE_UPDATE {type:"PRESENCE_UPDATE", username, online}
-///     HEARTBEAT_ACK   {type:"HEARTBEAT_ACK"}
-///     ERROR        {type:"ERROR", message}
+///   GET  /events                 — SSE stream for real-time delivery (auth via ?token=)
 ///
 /// The server never holds decryption keys. All message payloads are opaque ciphertext blobs.
 /// </summary>
@@ -54,8 +35,7 @@ public class RendezvousHttpServer
     private readonly PresenceTracker _presence;
     private readonly OfflineMailbox _mailbox;
     private readonly FriendStore _friends;
-    private readonly WsConnectionTracker _ws = new();
-    private readonly RateLimiter _rateLimiter;
+    private readonly SseConnectionTracker _sse = new();
     private readonly Action<string>? _log;
     private readonly byte[] _hmacKey;
 
@@ -70,10 +50,6 @@ public class RendezvousHttpServer
     private record AuthRequest(string? Username, string? Password);
     private record PresenceRequest(string? Address);
     private record MessageRequest(string? Ciphertext, string? Nonce);
-
-    // ── WebSocket protocol DTOs ──────────────────────────────────────────────
-    private record WsIncoming(string? Type, string? Token, string? DeviceId, string? To,
-        string? Ciphertext, string? Nonce, long? Id);
 
     public RendezvousHttpServer(
         RendezvousConfig config,
@@ -93,8 +69,6 @@ public class RendezvousHttpServer
         _hmacKey = new byte[32];
         RandomNumberGenerator.Fill(_hmacKey);
 
-        _rateLimiter = new RateLimiter(config.RateLimitMessages, TimeSpan.FromSeconds(config.RateLimitWindowSeconds));
-
         _listener = new HttpListener();
         var host = config.BindLocalhost ? "127.0.0.1" : "+";
         _listener.Prefixes.Add($"http://{host}:{config.Port}/");
@@ -111,9 +85,8 @@ public class RendezvousHttpServer
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromHours(6), ct).ConfigureAwait(false);
-                var removed = _mailbox.CleanupExpired();
-                if (removed > 0)
-                    _log?.Invoke($"[Rendezvous] Mailbox cleanup: purged {removed} expired messages");
+                _mailbox.CleanupExpired();
+                _log?.Invoke("[Rendezvous] Mailbox cleanup complete");
             }
         }, ct);
 
@@ -155,16 +128,9 @@ public class RendezvousHttpServer
 
         try
         {
-            // WebSocket upgrade
-            if (method == "GET" && path == "/ws" && ctx.Request.IsWebSocketRequest)
-            {
-                await HandleWebSocketUpgradeAsync(ctx).ConfigureAwait(false);
-                return;
-            }
-
             if (method == "GET" && path == "")
             {
-                await WriteJsonAsync(res, 200, new { name = _config.ServerName, type = "rendezvous", version = 2 }).ConfigureAwait(false);
+                await WriteJsonAsync(res, 200, new { name = _config.ServerName, type = "rendezvous" }).ConfigureAwait(false);
             }
             else if (method == "GET" && path == "/myip")
             {
@@ -224,8 +190,7 @@ public class RendezvousHttpServer
             }
             else if (method == "GET" && path == "/events")
             {
-                // Legacy SSE endpoint — redirect clients to use /ws
-                await WriteJsonAsync(res, 410, new { error = "SSE endpoint removed. Use WebSocket at /ws" }).ConfigureAwait(false);
+                await HandleSseAsync(req, res).ConfigureAwait(false);
             }
             else
             {
@@ -239,254 +204,7 @@ public class RendezvousHttpServer
         }
     }
 
-    // ── WebSocket handler ────────────────────────────────────────────────────
-    private async Task HandleWebSocketUpgradeAsync(HttpListenerContext ctx)
-    {
-        var token = ctx.Request.QueryString["token"];
-        if (string.IsNullOrEmpty(token))
-        {
-            ctx.Response.StatusCode = 401;
-            ctx.Response.Close();
-            return;
-        }
-
-        var username = ValidateToken(token);
-        if (username is null)
-        {
-            ctx.Response.StatusCode = 401;
-            ctx.Response.Close();
-            return;
-        }
-
-        WebSocketContext wsCtx;
-        try
-        {
-            wsCtx = await ctx.AcceptWebSocketAsync(subProtocol: null).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _log?.Invoke($"[WS] Accept failed for {username}: {ex.Message}");
-            ctx.Response.StatusCode = 500;
-            ctx.Response.Close();
-            return;
-        }
-
-        var ws = wsCtx.WebSocket;
-        var deviceId = ctx.Request.QueryString["deviceId"] ?? Guid.NewGuid().ToString("N")[..8];
-        var session = _ws.Register(username, deviceId, ws);
-        _log?.Invoke($"[WS] {username}/{deviceId} connected (sessions: {_ws.SessionCount})");
-
-        // Broadcast presence online
-        await BroadcastPresenceAsync(username, true).ConfigureAwait(false);
-
-        // Deliver missed messages immediately
-        await DeliverMissedAsync(session).ConfigureAwait(false);
-
-        // Heartbeat task: send periodic pings to keep connection alive
-        var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(session.Cts.Token);
-        _ = Task.Run(async () =>
-        {
-            var interval = TimeSpan.FromSeconds(_config.HeartbeatIntervalSeconds);
-            while (!heartbeatCts.Token.IsCancellationRequested)
-            {
-                await Task.Delay(interval, heartbeatCts.Token).ConfigureAwait(false);
-                try
-                {
-                    if (ws.State == WebSocketState.Open)
-                        await ws.SendAsync(
-                            Encoding.UTF8.GetBytes("""{"type":"HEARTBEAT_ACK"}"""),
-                            WebSocketMessageType.Text, true, heartbeatCts.Token).ConfigureAwait(false);
-                }
-                catch { break; }
-            }
-        }, heartbeatCts.Token);
-
-        // Read loop
-        var buffer = new byte[8192];
-        try
-        {
-            while (ws.State == WebSocketState.Open && !session.Cts.Token.IsCancellationRequested)
-            {
-                var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), session.Cts.Token).ConfigureAwait(false);
-
-                if (result.MessageType == WebSocketMessageType.Close)
-                    break;
-
-                if (result.MessageType != WebSocketMessageType.Text)
-                    continue;
-
-                // Handle fragmented messages
-                var msgBytes = new ArraySegment<byte>(buffer, 0, result.Count);
-                if (!result.EndOfMessage)
-                {
-                    using var ms = new MemoryStream();
-                    ms.Write(msgBytes);
-                    while (!result.EndOfMessage)
-                    {
-                        result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), session.Cts.Token).ConfigureAwait(false);
-                        ms.Write(buffer, 0, result.Count);
-                    }
-                    msgBytes = new ArraySegment<byte>(ms.ToArray());
-                }
-
-                var text = Encoding.UTF8.GetString(msgBytes);
-                await HandleWsMessageAsync(session, text).ConfigureAwait(false);
-            }
-        }
-        catch (WebSocketException) { }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { _log?.Invoke($"[WS] {username}/{deviceId} error: {ex.Message}"); }
-        finally
-        {
-            heartbeatCts.Cancel();
-            _ws.Unregister(session);
-            _log?.Invoke($"[WS] {username}/{deviceId} disconnected (sessions: {_ws.SessionCount})");
-
-            // Broadcast presence offline only if no remaining sessions
-            if (!_ws.IsConnected(username))
-                await BroadcastPresenceAsync(username, false).ConfigureAwait(false);
-
-            if (ws.State == WebSocketState.Open || ws.State == WebSocketState.CloseReceived)
-            {
-                try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).ConfigureAwait(false); }
-                catch { }
-            }
-        }
-    }
-
-    private async Task HandleWsMessageAsync(WsConnectionTracker.WsSession session, string text)
-    {
-        WsIncoming? msg;
-        try { msg = JsonSerializer.Deserialize<WsIncoming>(text, _jsonIn); }
-        catch { await WsSendErrorAsync(session, "Invalid JSON"); return; }
-
-        if (msg?.Type is null) { await WsSendErrorAsync(session, "Missing type"); return; }
-
-        switch (msg.Type.ToUpperInvariant())
-        {
-            case "SEND_DM":
-                await HandleWsSendDmAsync(session, msg).ConfigureAwait(false);
-                break;
-
-            case "ACK":
-                await HandleWsAckAsync(session, msg).ConfigureAwait(false);
-                break;
-
-            case "FETCH_MISSED":
-                await DeliverMissedAsync(session).ConfigureAwait(false);
-                break;
-
-            case "HEARTBEAT":
-                _presence.RefreshHeartbeat(session.Username);
-                await _ws.SendToSessionAsync(session, """{"type":"HEARTBEAT_ACK"}""").ConfigureAwait(false);
-                break;
-
-            default:
-                await WsSendErrorAsync(session, $"Unknown type: {msg.Type}").ConfigureAwait(false);
-                break;
-        }
-    }
-
-    private async Task HandleWsSendDmAsync(WsConnectionTracker.WsSession session, WsIncoming msg)
-    {
-        if (string.IsNullOrWhiteSpace(msg.To))
-        {
-            await WsSendErrorAsync(session, "Missing 'to' field");
-            return;
-        }
-
-        if (!_users.Exists(msg.To))
-        {
-            await WsSendErrorAsync(session, "Recipient not found");
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(msg.Ciphertext) || string.IsNullOrWhiteSpace(msg.Nonce))
-        {
-            await WsSendErrorAsync(session, "ciphertext and nonce are required");
-            return;
-        }
-
-        // Per-user rate limiting
-        if (!_rateLimiter.TryAcquire(session.Username))
-        {
-            await WsSendErrorAsync(session, "Rate limited — too many messages");
-            return;
-        }
-
-        // Durable write BEFORE acknowledging to the sender
-        var id = _mailbox.Store(session.Username, msg.To, msg.Ciphertext, msg.Nonce);
-        var sentAt = DateTime.UtcNow.ToString("O");
-
-        // ACK back to sender
-        var ack = JsonSerializer.Serialize(new { type = "DM_ACK", id, sentAt }, _jsonOut);
-        await _ws.SendToSessionAsync(session, ack).ConfigureAwait(false);
-
-        // Push to all recipient sessions
-        var dm = JsonSerializer.Serialize(new
-        {
-            type = "DM",
-            id,
-            from = session.Username,
-            ciphertext = msg.Ciphertext,
-            nonce = msg.Nonce,
-            sentAt,
-        }, _jsonOut);
-        var delivered = await _ws.SendToUserAsync(msg.To, dm).ConfigureAwait(false);
-
-        _log?.Invoke($"[WS] DM {session.Username} → {msg.To} (id={id}, pushed to {delivered} sessions)");
-    }
-
-    private async Task HandleWsAckAsync(WsConnectionTracker.WsSession session, WsIncoming msg)
-    {
-        if (msg.Id is null)
-        {
-            await WsSendErrorAsync(session, "Missing 'id' field");
-            return;
-        }
-
-        // Delete from mailbox (idempotent — second ACK returns false silently)
-        _mailbox.Delete(msg.Id.Value, session.Username);
-    }
-
-    private async Task DeliverMissedAsync(WsConnectionTracker.WsSession session)
-    {
-        var messages = _mailbox.GetInbox(session.Username)
-            .Select(m => new
-            {
-                id = m.Id,
-                from = m.From,
-                ciphertext = m.Ciphertext,
-                nonce = m.Nonce,
-                sentAt = m.SentAt.ToString("O"),
-            })
-            .ToArray();
-
-        if (messages.Length == 0) return;
-
-        var json = JsonSerializer.Serialize(new { type = "MISSED_MESSAGES", messages }, _jsonOut);
-        await _ws.SendToSessionAsync(session, json).ConfigureAwait(false);
-        _log?.Invoke($"[WS] Delivered {messages.Length} missed messages to {session.Username}/{session.DeviceId}");
-    }
-
-    private async Task BroadcastPresenceAsync(string username, bool online)
-    {
-        var json = JsonSerializer.Serialize(new { type = "PRESENCE_UPDATE", username, online }, _jsonOut);
-        // Broadcast to all connected users (they can filter by friends client-side)
-        foreach (var user in _ws.GetOnlineUsers())
-        {
-            if (!string.Equals(user, username, StringComparison.OrdinalIgnoreCase))
-                await _ws.SendToUserAsync(user, json).ConfigureAwait(false);
-        }
-    }
-
-    private async Task WsSendErrorAsync(WsConnectionTracker.WsSession session, string message)
-    {
-        var json = JsonSerializer.Serialize(new { type = "ERROR", message }, _jsonOut);
-        await _ws.SendToSessionAsync(session, json).ConfigureAwait(false);
-    }
-
-    // ── HTTP Handlers ────────────────────────────────────────────────────────
+    // ── Handlers ─────────────────────────────────────────────────────────────
     private async Task HandleRegisterAsync(HttpListenerRequest req, HttpListenerResponse res)
     {
         var body = await ReadJsonAsync<RegisterRequest>(req).ConfigureAwait(false);
@@ -540,9 +258,6 @@ public class RendezvousHttpServer
         if (!_users.Exists(target)) { await WriteJsonAsync(res, 404, new { error = "User not found" }); return; }
 
         var (online, address) = _presence.GetPresence(target);
-        // Also consider WebSocket presence
-        if (!online && _ws.IsConnected(target))
-            online = true;
         var publicKey = _users.GetPublicKey(target);
         await WriteJsonAsync(res, 200, new { online, address, publicKey }).ConfigureAwait(false);
     }
@@ -582,31 +297,22 @@ public class RendezvousHttpServer
             return;
         }
 
-        // Per-user rate limiting
-        if (!_rateLimiter.TryAcquire(username))
-        {
-            await WriteJsonAsync(res, 429, new { error = "Rate limited — too many messages" });
-            return;
-        }
-
-        // Durable write BEFORE acknowledging
+        // Always store in mailbox first — guarantees delivery even if the SSE connection drops
         var id = _mailbox.Store(username, recipient, body.Ciphertext, body.Nonce);
-        var sentAt = DateTime.UtcNow.ToString("O");
 
-        // Try to push to the recipient's live WebSocket sessions
-        var dm = JsonSerializer.Serialize(new
+        // Try to push to the recipient's live SSE connection for instant delivery
+        var eventJson = JsonSerializer.Serialize(new
         {
-            type = "DM",
-            id,
-            from = username,
-            ciphertext = body.Ciphertext,
-            nonce = body.Nonce,
-            sentAt,
+            Id = id,
+            From = username,
+            body.Ciphertext,
+            body.Nonce,
+            SentAt = DateTime.UtcNow.ToString("O"),
         }, _jsonOut);
-        var delivered = await _ws.SendToUserAsync(recipient, dm).ConfigureAwait(false);
+        var delivered = _sse.TryPush(recipient, "message", eventJson);
 
-        _log?.Invoke($"[Rendezvous] Message {(delivered > 0 ? $"pushed to {delivered} sessions" : "stored")}: {username} → {recipient} (id={id})");
-        await WriteJsonAsync(res, 200, new { id, delivered = delivered > 0 }).ConfigureAwait(false);
+        _log?.Invoke($"[Rendezvous] Message {(delivered ? "pushed" : "stored")}: {username} → {recipient} ({id})");
+        await WriteJsonAsync(res, 200, new { id, delivered }).ConfigureAwait(false);
     }
 
     private async Task HandleMessageInboxAsync(HttpListenerRequest req, HttpListenerResponse res)
@@ -628,16 +334,10 @@ public class RendezvousHttpServer
         await WriteJsonAsync(res, 200, messages).ConfigureAwait(false);
     }
 
-    private async Task HandleMessageDeleteAsync(string idStr, HttpListenerRequest req, HttpListenerResponse res)
+    private async Task HandleMessageDeleteAsync(string id, HttpListenerRequest req, HttpListenerResponse res)
     {
         var username = AuthenticateRequest(req);
         if (username is null) { await WriteJsonAsync(res, 401, new { error = "Unauthorized" }); return; }
-
-        if (!long.TryParse(idStr, out var id))
-        {
-            await WriteJsonAsync(res, 400, new { error = "Invalid message ID" });
-            return;
-        }
 
         if (!_mailbox.Delete(id, username))
         {
@@ -681,6 +381,71 @@ public class RendezvousHttpServer
         _friends.Remove(username, target);
         _log?.Invoke($"[Rendezvous] Friendship removed: {username} <-> {target}");
         await WriteJsonAsync(res, 200, new { success = true }).ConfigureAwait(false);
+    }
+
+    private async Task HandleSseAsync(HttpListenerRequest req, HttpListenerResponse res)
+    {
+        // EventSource cannot set headers, so the token is passed as a query parameter
+        var token = req.QueryString["token"];
+        if (string.IsNullOrEmpty(token)) { await WriteJsonAsync(res, 401, new { error = "token required" }); return; }
+        var username = ValidateToken(token);
+        if (username is null) { await WriteJsonAsync(res, 401, new { error = "Unauthorized" }); return; }
+
+        res.StatusCode = 200;
+        res.ContentType = "text/event-stream; charset=utf-8";
+        res.Headers.Set("Cache-Control", "no-cache");
+        res.Headers.Set("X-Accel-Buffering", "no"); // disable nginx proxy buffering
+        res.SendChunked = true;
+
+        // Register the channel first so any concurrent sends are queued immediately
+        var ch = _sse.Register(username);
+        _log?.Invoke($"[SSE] {username} connected (total: {_sse.ConnectionCount})");
+
+        using var cts = new CancellationTokenSource();
+
+        // Flush any pending mailbox messages straight to the stream
+        foreach (var msg in _mailbox.GetInbox(username))
+        {
+            var json = JsonSerializer.Serialize(new
+            {
+                msg.Id, msg.From, msg.Ciphertext, msg.Nonce,
+                SentAt = msg.SentAt.ToString("O"),
+            }, _jsonOut);
+            var bytes = Encoding.UTF8.GetBytes($"event: message\ndata: {json}\n\n");
+            try { await res.OutputStream.WriteAsync(bytes, cts.Token); await res.OutputStream.FlushAsync(cts.Token); }
+            catch { cts.Cancel(); break; }
+        }
+
+        // Heartbeat: write a comment every 25 s to keep the connection alive through proxies
+        _ = Task.Run(async () =>
+        {
+            while (!cts.Token.IsCancellationRequested)
+            {
+                await Task.Delay(25_000, cts.Token).ConfigureAwait(false);
+                ch.Writer.TryWrite(": heartbeat\n\n");
+            }
+        }, cts.Token);
+
+        // Stream events from the channel until the client disconnects
+        try
+        {
+            await foreach (var payload in ch.Reader.ReadAllAsync(cts.Token))
+            {
+                var bytes = Encoding.UTF8.GetBytes(payload);
+                await res.OutputStream.WriteAsync(bytes, cts.Token).ConfigureAwait(false);
+                await res.OutputStream.FlushAsync(cts.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (HttpListenerException) { }
+        catch (IOException) { }
+        finally
+        {
+            cts.Cancel();
+            _sse.Unregister(username, ch);
+            _log?.Invoke($"[SSE] {username} disconnected (total: {_sse.ConnectionCount})");
+            try { res.Close(); } catch { }
+        }
     }
 
     // ── Token auth ───────────────────────────────────────────────────────────

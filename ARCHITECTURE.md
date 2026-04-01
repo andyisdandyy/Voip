@@ -14,17 +14,13 @@ Echo/
 │       ├── release-server.yml  # GitHub Actions — builds & publishes server releases on tag push
 │       └── release-client.yml  # GitHub Actions — builds & publishes client releases (Win/Mac/Linux) on tag push
 │
-├── RendezvousServer/        # .NET 10 console application (P2P rendezvous server v2)
-│   ├── Program.cs           # Entry point — initialises SQLite DB, migrates legacy JSON, starts server
-│   ├── RendezvousConfig.cs  # Configuration (rendezvous-config.json) — port, TTL, bind, rate limits, heartbeat
-│   ├── RendezvousDb.cs      # SQLite database — schema init, WAL mode, JSON migration (rendezvous.db)
-│   ├── UserRegistry.cs      # User registration — username + PBKDF2 password + ECDH public key (SQLite)
+├── RendezvousServer/        # .NET 10 console application (P2P rendezvous server)
+│   ├── Program.cs           # Entry point — starts HTTP rendezvous server
+│   ├── RendezvousConfig.cs  # Configuration (rendezvous-config.json) — port, TTL, bind
+│   ├── UserRegistry.cs      # User registration — username + PBKDF2 password + ECDH public key (rendezvous-users.json)
 │   ├── PresenceTracker.cs   # In-memory online presence — username → address + last-seen (stale after 5 min)
-│   ├── OfflineMailbox.cs    # Encrypted message store — monotonic IDs, server timestamps, TTL purge (SQLite)
-│   ├── FriendStore.cs       # Mutual friendship pairs — normalised storage (SQLite)
-│   ├── WsConnectionTracker.cs # Multi-device WebSocket session manager — delivers to ALL active sessions
-│   ├── RateLimiter.cs       # Per-user sliding-window rate limiter
-│   └── RendezvousHttpServer.cs # HTTP REST API + WebSocket endpoint (/ws) — full v2 protocol
+│   ├── OfflineMailbox.cs    # Encrypted offline message store with TTL purge (rendezvous-mailbox.json)
+│   └── RendezvousHttpServer.cs # HTTP API — register, auth, presence, pubkey lookup, offline mailbox
 │
 ├── VoipServer/              # .NET 10 console application (server)
 │   ├── Program.cs           # Entry point — starts TCP chat server + UDP voice loop
@@ -230,11 +226,8 @@ Private 1-to-1 messages between users. Two transports are supported:
 
 **Rendezvous server transport** (no VoIP server required, rendezvous friends only):
 - **Send**: Client POSTs `{ ciphertext, nonce: "rdv_dm_v1" }` to `POST /messages/{recipient}` on the rendezvous server. The ciphertext is the `DMENC:...` blob encrypted with the ECDH shared key.
-- **Receive (live)**: `openWsConnection` opens a persistent WebSocket to `ws://host:port/ws?token=&deviceId=`. On connect the server pushes all unACKed messages as `MISSED_MESSAGES`. Incoming `DM` frames are decrypted and delivered to `dmMessages` state; client responds with `ACK` (server deletes from mailbox). Reconnects automatically after 15 s on disconnect.
-- **Receive (fallback)**: `checkRendezvousInbox` (manual "Refresh" button) polls `GET /messages` over HTTP for clients not yet on WebSocket or as a backup.
-- **Offline delivery**: Messages persist in SQLite (`rendezvous.db`) until ACKed. Delivered as `MISSED_MESSAGES` on next WebSocket connect.
-- **Heartbeat**: Client sends `HEARTBEAT` every 25 s; server responds `HEARTBEAT_ACK` to keep the connection alive through proxies.
-- **Multi-device**: Server delivers to ALL active WebSocket sessions for the recipient. Client deduplicates by monotonic message ID (SQLite `AUTOINCREMENT`).
+- **Receive**: `checkRendezvousInbox` polls `GET /messages`, finds messages with `nonce === "rdv_dm_v1"`, decrypts with `dmDecrypt`, delivers to `dmMessages` state, then deletes from server.
+- **Offline delivery**: Messages persist in the rendezvous mailbox (`OfflineMailbox`) until the recipient refreshes their inbox.
 - **UI**: Click the send icon next to a rendezvous friend in the panel to open a DM tab. No VoIP server needed.
 
 **Shared encryption** (both transports):
@@ -891,7 +884,7 @@ Server → Client:
   [nameLen:1][name:N][0x02][opus_data]   (tagged screen audio from another user)
 ```
 
-### SSE (HTTP, Server-Sent Events) — VoIP Server Notifications
+### SSE (HTTP, Server-Sent Events)
 ```
 Client → Server:
   GET /events?token=<auth_token>       (HTTP request, held open)
@@ -901,61 +894,6 @@ Server → Client:
   : heartbeat                           (keep-alive comment, every 25s)
   event: mention                        (mention notification)
   data: {"room":"General","sender":"alice","text":"@bob hey","timestamp":1234567890}
-```
-
-### Rendezvous WebSocket Protocol (v2)
-Persistent bidirectional connection replacing the old SSE/polling model.
-Supports multi-device (multiple simultaneous sessions per user).
-
-```
-Client → Server:
-  GET /ws?token=<auth_token>&deviceId=<id>   (WebSocket upgrade, auth via query)
-
-Client → Server (JSON text frames):
-  {"type":"SEND_DM","to":"bob","ciphertext":"...","nonce":"..."}
-  {"type":"ACK","id":123}                        (confirms receipt, deletes from mailbox)
-  {"type":"FETCH_MISSED"}                        (re-deliver unACKed messages)
-  {"type":"HEARTBEAT"}                           (keepalive, server responds HEARTBEAT_ACK)
-
-Server → Client (JSON text frames):
-  {"type":"DM","id":123,"from":"alice","ciphertext":"...","nonce":"...","sentAt":"..."}
-  {"type":"DM_ACK","id":123,"sentAt":"..."}      (sender confirmation after durable write)
-  {"type":"MISSED_MESSAGES","messages":[...]}    (all unACKed messages on connect)
-  {"type":"PRESENCE_UPDATE","username":"alice","online":true}
-  {"type":"HEARTBEAT_ACK"}
-  {"type":"ERROR","message":"Rate limited — too many messages"}
-```
-
-**Delivery guarantees:**
-- Every message gets a monotonic ID (SQLite AUTOINCREMENT) and server-issued timestamp
-- Durable write to SQLite WAL completes BEFORE DM_ACK is sent to the sender
-- Messages persist in the mailbox until ACKed by the recipient (DELETE /messages/{id} or WS ACK)
-- On WebSocket connect, all unACKed messages are pushed as MISSED_MESSAGES
-- At-least-once delivery — client deduplicates by message ID
-- TTL cleanup purges undelivered messages after configurable days (default 30)
-
-**Multi-device:**
-- A user may have multiple WebSocket sessions (identified by deviceId)
-- DMs are pushed to ALL active sessions for the recipient
-- ACK from any session deletes the message from the mailbox
-
-**Rate limiting:** per-user sliding window (default 30 msgs / 60s), returns ERROR on exceed
-
-### Rendezvous HTTP REST (backward compatible)
-```
-POST /register         {username, password, publicKey}
-POST /auth             {username, password} → {token}
-GET  /pubkey/{user}    → {publicKey}
-PUT  /pubkey           {publicKey}   (auth)
-PUT  /presence         {address}     (auth, heartbeat)
-DELETE /presence                     (auth)
-GET  /presence/{user}                (auth) → {online, address, publicKey}
-POST /messages/{user}  {ciphertext, nonce} (auth) → {id, delivered}
-GET  /messages                       (auth) → [...messages]
-DELETE /messages/{id}                (auth, ACK)
-GET  /friends                        (auth) → [...]
-POST /friends/{user}                 (auth)
-DELETE /friends/{user}               (auth)
 ```
 
 ### HTTP File Server (when `FileServerEnabled` is true)
@@ -1020,28 +958,6 @@ Created automatically with defaults on first run if missing. The server logs the
   "TextRooms":  [{ "Name": "General", "Password": null }]
 }
 ```
-
-### `rendezvous-config.json`
-```jsonc
-{
-  "ServerName": "Echo Rendezvous",
-  "Port": 5010,
-  "BindLocalhost": false,            // true = 127.0.0.1 (behind reverse proxy)
-  "MessageTtlDays": 30,             // Days before undelivered messages are purged
-  "RateLimitMessages": 30,          // Max messages per user per window
-  "RateLimitWindowSeconds": 60,     // Rate-limit window duration
-  "HeartbeatIntervalSeconds": 25    // WebSocket heartbeat interval
-}
-```
-
-### Rendezvous Database — `rendezvous.db` (SQLite, WAL mode)
-```sql
-users (username PK, password_hash, public_key, registered_at)
-messages (id AUTOINCREMENT PK, from_user, to_user, ciphertext, nonce, sent_at)
-  — indexed by to_user, (from_user, to_user), sent_at
-friends (user1, user2) PK(user1, user2)
-```
-On first run, legacy JSON files (`rendezvous-users.json`, `rendezvous-mailbox.json`, `rendezvous-friends.json`) are automatically migrated into SQLite if they exist.
 
 ---
 
