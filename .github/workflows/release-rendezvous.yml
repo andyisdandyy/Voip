@@ -23,6 +23,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Generate version
         id: gen
@@ -32,7 +34,8 @@ jobs:
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+            COUNT=$(git rev-list --count HEAD)
+            echo "version=1.0.${COUNT}" >> $GITHUB_OUTPUT
           fi
 
       - name: Setup .NET

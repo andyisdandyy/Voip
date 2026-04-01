@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./update.sh                  # update to latest
-#   ./update.sh relay-v1.2.0     # update to specific tag
+#   ./update.sh relay-v1.2.0    # update to specific tag
 #
 # For private repos, set GITHUB_TOKEN:
 #   export GITHUB_TOKEN=ghp_xxxx
@@ -59,7 +59,7 @@ fi
 
 if [ "$RELEASE_JSON" = "null" ]; then
     echo "ERROR: No relay-v* releases found."
-    echo "  Push a release tag first: git tag relay-v1.0.0 && git push origin relay-v1.0.0"
+    echo "  Push to master to trigger an automatic build."
     exit 1
 fi
 
