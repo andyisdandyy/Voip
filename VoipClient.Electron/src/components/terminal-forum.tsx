@@ -191,7 +191,7 @@ export function TerminalForum() {
   const [connectedServerId, setConnectedServerId] = useState<string | null>(null);
   const [voiceServerId, setVoiceServerId] = useState<string | null>(null);
   const [connectingToServerId, setConnectingToServerId] = useState<string | null>(null);
-  const [showHome, setShowHome] = useState(false);
+  const [showHome, setShowHome] = useState(true);
   // ── Browser-style back/forward navigation history ─────────
   type NavEntry =
     | { type: 'home' }
@@ -335,6 +335,7 @@ export function TerminalForum() {
   const [loginDialog, setLoginDialog] = useState<string | null>(null);
   const [serverContextMenu, setServerContextMenu] = useState<ServerContextMenu | null>(null);
   const [friendContextMenu, setFriendContextMenu] = useState<{ username: string; serverId: string; x: number; y: number } | null>(null);
+  const [rdvFriendContextMenu, setRdvFriendContextMenu] = useState<{ username: string; rendezvousId: string; x: number; y: number } | null>(null);
   const [addServerDialog, setAddServerDialog] = useState(false);
   const [untrustedConfirm, setUntrustedConfirm] = useState<PinnedServer | null>(null);
   const [newServerName, setNewServerName] = useState('');
@@ -1282,15 +1283,15 @@ export function TerminalForum() {
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null); setRoomContextMenu(null);
+      setUserContextMenu(null); setMsgContextMenu(null); setServerContextMenu(null); setFriendContextMenu(null); setRdvFriendContextMenu(null); setRoomContextMenu(null);
       if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target as Node)) setShowEmojiPicker(false);
       if (gifPickerRef.current && !gifPickerRef.current.contains(e.target as Node)) { setShowGifPicker(false); setGifQuery(''); setGifResults([]); }
     };
-    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || roomContextMenu || showEmojiPicker || reactionPickerMsgId) {
+    if (userContextMenu || msgContextMenu || serverContextMenu || friendContextMenu || rdvFriendContextMenu || roomContextMenu || showEmojiPicker || reactionPickerMsgId) {
       document.addEventListener('click', handleClick);
       return () => document.removeEventListener('click', handleClick);
     }
-  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, roomContextMenu, showEmojiPicker, reactionPickerMsgId]);
+  }, [userContextMenu, msgContextMenu, serverContextMenu, friendContextMenu, rdvFriendContextMenu, roomContextMenu, showEmojiPicker, reactionPickerMsgId]);
 
   // Close reaction picker on outside click
   useEffect(() => {
@@ -3379,8 +3380,17 @@ export function TerminalForum() {
       method: 'GET', host: srv.host, port: srv.port, path: `/pubkey/${encodeURIComponent(username)}`,
     });
     if (result?.status !== 200 || !result.data?.publicKey) return null;
-    const key = await deriveDmSharedKey(result.data.publicKey);
-    if (key) dmSharedKeysRef.current.set(username, key);
+    const pubKeyB64: string = result.data.publicKey;
+    const key = await deriveDmSharedKey(pubKeyB64);
+    if (key) {
+      dmSharedKeysRef.current.set(username, key);
+      const raw = Uint8Array.from(atob(pubKeyB64), c => c.charCodeAt(0));
+      crypto.subtle.digest('SHA-256', raw).then(hash => {
+        const fp = Array.from(new Uint8Array(hash).slice(0, 8))
+          .map(b => b.toString(16).padStart(2, '0')).join(':');
+        setDmKeyFingerprints(prev => ({ ...prev, [username]: fp }));
+      });
+    }
     return key;
   };
 
@@ -4201,6 +4211,7 @@ export function TerminalForum() {
                       return (
                         <div key={`rdv-${f.username}-${f.rendezvousId}`}
                           onClick={() => rdvSrv && openRendezvousDm(f.username, rdvSrv)}
+                          onContextMenu={(e) => { e.preventDefault(); setRdvFriendContextMenu({ username: f.username, rendezvousId: f.rendezvousId, x: e.clientX, y: e.clientY }); }}
                           className="flex items-center gap-3 bg-[#0d120d]/60 border border-indigo-900/20 rounded-lg px-4 py-3 hover:border-indigo-900/40 transition-all select-none cursor-pointer">
                           <div className="relative shrink-0">
                             <div className="w-10 h-10 rounded-full bg-green-900/40 flex items-center justify-center text-sm font-bold text-green-400">
@@ -4636,6 +4647,33 @@ export function TerminalForum() {
           </div>
         )}
 
+        {/* ── Rendezvous Friend Context Menu ── */}
+        {rdvFriendContextMenu && (() => {
+          const srv = rendezvousServers.find(s => s.id === rdvFriendContextMenu.rendezvousId);
+          return (
+            <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[180px] z-50"
+              style={{ left: Math.min(rdvFriendContextMenu.x, window.innerWidth - 200), top: Math.min(rdvFriendContextMenu.y, window.innerHeight - 120) }}
+              onClick={e => e.stopPropagation()}>
+              {srv && (
+                <button onClick={() => { openRendezvousDm(rdvFriendContextMenu.username, srv); setRdvFriendContextMenu(null); }}
+                  className="w-full px-4 py-2.5 rounded-lg text-green-400 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
+                  <Send className="w-4 h-4" />
+                  <span>Send message</span>
+                </button>
+              )}
+              <button onClick={async () => {
+                  setRendezvousFriends(prev => prev.filter(x => !(x.username === rdvFriendContextMenu.username && x.rendezvousId === rdvFriendContextMenu.rendezvousId)));
+                  if (srv) await window.electronAPI.rendezvousRequest({ method: 'DELETE', host: srv.host, port: srv.port, path: `/friends/${encodeURIComponent(rdvFriendContextMenu.username)}`, token: srv.token });
+                  setRdvFriendContextMenu(null);
+                }}
+                className="w-full px-4 py-2.5 rounded-lg text-red-400 hover:bg-red-900/40 transition-all flex items-center gap-2 text-sm">
+                <X className="w-4 h-4" />
+                <span>Remove friend</span>
+              </button>
+            </div>
+          );
+        })()}
+
         {/* ── Server Context Menu ── */}
         {serverContextMenu && (() => {
           const server = pinnedServers.find(s => s.id === serverContextMenu.serverId);
@@ -4715,6 +4753,53 @@ export function TerminalForum() {
             </div>
           );
         })()}
+
+        {/* ── Update available / downloading toast ── */}
+        {updateAvailable && !updateDismissed && (
+          <div className="fixed bottom-4 right-4 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-4 z-50 max-w-xs">
+            <div className="flex items-start gap-3">
+              <Download className="w-5 h-5 text-green-500 shrink-0 mt-0.5 animate-bounce" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-green-400 font-bold">Update available</p>
+                <p className="text-xs text-green-700 mt-1">Version {updateAvailable} is downloading…</p>
+                {updateProgress !== null && (
+                  <div className="mt-2 h-1.5 bg-green-900/40 rounded-full overflow-hidden">
+                    <div className="h-full bg-green-500 transition-all duration-300 rounded-full" style={{ width: `${updateProgress}%` }} />
+                  </div>
+                )}
+              </div>
+              <button onClick={() => setUpdateDismissed(true)} className="text-green-800 hover:text-green-500 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Update ready toast ── */}
+        {updateReady && !updateDismissed && (
+          <div className="fixed bottom-4 right-4 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-4 z-50 max-w-xs">
+            <div className="flex items-start gap-3">
+              <Download className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-green-400 font-bold">Update ready</p>
+                <p className="text-xs text-green-700 mt-1">Version {updateReady} has been downloaded.</p>
+                <div className="flex gap-2 mt-3">
+                  <button onClick={() => window.electronAPI.installUpdate()}
+                    className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-xs transition-all font-bold">
+                    Restart now
+                  </button>
+                  <button onClick={() => setUpdateDismissed(true)}
+                    className="px-3 py-1.5 text-green-700 hover:text-green-500 rounded-lg text-xs transition-all">
+                    Later
+                  </button>
+                </div>
+              </div>
+              <button onClick={() => setUpdateDismissed(true)} className="text-green-800 hover:text-green-500 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── Server Password Dialog ── */}
         {serverPasswordDialog && (
@@ -4833,7 +4918,7 @@ export function TerminalForum() {
                       <ChevronRight className="w-4 h-4" />
                     </button>
                   </div>
-                  <button onClick={() => { pushNav({ type: 'home' }); setShowHome(true); }}
+                  <button onClick={() => { pushNav({ type: 'home' }); setActiveDmTab(null); setShowHome(true); }}
                     className="px-3 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 transition-colors"
                     style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                     title="Servere">
@@ -4870,7 +4955,7 @@ export function TerminalForum() {
                  <ChevronRight className="w-4 h-4" />
                </button>
              </div>
-             <button onClick={() => { pushNav({ type: 'home' }); setShowHome(true); }}
+             <button onClick={() => { pushNav({ type: 'home' }); setActiveDmTab(null); setShowHome(true); }}
                className="px-3 py-2 text-green-600 hover:text-green-400 hover:bg-green-900/20 transition-colors"
                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                title="Servere">

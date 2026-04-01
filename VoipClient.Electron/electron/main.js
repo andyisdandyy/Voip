@@ -342,6 +342,21 @@ function createWindow() {
   });
 }
 
+// ── Single-instance lock ─────────────────────────────────────
+// If another instance tries to open, focus this one instead.
+const gotInstanceLock = app.requestSingleInstanceLock();
+if (!gotInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 app.on('before-quit', () => { forceQuit = true; });
 
 app.whenReady().then(async () => {

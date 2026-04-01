@@ -2,8 +2,18 @@ name: Release Rendezvous Server
 
 on:
   push:
+    branches:
+      - master
+    paths:
+      - 'RendezvousServer/**'
     tags:
-      - 'relay-v*'    # Push a tag like relay-v1.0.0 to trigger a release
+      - '[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 1.2.5). Leave empty to auto-generate.'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -13,6 +23,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Generate version
+        id: gen
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -37,5 +58,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: relay-v${{ steps.gen.outputs.version }}
+          name: Rendezvous Server v${{ steps.gen.outputs.version }}
           generate_release_notes: true
           files: RendezvousServer-linux-x64.tar.gz
