@@ -2,18 +2,44 @@ name: Release Rendezvous Server
 
 on:
   push:
-    branches:
-      - master
-    paths:
-      - 'RendezvousServer/**'
     tags:
-      - '[0-9]*.[0-9]*.[0-9]*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g. 1.2.5). Leave empty to auto-generate.'
-        required: false
-        default: ''
+      - 'relay-v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Publish linux-x64
+        run: |
+          dotnet publish RendezvousServer/RendezvousServer.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained \
+            -p:PublishSingleFile=true \
+            -o ./artifacts/linux-x64
+
+      - name: Package
+        run: |
+          cd artifacts/linux-x64
+          tar czf ../../RendezvousServer-linux-x64.tar.gz .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: RendezvousServer-linux-x64.tar.gz
+
 
 jobs:
   build:
