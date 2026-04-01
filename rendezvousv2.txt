@@ -1,0 +1,116 @@
+Design a robust, production-ready Rendezvous Server for a secure messaging system similar to Discord DMs, but optimized for low cost and reliability.
+
+The system must NOT rely on any VoIP server and should function independently as a lightweight messaging backbone.
+
+### Core Requirements
+
+1. **Transport Layer**
+
+* Use persistent connections (WebSocket preferred, TCP acceptable)
+* NO polling-based message retrieval
+* Support automatic reconnect with session resume
+
+2. **Message Delivery Guarantees**
+
+* Every message must have:
+
+  * Unique message ID (monotonic per conversation or globally sortable)
+  * Timestamp (server-issued)
+* Implement:
+
+  * ACK system (client confirms receipt)
+  * Retry mechanism for unacknowledged messages
+  * At-least-once delivery (client deduplicates using message IDs)
+
+3. **Offline Messaging**
+
+* Store messages server-side if recipient is offline
+* Deliver immediately upon reconnect
+* Messages must persist until ACKed by recipient
+* Implement TTL cleanup (configurable)
+
+4. **End-to-End Encryption Compatibility**
+
+* Server must treat all messages as opaque ciphertext
+* Do NOT rely on server-side decryption
+* Provide public key lookup endpoint
+* Prevent MITM via:
+
+  * Signed public keys OR
+  * Key fingerprint verification support
+
+5. **Presence System**
+
+* Track online users via active connections (not polling)
+* Use heartbeat/ping system to detect disconnects
+* Broadcast presence changes (optional)
+
+6. **Scalability & Storage**
+
+* Use a real database (SQLite for small scale, Postgres for production)
+* Avoid JSON file storage
+* Index messages by:
+
+  * recipient
+  * conversation
+  * timestamp
+
+7. **Multi-Device Support**
+
+* A user may have multiple active sessions
+* Deliver messages to ALL active sessions
+* Track ACK per device or per user (design decision required)
+
+8. **Protocol Design**
+   Define a simple text or JSON protocol:
+
+Client → Server:
+
+* AUTH
+* SEND_DM
+* ACK
+* FETCH_MISSED (optional fallback)
+* HEARTBEAT
+
+Server → Client:
+
+* DM
+* DM_ACK
+* MISSED_MESSAGES
+* PRESENCE_UPDATE
+
+9. **Reliability**
+
+* Server crash must NOT lose messages
+* Use durable writes before acknowledging send
+* Idempotent message handling
+
+10. **Security**
+
+* Rate limiting (per user, not IP)
+* Authentication required for all actions
+* Constant-time comparisons where relevant
+
+---
+
+### Bonus Features (Optional)
+
+* Read receipts
+* Typing indicators
+* Message edits/deletes
+* Push notifications (SSE or WebPush)
+
+---
+
+### Output Expectations
+
+Provide:
+
+1. High-level architecture diagram (text)
+2. Data model (tables / schema)
+3. Protocol specification (message formats)
+4. Example message flow (send, receive, reconnect)
+5. Failure scenarios and how they are handled
+
+Focus on simplicity, reliability, and low resource usage.
+Avoid unnecessary complexity like full P2P or media handling.

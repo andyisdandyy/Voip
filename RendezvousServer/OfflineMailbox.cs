@@ -1,110 +1,96 @@
-using System.Text.Json;
-
 /// <summary>
 /// Store-and-forward mailbox for encrypted messages sent to offline users.
 /// Messages are opaque ciphertext blobs — the server cannot read them.
-/// Undelivered messages are automatically purged after <see cref="_ttlDays"/> days.
+/// Uses SQLite with monotonic AUTOINCREMENT IDs and server-issued timestamps.
+/// Undelivered messages are automatically purged after the configured TTL.
 /// </summary>
 public class OfflineMailbox
 {
     public record MailMessage(
-        string Id,
+        long Id,
         string From,
         string To,
         string Ciphertext,
         string Nonce,
         DateTime SentAt);
 
-    private static readonly JsonSerializerOptions _jsonOpts = new()
-    {
-        WriteIndented = true,
-        PropertyNameCaseInsensitive = true,
-    };
-
-    private readonly string _filePath;
+    private readonly RendezvousDb _db;
     private readonly int _ttlDays;
-    private readonly List<MailMessage> _messages = new();
-    private readonly object _lock = new();
 
-    public OfflineMailbox(string filePath, int ttlDays = 30)
+    public OfflineMailbox(RendezvousDb db, int ttlDays = 30)
     {
-        _filePath = filePath;
+        _db = db;
         _ttlDays = ttlDays;
-        Load();
-    }
-
-    /// <summary>Stores an encrypted message blob for a recipient. Returns the assigned message ID.</summary>
-    public string Store(string from, string to, string ciphertext, string nonce)
-    {
-        var id = Guid.NewGuid().ToString("N");
-        lock (_lock)
-        {
-            _messages.Add(new MailMessage(id, from, to, ciphertext, nonce, DateTime.UtcNow));
-            Save();
-        }
-        return id;
-    }
-
-    /// <summary>Returns all pending messages for the given recipient.</summary>
-    public List<MailMessage> GetInbox(string username)
-    {
-        lock (_lock)
-        {
-            return _messages
-                .Where(m => string.Equals(m.To, username, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
     }
 
     /// <summary>
-    /// Deletes a message by ID after the recipient confirms delivery.
-    /// Returns false if the message does not exist or does not belong to the recipient.
+    /// Stores an encrypted message blob for a recipient.
+    /// The write is durable (committed to SQLite WAL) before the ID is returned.
+    /// Returns the monotonic message ID.
     /// </summary>
-    public bool Delete(string id, string recipient)
+    public long Store(string from, string to, string ciphertext, string nonce)
     {
-        lock (_lock)
-        {
-            var msg = _messages.FirstOrDefault(m =>
-                m.Id == id &&
-                string.Equals(m.To, recipient, StringComparison.OrdinalIgnoreCase));
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO messages (from_user, to_user, ciphertext, nonce, sent_at)
+            VALUES ($f, $t, $c, $n, $s);
+            SELECT last_insert_rowid();
+            """;
+        cmd.Parameters.AddWithValue("$f", from);
+        cmd.Parameters.AddWithValue("$t", to);
+        cmd.Parameters.AddWithValue("$c", ciphertext);
+        cmd.Parameters.AddWithValue("$n", nonce);
+        cmd.Parameters.AddWithValue("$s", DateTime.UtcNow.ToString("O"));
+        return (long)cmd.ExecuteScalar()!;
+    }
 
-            if (msg is null) return false;
-            _messages.Remove(msg);
-            Save();
-            return true;
+    /// <summary>Returns all pending messages for the given recipient, ordered by ID.</summary>
+    public List<MailMessage> GetInbox(string username)
+    {
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id, from_user, to_user, ciphertext, nonce, sent_at FROM messages WHERE to_user = $u ORDER BY id";
+        cmd.Parameters.AddWithValue("$u", username);
+
+        var list = new List<MailMessage>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new MailMessage(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                DateTime.Parse(reader.GetString(5))));
         }
+        return list;
+    }
+
+    /// <summary>
+    /// Deletes a message by ID after the recipient confirms delivery (ACK).
+    /// Returns false if the message does not exist or does not belong to the recipient.
+    /// Idempotent: re-ACKing an already-deleted message returns false without error.
+    /// </summary>
+    public bool Delete(long id, string recipient)
+    {
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM messages WHERE id = $id AND to_user = $u";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$u", recipient);
+        return cmd.ExecuteNonQuery() > 0;
     }
 
     /// <summary>Removes all messages older than the configured TTL. Called periodically by the server.</summary>
-    public void CleanupExpired()
+    public int CleanupExpired()
     {
-        var cutoff = DateTime.UtcNow.AddDays(-_ttlDays);
-        lock (_lock)
-        {
-            var removed = _messages.RemoveAll(m => m.SentAt < cutoff);
-            if (removed > 0) Save();
-        }
-    }
-
-    // ── Persistence ─────────────────────────────────────────────────────────
-    private void Load()
-    {
-        if (!File.Exists(_filePath)) return;
-        try
-        {
-            var json = File.ReadAllText(_filePath);
-            var list = JsonSerializer.Deserialize<List<MailMessage>>(json, _jsonOpts);
-            if (list is not null) _messages.AddRange(list);
-        }
-        catch { }
-    }
-
-    private void Save()
-    {
-        try
-        {
-            File.WriteAllText(_filePath, JsonSerializer.Serialize(_messages, _jsonOpts));
-        }
-        catch { }
+        var cutoff = DateTime.UtcNow.AddDays(-_ttlDays).ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM messages WHERE sent_at < $cutoff";
+        cmd.Parameters.AddWithValue("$cutoff", cutoff);
+        return cmd.ExecuteNonQuery();
     }
 }

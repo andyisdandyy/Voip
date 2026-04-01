@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
+﻿import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import {
   Terminal, Hash, User, Circle, Mic, MicOff, Headphones,
   Volume2, VolumeX, LogIn, PhoneOff, Lock, Settings, X, Bell, BellOff, Monitor,
@@ -8,7 +8,7 @@ import {
   PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil, SmilePlus, RefreshCw,
 } from 'lucide-react';
 
-// ── Types ───────────────────────────────────────────────────
+// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface VoiceRoom { name: string; allowedRoles: string[]; bitrate: number }
 interface TextRoom  { name: string; allowedRoles: string[] }
@@ -106,24 +106,24 @@ const SERVER_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#
 
 // Standard emoji shortcode map
 const EMOJI_SHORTCODES: Record<string, string> = {
-  grinning: '😀', joy: '😂', sweat_smile: '😅', blush: '😊', sunglasses: '😎', heart_eyes: '😍',
-  partying: '🥳', sob: '😭', rage: '😤', thinking: '🤔', exploding_head: '🤯', pleading: '🥺',
-  sleeping: '😴', clown: '🤡', thumbsup: '👍', thumbsdown: '👎', clap: '👏', raised_hands: '🙌',
-  handshake: '🤝', peace: '✌️', call_me: '🤙', muscle: '💪', heart: '❤️', fire: '🔥',
-  star: '⭐', hundred: '💯', tada: '🎉', notes: '🎶', skull: '💀', eyes: '👀',
-  salute: '🫡', melting: '🫠', imp: '😈', poop: '💩', robot: '🤖', alien: '👾',
-  goat: '🐐', fox: '🦊', cat: '🐱', dog: '🐶', coffee: '☕', pizza: '🍕',
-  beer: '🍺', gaming: '🎮', computer: '💻', tools: '🛠️', zap: '⚡', check: '✅',
-  x: '❌', warning: '⚠️', speech: '💬', pin: '📌', rocket: '🚀', earth: '🌍',
-  moon: '🌙', sun: '☀️', rainbow: '🌈', gem: '💎', laugh: '😂', laughing: '😂',
-  smile: '😊', wink: '😉', cool: '😎', cry: '😭', angry: '😤', think: '🤔',
-  love: '❤️', ok: '👍', no: '👎', wave: '👋', pray: '🙏', shrug: '🤷',
-  facepalm: '🤦', roll_eyes: '🙄', nerd: '🤓', money: '🤑', sick: '🤢',
-  devil: '😈', angel: '😇', poo: '💩', ghost: '👻', party: '🥳',
-  '+1': '👍', '-1': '👎', 'thumbs_up': '👍', 'thumbs_down': '👎',
+  grinning: 'ðŸ˜€', joy: 'ðŸ˜‚', sweat_smile: 'ðŸ˜…', blush: 'ðŸ˜Š', sunglasses: 'ðŸ˜Ž', heart_eyes: 'ðŸ˜',
+  partying: 'ðŸ¥³', sob: 'ðŸ˜­', rage: 'ðŸ˜¤', thinking: 'ðŸ¤”', exploding_head: 'ðŸ¤¯', pleading: 'ðŸ¥º',
+  sleeping: 'ðŸ˜´', clown: 'ðŸ¤¡', thumbsup: 'ðŸ‘', thumbsdown: 'ðŸ‘Ž', clap: 'ðŸ‘', raised_hands: 'ðŸ™Œ',
+  handshake: 'ðŸ¤', peace: 'âœŒï¸', call_me: 'ðŸ¤™', muscle: 'ðŸ’ª', heart: 'â¤ï¸', fire: 'ðŸ”¥',
+  star: 'â­', hundred: 'ðŸ’¯', tada: 'ðŸŽ‰', notes: 'ðŸŽ¶', skull: 'ðŸ’€', eyes: 'ðŸ‘€',
+  salute: 'ðŸ«¡', melting: 'ðŸ« ', imp: 'ðŸ˜ˆ', poop: 'ðŸ’©', robot: 'ðŸ¤–', alien: 'ðŸ‘¾',
+  goat: 'ðŸ', fox: 'ðŸ¦Š', cat: 'ðŸ±', dog: 'ðŸ¶', coffee: 'â˜•', pizza: 'ðŸ•',
+  beer: 'ðŸº', gaming: 'ðŸŽ®', computer: 'ðŸ’»', tools: 'ðŸ› ï¸', zap: 'âš¡', check: 'âœ…',
+  x: 'âŒ', warning: 'âš ï¸', speech: 'ðŸ’¬', pin: 'ðŸ“Œ', rocket: 'ðŸš€', earth: 'ðŸŒ',
+  moon: 'ðŸŒ™', sun: 'â˜€ï¸', rainbow: 'ðŸŒˆ', gem: 'ðŸ’Ž', laugh: 'ðŸ˜‚', laughing: 'ðŸ˜‚',
+  smile: 'ðŸ˜Š', wink: 'ðŸ˜‰', cool: 'ðŸ˜Ž', cry: 'ðŸ˜­', angry: 'ðŸ˜¤', think: 'ðŸ¤”',
+  love: 'â¤ï¸', ok: 'ðŸ‘', no: 'ðŸ‘Ž', wave: 'ðŸ‘‹', pray: 'ðŸ™', shrug: 'ðŸ¤·',
+  facepalm: 'ðŸ¤¦', roll_eyes: 'ðŸ™„', nerd: 'ðŸ¤“', money: 'ðŸ¤‘', sick: 'ðŸ¤¢',
+  devil: 'ðŸ˜ˆ', angel: 'ðŸ˜‡', poo: 'ðŸ’©', ghost: 'ðŸ‘»', party: 'ðŸ¥³',
+  '+1': 'ðŸ‘', '-1': 'ðŸ‘Ž', 'thumbs_up': 'ðŸ‘', 'thumbs_down': 'ðŸ‘Ž',
 };
 
-// ── Blob URL media player ─────────────────────────────────
+// â”€â”€ Blob URL media player â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Converts base64 data to a Blob URL for reliable <video>/<audio> playback.
 // Data URLs fail for large media and Chromium doesn't recognise video/quicktime.
 const BlobMedia = memo(function BlobMedia({ type, base64, mimeType, className }: { type: 'video' | 'audio'; base64: string; mimeType: string; className?: string }) {
@@ -149,7 +149,7 @@ const BlobMedia = memo(function BlobMedia({ type, base64, mimeType, className }:
   return <audio src={src} controls preload="metadata" className={className} />;
 });
 
-// ── EditInput — inline message edit field ───────────────────
+// â”€â”€ EditInput â€” inline message edit field â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function EditInput({ body, onSave, onCancel }: { body: string; onSave: (v: string) => void; onCancel: () => void }) {
   const [value, setValue] = useState(body);
@@ -168,16 +168,16 @@ function EditInput({ body, onSave, onCancel }: { body: string; onSave: (v: strin
       />
       <div className="flex gap-2 mt-1 text-[10px] text-green-800">
         <span>Enter to save</span>
-        <span>·</span>
+        <span>Â·</span>
         <span>Esc to cancel</span>
-        <span>·</span>
+        <span>Â·</span>
         <span>Shift+Enter for newline</span>
       </div>
     </div>
   );
 }
 
-// ── Component ───────────────────────────────────────────────
+// â”€â”€ Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function TerminalForum() {
   // Connection
@@ -192,7 +192,7 @@ export function TerminalForum() {
   const [voiceServerId, setVoiceServerId] = useState<string | null>(null);
   const [connectingToServerId, setConnectingToServerId] = useState<string | null>(null);
   const [showHome, setShowHome] = useState(true);
-  // ── Browser-style back/forward navigation history ─────────
+  // â”€â”€ Browser-style back/forward navigation history â”€â”€â”€â”€â”€â”€â”€â”€â”€
   type NavEntry =
     | { type: 'home' }
     | { type: 'server'; serverId: string; view: 'voice' | 'text'; textRoom?: string | null }
@@ -262,12 +262,12 @@ export function TerminalForum() {
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
 
-  // Typing indicators — per-room list of usernames currently typing
+  // Typing indicators â€” per-room list of usernames currently typing
   const [typingUsers, setTypingUsers] = useState<Record<string, string[]>>({});
   const typingTimeoutsRef = useRef<Record<string, Record<string, ReturnType<typeof setTimeout>>>>({});
-  const typingLastSentRef = useRef<Record<string, number>>({}); // room → last-sent timestamp
+  const typingLastSentRef = useRef<Record<string, number>>({}); // room â†’ last-sent timestamp
 
-  // Reactions — msgId → (emoji → username[])
+  // Reactions â€” msgId â†’ (emoji â†’ username[])
   const [reactions, setReactions] = useState<Record<string, Record<string, string[]>>>({});
   // Which message has the reaction picker open (msgId or null)
   const [reactionPickerMsgId, setReactionPickerMsgId] = useState<string | null>(null);
@@ -451,7 +451,7 @@ export function TerminalForum() {
   const notificationSoundsRef = useRef(true);
   const notificationVolumeRef = useRef(50);
 
-  // ── Notification preference helpers (use refs so IPC callbacks stay fresh) ──
+  // â”€â”€ Notification preference helpers (use refs so IPC callbacks stay fresh) â”€â”€
   const resolveNotifLevel = (sid: string, channel?: string): NotifLevel => {
     const prefs = notifPrefsRef.current[sid];
     const serverLevel: NotifLevel = (prefs?._server as NotifLevel) ?? 'all';
@@ -472,15 +472,16 @@ export function TerminalForum() {
   const [speakingUsers, setSpeakingUsers] = useState<Set<string>>(new Set());
   const speakingTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
-  // ── ECDH DM encryption state ─────────────────────────────
+  // â”€â”€ ECDH DM encryption state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const ecdhPrivateKeyRef = useRef<CryptoKey | null>(null);
   const ecdhPublicKeyB64Ref = useRef<string>('');
   const dmSharedKeysRef = useRef<Map<string, CryptoKey>>(new Map());
   const pendingDmKeyCallbacksRef = useRef<Map<string, Array<(key: CryptoKey | null) => void>>>(new Map());
-  const sseConnectionsRef = useRef<Map<string, EventSource>>(new Map());
+  const sseConnectionsRef = useRef<Map<string, WebSocket>>(new Map());
+  const wsDeviceIdRef = useRef<string>(crypto.randomUUID());
   const rendezvousServersRef = useRef<RendezvousServer[]>([]);
 
-  // ── Multi-server state cache ──────────────────────────────
+  // â”€â”€ Multi-server state cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Stores per-server state snapshots for background servers.
   // The currently active (viewed) server's state is in the
   // individual useState hooks above. When switching tabs, we
@@ -537,7 +538,7 @@ export function TerminalForum() {
     pendingDmKeyCallbacksRef.current.clear();
   }
 
-  // ── ECDH DM encryption helpers ───────────────────────────
+  // â”€â”€ ECDH DM encryption helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async function generateAndPublishEcdhKey() {
     try {
@@ -614,7 +615,7 @@ export function TerminalForum() {
     } catch { return text; }
   }
 
-  // ── Browser-style back / forward helpers ───────────────────
+  // â”€â”€ Browser-style back / forward helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const navEntriesEqual = (a: NavEntry, b: NavEntry): boolean => {
     if (a.type !== b.type) return false;
     if (a.type === 'server' && b.type === 'server') return a.serverId === b.serverId && a.view === b.view && (a.textRoom ?? null) === (b.textRoom ?? null);
@@ -649,11 +650,11 @@ export function TerminalForum() {
       setShowHome(false);
       const currentSid = connectedServerIdRef.current;
       if (currentSid === entry.serverId) {
-        // Same server — just switch the sub-view
+        // Same server â€” just switch the sub-view
         setViewModeTracked(entry.view);
         if (entry.view === 'text') setCurrentText(entry.textRoom ?? null);
       } else {
-        // Different server — do snapshot swap directly (bypass connectToPinnedServer to avoid stale-state issues)
+        // Different server â€” do snapshot swap directly (bypass connectToPinnedServer to avoid stale-state issues)
         const cached = serverStatesRef.current[entry.serverId];
         if (cached) {
           // Save current server's state
@@ -679,7 +680,7 @@ export function TerminalForum() {
             e2eeKeyRef.current = null;
           }
         } else {
-          // No cached state — try connectToPinnedServer as fallback
+          // No cached state â€” try connectToPinnedServer as fallback
           const server = pinnedServers.find(s => s.id === entry.serverId);
           if (server) connectToPinnedServer(server);
         }
@@ -781,7 +782,7 @@ export function TerminalForum() {
   const soundboardGainRef = useRef<GainNode | null>(null);
   const [playingSound, setPlayingSound] = useState<string | null>(null);
 
-  // Custom emojis (name → base64 image data from server)
+  // Custom emojis (name â†’ base64 image data from server)
   const [customEmojis, setCustomEmojis] = useState<Record<string, string>>({});
   const [emojiQuery, setEmojiQuery] = useState<string | null>(null);
   const [emojiAutoIndex, setEmojiAutoIndex] = useState(0);
@@ -1251,7 +1252,7 @@ export function TerminalForum() {
   useEffect(() => { try { localStorage.setItem('voip-rendezvous-friends', JSON.stringify(rendezvousFriends)); } catch {} }, [rendezvousFriends]);
   useEffect(() => { try { localStorage.setItem('voip-friend-requests', JSON.stringify(friendRequests)); } catch {} }, [friendRequests]);
 
-  // ── Auto-poll rendezvous inbox every 5 min as SSE offline fallback ────────
+  // â”€â”€ Auto-poll rendezvous inbox every 5 min as SSE offline fallback â”€â”€â”€â”€â”€â”€â”€â”€
   const checkAllInboxesRef = useRef<() => void>(() => {});
   useEffect(() => {
     rendezvousServersRef.current = rendezvousServers;
@@ -1264,7 +1265,7 @@ export function TerminalForum() {
     return () => clearInterval(id);
   }, []);
   useEffect(() => {
-    return () => { sseConnectionsRef.current.forEach(es => es.close()); };
+    return () => { sseConnectionsRef.current.forEach(ws => ws.close()); };
   }, []);
   useEffect(() => { keybindsRef.current = keybinds; try { localStorage.setItem('voip-keybinds', JSON.stringify(keybinds)); } catch {} }, [keybinds]);
   useEffect(() => {
@@ -1400,7 +1401,7 @@ export function TerminalForum() {
     });
   };
 
-  // ── Server message handler ────────────────────────────────
+  // â”€â”€ Server message handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const handleServerMessage = useCallback((serverId: string, line: string) => {
     // If the message is from a background server, cache it
@@ -1448,7 +1449,7 @@ export function TerminalForum() {
       return;
     }
 
-    // Active server — process normally
+    // Active server â€” process normally
     if (line.startsWith('SERVER_INFO:')) {
       try {
         const d = JSON.parse(line.substring(12));
@@ -1484,11 +1485,11 @@ export function TerminalForum() {
 
         // Auto-setup E2EE
         if (d.EncryptionKey) {
-          // Mode 1: Server-managed key — auto-activate
+          // Mode 1: Server-managed key â€” auto-activate
           activateE2ee(d.EncryptionKey);
           console.log('[E2EE] Server-managed key active');
         } else if (d.Encrypted) {
-          // Mode 2: True E2EE — server doesn't know the key
+          // Mode 2: True E2EE â€” server doesn't know the key
           // Check if we have a saved passphrase for this server
           const serverId = connectedServerIdRef.current;
           let saved: string | null = null;
@@ -1506,7 +1507,7 @@ export function TerminalForum() {
           }
         }
 
-        // Use the same host the client connected to via TCP — the server may
+        // Use the same host the client connected to via TCP â€” the server may
         // report a private/local IP via LocalEndPoint that is unreachable.
         const voiceHost = connectedHostRef.current || d.VoiceHost || '';
         const udpPort = d.UdpPort || 5000;
@@ -1640,7 +1641,7 @@ export function TerminalForum() {
               setRoomMessages(prev => {
                 const existing = prev[room] || [];
                 if (existing.length === 0) return { ...prev, [room]: formatted };
-                // Older messages — prepend and preserve scroll position
+                // Older messages â€” prepend and preserve scroll position
                 requestAnimationFrame(() => {
                   if (scrollEl) {
                     const newScrollHeight = scrollEl.scrollHeight;
@@ -1741,7 +1742,7 @@ export function TerminalForum() {
         }, 3000);
       }
     } else if (line.startsWith('REACTIONS:')) {
-      // REACTIONS:<room>:<json> — bulk reaction state sent on room join
+      // REACTIONS:<room>:<json> â€” bulk reaction state sent on room join
       const payload = line.substring(10);
       const idx = payload.indexOf(':');
       if (idx >= 0) {
@@ -1751,7 +1752,7 @@ export function TerminalForum() {
         } catch {}
       }
     } else if (line.startsWith('MSG_REACT:')) {
-      // MSG_REACT:<room>:<msgId>:<json>  — updated reaction state for one message
+      // MSG_REACT:<room>:<msgId>:<json>  â€” updated reaction state for one message
       const payload = line.substring(10);
       const i1 = payload.indexOf(':');
       const i2 = i1 >= 0 ? payload.indexOf(':', i1 + 1) : -1;
@@ -1814,7 +1815,7 @@ export function TerminalForum() {
         }));
       }
     } else if (line.startsWith('ERROR:')) {
-      setStatus(`⚠ ${line.substring(6)}`);
+      setStatus(`âš  ${line.substring(6)}`);
     } else if (line.startsWith('CAMERA_ON:')) {
       const user = line.substring(10);
       setCameraUsers(prev => new Set(prev).add(user));
@@ -1875,7 +1876,7 @@ export function TerminalForum() {
         }
       }
     } else if (line.startsWith('DM_KEY:')) {
-      // DM_KEY:<username>:<spki-base64|empty> — response to our GET_DM_KEY request
+      // DM_KEY:<username>:<spki-base64|empty> â€” response to our GET_DM_KEY request
       const i1 = line.indexOf(':', 7);
       if (i1 >= 0) {
         const username = line.substring(7, i1);
@@ -1898,7 +1899,7 @@ export function TerminalForum() {
         }
       }
     } else if (line.startsWith('DM:')) {
-      // DM:<fromUser>:<text> — incoming direct message (ECDH-encrypted by sender)
+      // DM:<fromUser>:<text> â€” incoming direct message (ECDH-encrypted by sender)
       const i1 = line.indexOf(':', 3);
       if (i1 >= 0) {
         const fromUser = line.substring(3, i1);
@@ -1931,7 +1932,7 @@ export function TerminalForum() {
         }
       }
     } else if (line.startsWith('DM_SENT:')) {
-      // DM_SENT:<target>:<text> — our own sent DM echoed back (ECDH-encrypted)
+      // DM_SENT:<target>:<text> â€” our own sent DM echoed back (ECDH-encrypted)
       const i1 = line.indexOf(':', 8);
       if (i1 >= 0) {
         const target = line.substring(8, i1);
@@ -1962,9 +1963,9 @@ export function TerminalForum() {
       if (ci >= 0) {
         const stage = payload.substring(ci + 1);
         if (stage === 'done') setFileUploadStatus(null);
-        else if (stage === 'received') setFileUploadStatus('Processing…');
-        else if (stage === 'transcoding') setFileUploadStatus('Transcoding video…');
-        else if (stage === 'broadcasting') setFileUploadStatus('Broadcasting…');
+        else if (stage === 'received') setFileUploadStatus('Processingâ€¦');
+        else if (stage === 'transcoding') setFileUploadStatus('Transcoding videoâ€¦');
+        else if (stage === 'broadcasting') setFileUploadStatus('Broadcastingâ€¦');
       }
     } else if (line.startsWith('SOUNDBOARD:')) {
       try {
@@ -2032,7 +2033,7 @@ export function TerminalForum() {
     }
   }, []);
 
-  // ── IPC subscriptions ─────────────────────────────────────
+  // â”€â”€ IPC subscriptions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   useEffect(() => {
     const unsubs = [
@@ -2085,7 +2086,7 @@ export function TerminalForum() {
           const copy = new Uint8Array(data).buffer;
           pipeline.playback.port.postMessage(copy, [copy]);
         }
-        // Track speaking state — only show the green ring when the received
+        // Track speaking state â€” only show the green ring when the received
         // audio has significant energy (avoids permanent ring from silence frames)
         const pcm = new Int16Array(new Uint8Array(data).buffer);
         let sumSq = 0;
@@ -2185,7 +2186,7 @@ export function TerminalForum() {
     return () => unsubs.forEach(fn => fn());
   }, [handleServerMessage]);
 
-  // ── Autoconnect background mention listeners (SSE) ────────
+  // â”€â”€ Autoconnect background mention listeners (SSE) â”€â”€â”€â”€â”€â”€â”€â”€
 
   useEffect(() => {
     const unsub = window.electronAPI.onMention((serverId, room, sender, text) => {
@@ -2193,14 +2194,14 @@ export function TerminalForum() {
       const server = pinnedServers.find(s => s.id === serverId);
       const title = server ? server.name : 'Echo';
       playUiSound('message');
-      window.electronAPI.showNotification(`${title} — @${sender} i #${room}`, text.substring(0, 100));
+      window.electronAPI.showNotification(`${title} â€” @${sender} i #${room}`, text.substring(0, 100));
     });
     return unsub;
   }, [pinnedServers]);
 
   useEffect(() => {
     for (const server of pinnedServers) {
-      // Never autoconnect to servers with an active TCP connection — same username would kick us
+      // Never autoconnect to servers with an active TCP connection â€” same username would kick us
       if (connectedServerIds.has(server.id) || server.id === connectingToServerId) {
         window.electronAPI.stopAutoConnect(server.id);
         continue;
@@ -2214,7 +2215,7 @@ export function TerminalForum() {
     }
   }, [pinnedServers, connectedServerIds, connectingToServerId]);
 
-  // ── Autoconnect TCP (connect on startup) ──────────────────
+  // â”€â”€ Autoconnect TCP (connect on startup) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const _tcpAutoConnectDone = useRef(false);
 
@@ -2252,11 +2253,11 @@ export function TerminalForum() {
         setConnecting(false);
       }
     })();
-  }, []); // runs once on mount — pinnedServers is synchronously loaded from localStorage
+  }, []); // runs once on mount â€” pinnedServers is synchronously loaded from localStorage
   // When switching server tabs, currentVoiceRoom changes to the target
   // server's value (often null). If the user is still in voice on another
   // server (voiceServerIdRef is set), we must NOT tear down the audio
-  // pipeline — otherwise mic capture and playback stop even though the
+  // pipeline â€” otherwise mic capture and playback stop even though the
   // UDP session is still alive.
 
   useEffect(() => {
@@ -2266,7 +2267,7 @@ export function TerminalForum() {
         startAudio().catch(err => console.error('Audio start failed:', err));
       }
     } else if (!voiceServerIdRef.current) {
-      // No active voice session on any server — safe to stop
+      // No active voice session on any server â€” safe to stop
       stopAudio();
     }
     return () => {
@@ -2306,7 +2307,7 @@ export function TerminalForum() {
       await ctx.audioWorklet.addModule(`${base}/audio-screen-capture-processor.js`);
       await ctx.audioWorklet.addModule(`${base}/audio-playback-processor.js`);
 
-      // Capture mic → encode → send (mono)
+      // Capture mic â†’ encode â†’ send (mono)
       const source = ctx.createMediaStreamSource(stream);
 
       // Analyser for mic level indicator
@@ -2358,7 +2359,7 @@ export function TerminalForum() {
       }, 100);
 
       // Playback: per-user pipelines are created dynamically in onAudioReceived
-      console.log('[Audio] Pipeline ready — capture + per-user playback');
+      console.log('[Audio] Pipeline ready â€” capture + per-user playback');
     } catch (err) {
       console.error('[Audio] startAudio failed:', err);
     }
@@ -2490,7 +2491,7 @@ export function TerminalForum() {
     const capFps = serverInfo ? Math.min(fps, serverInfo.maxFps) : fps;
     try {
       // Check if native process-targeted loopback is available (Windows 10 2004+).
-      // If so, use it instead of Chromium's built-in loopback — it captures only the
+      // If so, use it instead of Chromium's built-in loopback â€” it captures only the
       // target app's audio (window shares) or all audio except Electron (screen shares).
       let useNativeLoopback = false;
       if (screenShareAudio && sourceId) {
@@ -2509,7 +2510,7 @@ export function TerminalForum() {
       }
 
       if (sourceId) {
-        // When using native loopback, don't request Chromium loopback audio —
+        // When using native loopback, don't request Chromium loopback audio â€”
         // the native addon handles audio capture directly in the main process.
         await window.electronAPI.setShareSource(sourceId, useNativeLoopback ? false : screenShareAudio);
       }
@@ -2519,7 +2520,7 @@ export function TerminalForum() {
       });
       cameraStreamRef.current = stream;
 
-      // Chromium loopback path — used when native loopback is unavailable or failed
+      // Chromium loopback path â€” used when native loopback is unavailable or failed
       if (!useNativeLoopback) {
         const audioTrack = stream.getAudioTracks()[0];
         if (audioTrack && audioCtxRef.current) {
@@ -2876,7 +2877,7 @@ export function TerminalForum() {
               onClick={() => setUnlockedGifUrls(prev => new Set(prev).add(url))}
               className="flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/30 rounded-lg px-3 py-2 text-[10px] text-yellow-700 hover:bg-yellow-900/30 transition-all">
               <Shield className="w-3 h-3 flex-shrink-0" />
-              <span>GIF blocked — untrusted server. Click to load (reveals your IP to the image host).</span>
+              <span>GIF blocked â€” untrusted server. Click to load (reveals your IP to the image host).</span>
             </button>
           </div>
         );
@@ -2948,7 +2949,7 @@ export function TerminalForum() {
             {fileUrl && (
               <a href={fileUrl} download={fileName}
                 className="p-2 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all"
-                title={isServerTrusted ? undefined : 'Untrusted server — verify this file before opening'}>
+                title={isServerTrusted ? undefined : 'Untrusted server â€” verify this file before opening'}>
                 <Download className="w-4 h-4" />
               </a>
             )}
@@ -3080,7 +3081,7 @@ export function TerminalForum() {
     }
   }
 
-  // ── Call duration timer
+  // â”€â”€ Call duration timer
 
   useEffect(() => {
     if (!currentVoiceRoom) { setCallDuration(0); setViewModeTracked('text'); setIsScreenSharing(false); setSelectedVideoFeed(null); setIsCallFullscreen(false); setHideUiOverlay(false); setMouseActive(true); return; }
@@ -3088,7 +3089,7 @@ export function TerminalForum() {
     return () => clearInterval(iv);
   }, [currentVoiceRoom]);
 
-  // ── Taskbar / dock badge ──────────────────────────────────
+  // â”€â”€ Taskbar / dock badge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   useEffect(() => {
     const mentionTotal = Object.values(mentionedRooms).reduce((s, n) => s + n, 0);
@@ -3096,7 +3097,7 @@ export function TerminalForum() {
     window.electronAPI.setBadge(mentionTotal + dmTotal);
   }, [mentionedRooms, dmUnreadCounts]);
 
-  // ── Auto‑scroll ───────────────────────────────────────────
+  // â”€â”€ Autoâ€‘scroll â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const loadingOlderRef = useRef(false);
   const prevTextRoomRef = useRef<string | null>(null);
@@ -3121,7 +3122,7 @@ export function TerminalForum() {
     dmMessagesEndRef.current?.scrollIntoView({ behavior: tabChanged ? 'instant' : 'smooth' });
   }, [dmMessages, activeDmTab]);
 
-  // ── Load older messages on scroll-to-top ──────────────────
+  // â”€â”€ Load older messages on scroll-to-top â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const handleChatScroll = useCallback(() => {
     const el = chatScrollRef.current;
@@ -3138,7 +3139,7 @@ export function TerminalForum() {
     sendToServer(`CMD:FETCH_HISTORY:${currentTextRoom}:${oldestMsgId}:50`);
   }, [currentTextRoom, roomHasMore, roomLoadingMore, roomMessages, sendToServer]);
 
-  // ── Helpers ───────────────────────────────────────────────
+  // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const getServerColor = (name: string) => {
     let hash = 0;
@@ -3201,7 +3202,7 @@ export function TerminalForum() {
   }, [onlineUsers, nickname, serverRoles]);
   const hasPermission = useCallback((perm: string) => myPermissions.has('admin') || myPermissions.has(perm), [myPermissions]);
 
-  // ── Pinned Server Functions ───────────────────────────────
+  // â”€â”€ Pinned Server Functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const addToOpenTabs = (serverId: string) => {
     setOpenTabs(prev => prev.includes(serverId) ? prev : [...prev, serverId]);
@@ -3244,7 +3245,7 @@ export function TerminalForum() {
     return { status: 'offline', online: false };
   };
 
-  // ── Rendezvous helpers ────────────────────────────────────
+  // â”€â”€ Rendezvous helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   function getRendezvousIdentity(): string {
     let id = localStorage.getItem('voip-rendezvous-identity');
@@ -3268,7 +3269,7 @@ export function TerminalForum() {
     const port = colonIdx > 0 ? parseInt(addr.slice(colonIdx + 1)) : 5010;
     if (!host || isNaN(port)) { setRendezvousFormStatus('Invalid address (use host:port)'); return; }
 
-    setRendezvousFormStatus('Connecting…');
+    setRendezvousFormStatus('Connectingâ€¦');
     if (!ecdhPrivateKeyRef.current) await generateAndPublishEcdhKey();
     const publicKey = ecdhPublicKeyB64Ref.current || getRendezvousIdentity();
 
@@ -3323,8 +3324,8 @@ export function TerminalForum() {
       });
     }
 
-    setRendezvousFormStatus('✓ Connected');
-    openSseConnection(newSrv);
+    setRendezvousFormStatus('âœ“ Connected');
+    openWsConnection(newSrv);
     setTimeout(() => {
       setRendezvousDialog(false);
       setRendezvousFormStatus('');
@@ -3335,7 +3336,7 @@ export function TerminalForum() {
   const handleRendezvousSearch = async (srv: RendezvousServer) => {
     const query = rendezvousSearch.trim();
     if (!query) return;
-    setRendezvousSearchStatus('Searching…');
+    setRendezvousSearchStatus('Searchingâ€¦');
     setRendezvousSearchResult(null);
     const result = await window.electronAPI.rendezvousRequest({
       method: 'GET', host: srv.host, port: srv.port, path: `/pubkey/${encodeURIComponent(query)}`,
@@ -3364,7 +3365,7 @@ export function TerminalForum() {
         ...prev.filter(r => !(r.from === targetUsername && r.rendezvousId === srv.id && r.direction === 'outgoing')),
         { id: result.data.id, from: targetUsername, rendezvousId: srv.id, sentAt: new Date().toISOString(), direction: 'outgoing' },
       ]);
-      setRendezvousSearchStatus(`✓ Friend request sent to ${targetUsername}`);
+      setRendezvousSearchStatus(`âœ“ Friend request sent to ${targetUsername}`);
       setRendezvousSearchResult(null);
       setRendezvousSearch('');
     } else {
@@ -3408,55 +3409,78 @@ export function TerminalForum() {
     getRendezvousDmKey(username, srv);
   };
 
-  const openSseConnection = (srv: RendezvousServer) => {
+  const openWsConnection = (srv: RendezvousServer) => {
     const existing = sseConnectionsRef.current.get(srv.id);
     if (existing) { existing.close(); sseConnectionsRef.current.delete(srv.id); }
 
-    const es = new EventSource(`http://${srv.host}:${srv.port}/events?token=${encodeURIComponent(srv.token)}`);
-    sseConnectionsRef.current.set(srv.id, es);
+    const ws = new WebSocket(
+      `ws://${srv.host}:${srv.port}/ws?token=${encodeURIComponent(srv.token)}&deviceId=${encodeURIComponent(wsDeviceIdRef.current)}`
+    );
+    sseConnectionsRef.current.set(srv.id, ws);
 
-    es.addEventListener('message', async (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data as string);
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
-        if (msg.nonce === 'rdv_dm_v1') {
-          const fromUser: string = msg.from;
-          const key = await getRendezvousDmKey(fromUser, srv);
-          const decrypted = key ? await dmDecrypt(msg.ciphertext, key) : msg.ciphertext;
-          const dmMsg: DmMessage = { id: msg.id, sender: fromUser, body: decrypted, timestamp: new Date(msg.sentAt).getTime() };
-          setDmMessages(prev => {
-            const existing = prev[fromUser] || [];
-            if (existing.some(m => m.id === msg.id)) return prev;
-            return { ...prev, [fromUser]: [...existing, dmMsg] };
-          });
-          setOpenDmTabs(prev => prev.some(t => t.username === fromUser && t.rendezvousId === srv.id)
-            ? prev : [...prev, { username: fromUser, serverId: '', rendezvousId: srv.id }]);
-          if (activeDmTabRef.current !== fromUser) {
-            setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
-            if (notificationSoundsRef.current) playUiSound('message');
-            window.electronAPI.showNotification(`DM from ${fromUser}`, decrypted.substring(0, 100));
-          }
-        } else if (msg.nonce === 'rendezvous_v1') {
-          // Friend request or accept — let the inbox handler process and delete it
-          checkRendezvousInbox(srv);
-          return;
-        }
-
-        // Ack: remove from mailbox now that it's been delivered via SSE
-        window.electronAPI.rendezvousRequest({
-          method: 'DELETE', host: srv.host, port: srv.port,
-          path: `/messages/${msg.id}`, token: srv.token,
+    const processRdvMessage = async (msg: any) => {
+      if (msg.nonce === 'rdv_dm_v1') {
+        const fromUser: string = msg.from;
+        const key = await getRendezvousDmKey(fromUser, srv);
+        const decrypted = key ? await dmDecrypt(msg.ciphertext, key) : msg.ciphertext;
+        const dmMsg: DmMessage = { id: String(msg.id), sender: fromUser, body: decrypted, timestamp: new Date(msg.sentAt).getTime() };
+        setDmMessages(prev => {
+          const existing = prev[fromUser] || [];
+          if (existing.some(m => m.id === dmMsg.id)) return prev;
+          return { ...prev, [fromUser]: [...existing, dmMsg] };
         });
-      } catch {}
-    });
+        setOpenDmTabs(prev => prev.some(t => t.username === fromUser && t.rendezvousId === srv.id)
+          ? prev : [...prev, { username: fromUser, serverId: '', rendezvousId: srv.id }]);
+        if (activeDmTabRef.current !== fromUser) {
+          setDmUnreadCounts(prev => ({ ...prev, [fromUser]: (prev[fromUser] || 0) + 1 }));
+          if (notificationSoundsRef.current) playUiSound('message');
+          window.electronAPI.showNotification(`DM from ${fromUser}`, decrypted.substring(0, 100));
+        }
+        // ACK via WebSocket — server deletes from mailbox (at-least-once delivery)
+        if (ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: 'ACK', id: msg.id }));
+      } else if (msg.nonce === 'rendezvous_v1') {
+        // Friend request/accept — delegate to HTTP inbox handler which manages its own deletes
+        checkRendezvousInbox(srv);
+      }
+    };
 
-    es.onerror = () => {
+    ws.onopen = () => {
+      heartbeatInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: 'HEARTBEAT' }));
+      }, 25_000);
+    };
+
+    ws.onmessage = async (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data as string);
+        switch (data.type) {
+          case 'DM':
+            await processRdvMessage(data);
+            break;
+          case 'MISSED_MESSAGES':
+            for (const msg of (data.messages || []) as any[])
+              await processRdvMessage(msg);
+            break;
+          case 'HEARTBEAT_ACK':
+            break;
+          case 'ERROR':
+            console.warn('[Rendezvous WS]', data.message);
+            break;
+        }
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
       sseConnectionsRef.current.delete(srv.id);
-      es.close();
       // Reconnect after 15 s using the latest server state
       setTimeout(() => {
         const current = rendezvousServersRef.current.find(s => s.id === srv.id);
-        if (current && !current.tokenExpired) openSseConnection(current);
+        if (current && !current.tokenExpired) openWsConnection(current);
       }, 15_000);
     };
   };
@@ -3496,8 +3520,8 @@ export function TerminalForum() {
       try {
         const payload = JSON.parse(atob(msg.ciphertext));
         if (payload.type === 'friend_request') {
-          if (!friendRequests.some(r => r.id === msg.id)) {
-            incoming.push({ id: msg.id, from: payload.from || msg.from, rendezvousId: srv.id, sentAt: msg.sentAt, direction: 'incoming' });
+          if (!friendRequests.some(r => r.id === String(msg.id))) {
+            incoming.push({ id: String(msg.id), from: payload.from || msg.from, rendezvousId: srv.id, sentAt: msg.sentAt, direction: 'incoming' });
           }
         } else if (payload.type === 'friend_accept') {
           const accepter: string = payload.from || msg.from;
@@ -3616,7 +3640,7 @@ export function TerminalForum() {
         if (msg.includes('SERVER_PASSWORD_REQUIRED') || msg.includes('SERVER_PASSWORD_FAIL')) {
           setServerPasswordDialog({ address: server.address, username: server.username, password: server.password, isRegister: false, serverId: server.id });
           setServerPasswordInput('');
-          setStatus(msg.includes('FAIL') ? 'Forkert server-adgangskode' : 'Server kræver adgangskode');
+          setStatus(msg.includes('FAIL') ? 'Forkert server-adgangskode' : 'Server krÃ¦ver adgangskode');
         } else {
           setStatus(`Failed: ${msg}`);
         }
@@ -3666,7 +3690,7 @@ export function TerminalForum() {
        setLoginDialog(null);
        setServerPasswordDialog({ address: server.address, username: nickname, password, isRegister, serverId: server.id });
        setServerPasswordInput('');
-       setStatus(msg.includes('FAIL') ? 'Forkert server-adgangskode' : 'Server kræver adgangskode');
+       setStatus(msg.includes('FAIL') ? 'Forkert server-adgangskode' : 'Server krÃ¦ver adgangskode');
       } else {
         setStatus(`Failed: ${msg}`);
       }
@@ -3723,7 +3747,7 @@ export function TerminalForum() {
     setServerContextMenu(null);
   };
 
-  // ── Chat submit ───────────────────────────────────────────
+  // â”€â”€ Chat submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3732,10 +3756,10 @@ export function TerminalForum() {
     try {
       if (pendingFile) {
         let { name: fName, mimeType: fMime, base64: fData } = pendingFile;
-        setFileUploadStatus('Sending…');
+        setFileUploadStatus('Sendingâ€¦');
 
-        // ── Video file upload strategy ──
-        // 1. If the server has a file server enabled → upload via HTTP (server transcodes, works with E2EE)
+        // â”€â”€ Video file upload strategy â”€â”€
+        // 1. If the server has a file server enabled â†’ upload via HTTP (server transcodes, works with E2EE)
         // 2. Else send inline as base64
         const fileServerPort = serverInfo?.fileServerPort;
         const currentServer = pinnedServers.find(s => s.id === connectedServerIdRef.current);
@@ -3743,9 +3767,9 @@ export function TerminalForum() {
         const authToken = currentServer?.authToken;
 
         if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
-          // Upload to server's file server — server handles transcoding
+          // Upload to server's file server â€” server handles transcoding
           try {
-            setFileUploadStatus('Uploading…');
+            setFileUploadStatus('Uploadingâ€¦');
             const timeout = new Promise<null>(r => setTimeout(r, 60000, null));
             const result = await Promise.race([
               window.electronAPI.uploadFile(serverHost, fileServerPort, authToken, fName, fMime, fData),
@@ -3769,7 +3793,7 @@ export function TerminalForum() {
               }
               return;
             }
-            // Upload failed — fall through to inline path
+            // Upload failed â€” fall through to inline path
           } catch { setFileUploadStatus(null); }
         }
 
@@ -3795,12 +3819,12 @@ export function TerminalForum() {
       }
     } catch (err: any) {
       console.error('[Chat] Send failed:', err);
-      setStatus(`⚠ Send failed: ${err?.message || 'unknown error'}`);
+      setStatus(`âš  Send failed: ${err?.message || 'unknown error'}`);
       setFileUploadStatus(null);
     }
   };
 
-  // ── Room actions ──────────────────────────────────────────
+  // â”€â”€ Room actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   // Leave voice on another server and switch UDP to the current one
   const ensureVoiceOnCurrentServer = async () => {
@@ -3900,16 +3924,432 @@ export function TerminalForum() {
     }
   };
 
-  // ═════════════════════════════════════════════════════════
+  const settingsModal = !showSettings ? null : (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onMouseDown={() => { setShowSettings(false); setRecordingKeybind(null); }}>
+          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+            onMouseDown={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between sticky top-0">
+              <div className="flex items-center gap-3">
+                <Settings className="w-6 h-6 text-green-500" />
+                <div>
+                  <h2 className="text-xl font-bold text-green-400">SETTINGS</h2>
+                  <p className="text-[10px] text-green-700">Global â€” applies to all servers</p>
+                </div>
+              </div>
+              <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
+                className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-6">
+              {/* Audio Settings */}
+              <div>
+                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                  <Headphones className="w-4 h-4" />
+                  AUDIO SETTINGS
+                </h3>
+                <div className="space-y-3 pl-6">
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Microphone</label>
+                    <select value={selectedInput}
+                      onChange={e => { setSelectedInput(e.target.value); selectedInputRef.current = e.target.value; }}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      <option value="">Default Microphone</option>
+                      {audioInputs.map(d => (
+                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 8)}`}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Output</label>
+                    <select value={selectedOutput}
+                      onChange={e => { setSelectedOutput(e.target.value); selectedOutputRef.current = e.target.value; }}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      <option value="">Default Output</option>
+                      {audioOutputs.map(d => (
+                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Output ${d.deviceId.slice(0, 8)}`}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Microphone Activity</label>
+                    {currentVoiceRoom ? (
+                      <>
+                        <div className="w-full h-3 bg-green-900/30 rounded-full overflow-hidden relative">
+                          <div className={`h-full rounded-full transition-all duration-75 ${micLevel > 0.6 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                            style={{ width: `${micLevel * 100}%` }} />
+                          {inputSensitivity > 0 && (
+                            <div className="absolute top-0 h-full w-0.5 bg-red-500/70" style={{ left: `${inputSensitivity}%` }} />
+                          )}
+                        </div>
+                        <span className="text-xs text-green-700 mt-1 block">
+                          {micLevel > 0.05
+                            ? (inputSensitivity > 0 && micLevel < inputSensitivity / 100
+                              ? 'â—‹ Below threshold â€” gated'
+                              : 'â— Capturing audio')
+                            : 'â—‹ No audio'}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-xs text-green-800">Join a voice channel to test microphone</span>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Input Sensitivity</label>
+                    <div className="flex items-center gap-3">
+                      <input type="range" min={0} max={100} value={inputSensitivity}
+                        onChange={e => setInputSensitivity(parseInt(e.target.value))}
+                        className="flex-1 accent-green-500 h-1.5" />
+                      <span className="text-xs text-green-600 w-8 text-right">{inputSensitivity}%</span>
+                    </div>
+                    <span className="text-[10px] text-green-800 mt-1 block">
+                      {inputSensitivity === 0 ? 'No gate â€” all audio passes through' : 'Audio below this level will be silenced'}
+                    </span>
+                  </div>
+                  {inputSensitivity > 0 && (
+                    <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
+                      <div>
+                        <label className="text-xs text-green-600 block mb-1">Attack Time</label>
+                        <div className="flex items-center gap-3">
+                          <input type="range" min={5} max={200} step={5} value={gateAttack}
+                            onChange={e => setGateAttack(parseInt(e.target.value))}
+                            className="flex-1 accent-green-500 h-1.5" />
+                          <span className="text-xs text-green-600 w-12 text-right">{gateAttack} ms</span>
+                        </div>
+                        <span className="text-[10px] text-green-800 block">How fast the gate opens when you speak</span>
+                      </div>
+                      <div>
+                        <label className="text-xs text-green-600 block mb-1">Hold Time</label>
+                        <div className="flex items-center gap-3">
+                          <input type="range" min={0} max={500} step={10} value={gateHold}
+                            onChange={e => setGateHold(parseInt(e.target.value))}
+                            className="flex-1 accent-green-500 h-1.5" />
+                          <span className="text-xs text-green-600 w-12 text-right">{gateHold} ms</span>
+                        </div>
+                        <span className="text-[10px] text-green-800 block">How long the gate stays open after you stop</span>
+                      </div>
+                      <div>
+                        <label className="text-xs text-green-600 block mb-1">Release Time</label>
+                        <div className="flex items-center gap-3">
+                          <input type="range" min={20} max={1000} step={10} value={gateRelease}
+                            onChange={e => setGateRelease(parseInt(e.target.value))}
+                            className="flex-1 accent-green-500 h-1.5" />
+                          <span className="text-xs text-green-600 w-12 text-right">{gateRelease} ms</span>
+                        </div>
+                        <span className="text-[10px] text-green-800 block">How fast the gate fades to silence</span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="pt-3 border-t border-green-900/20">
+                    <label className="text-xs text-green-600 block mb-2">Audio Processing</label>
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={echoCancellation}
+                          onChange={e => setEchoCancellation(e.target.checked)}
+                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                        <div>
+                          <span className="text-sm text-green-500">Echo Cancellation</span>
+                          <span className="text-[10px] text-green-800 block">Prevents speakers from feeding back into the mic</span>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={noiseSuppression}
+                          onChange={e => setNoiseSuppression(e.target.checked)}
+                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                        <div>
+                          <span className="text-sm text-green-500">Noise Suppression</span>
+                          <span className="text-[10px] text-green-800 block">Reduces background noise (fans, typing, etc.)</span>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={autoGainControl}
+                          onChange={e => setAutoGainControl(e.target.checked)}
+                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                        <div>
+                          <span className="text-sm text-green-500">Auto Gain Control</span>
+                          <span className="text-[10px] text-green-800 block">Automatically adjusts microphone volume</span>
+                        </div>
+                      </label>
+                    </div>
+                    <span className="text-[10px] text-green-800 mt-2 block">Changes apply on next voice join or via Apply below</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Video Settings */}
+              <div className="pt-4 border-t border-green-900/30">
+                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                  <Video className="w-4 h-4" />
+                  VIDEO SETTINGS
+                </h3>
+                <div className="space-y-3 pl-6">
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Camera</label>
+                    <select value={selectedVideoInput}
+                      onChange={e => { setSelectedVideoInput(e.target.value); selectedVideoInputRef.current = e.target.value; }}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      <option value="">Default Camera</option>
+                      {videoInputs.map(d => (
+                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 8)}`}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Resolution</label>
+                    <select value={videoResolution}
+                      onChange={e => { const r = e.target.value as VideoResolution; setVideoResolution(r); videoResolutionRef.current = r; }}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      {Object.entries(VIDEO_RESOLUTIONS).map(([key, r]) => (
+                        <option key={key} value={key}>{r.label} ({r.width}Ã—{r.height})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">FPS</label>
+                    <select value={videoFps}
+                      onChange={e => { const f = parseInt(e.target.value) as VideoFps; setVideoFps(f); videoFpsRef.current = f; }}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      {VIDEO_FPS_OPTIONS.map(f => (
+                        <option key={f} value={f}>{f} fps</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="text-xs text-green-800 space-y-1">
+                    <div>Resolution: {VIDEO_RESOLUTIONS[videoResolution].width}Ã—{VIDEO_RESOLUTIONS[videoResolution].height}</div>
+                    <div>Framerate: {videoFps} fps</div>
+                    <div>Codec: H.264 (VP8 fallback)</div>
+                    <div>Bitrate: {(getVideoBitrate(VIDEO_RESOLUTIONS[videoResolution].width, VIDEO_RESOLUTIONS[videoResolution].height, videoFps) / 1_000_000).toFixed(1)} Mbps</div>
+                    <div>Transport: TCP (reliable)</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Notification Sounds */}
+              <div className="pt-4 border-t border-green-900/30">
+                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                  <Bell className="w-4 h-4" />
+                  NOTIFICATION SOUNDS
+                </h3>
+                <div className="space-y-3 pl-6">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" checked={notificationSounds}
+                      onChange={e => setNotificationSounds(e.target.checked)}
+                      className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                    <span className="text-sm text-green-500">Enable UI sounds</span>
+                  </label>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-green-600">Volume</label>
+                      <span className="text-xs text-green-500 font-mono">{notificationVolume}%</span>
+                    </div>
+                    <input type="range" min="0" max="100" step="5" value={notificationVolume}
+                      onChange={e => setNotificationVolume(parseInt(e.target.value))}
+                      disabled={!notificationSounds}
+                      className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500 disabled:opacity-40" />
+                  </div>
+                  <div className="text-xs text-green-800 space-y-0.5">
+                    <div>â€¢ Message received</div>
+                    <div>â€¢ Join / leave voice</div>
+                    <div>â€¢ User joins / leaves your room</div>
+                    <div>â€¢ Mute / unmute / deafen</div>
+                    <div>â€¢ Camera / screen share started</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Appearance Settings */}
+              <div className="pt-4 border-t border-green-900/30">
+                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                  <Monitor className="w-4 h-4" />
+                  APPEARANCE
+                </h3>
+                <div className="space-y-3 pl-6">
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Theme Color</label>
+                    <select value={theme}
+                      onChange={e => setTheme(e.target.value as ThemeColor)}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      <option value="mono">Mono (Default)</option>
+                      <option value="light">Light</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </div>
+                  {theme === 'custom' && (
+                    <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
+                      {([
+                        ['accent', 'Accent', 'Buttons, links, active states'],
+                        ['bg', 'Background', 'Main content area'],
+                        ['surface', 'Surface', 'Headers, input bar, modals'],
+                        ['sidebar', 'Sidebar', 'Channel list, user list panels'],
+                        ['border', 'Borders', 'Dividers and outlines'],
+                        ['text', 'Primary Text', 'Messages, usernames, labels'],
+                        ['textSecondary', 'Secondary Text', 'Timestamps, hints, muted labels'],
+                      ] as [keyof CustomThemeColors, string, string][]).map(([key, label, hint]) => (
+                        <div key={key} className="flex items-center gap-3">
+                          <input type="color" value={customTheme[key]}
+                            onInput={e => {
+                              const val = (e.target as HTMLInputElement).value;
+                              const hexSpan = (e.target as HTMLElement).parentElement?.querySelector('.hex-label');
+                              if (hexSpan) hexSpan.textContent = val;
+                              cancelAnimationFrame(colorPickerRafRef.current);
+                              colorPickerRafRef.current = requestAnimationFrame(() => {
+                                const el = document.documentElement;
+                                if (key === 'accent') {
+                                  const scale = generateScale(val);
+                                  lastAccentScaleRef.current = { accent: val, scale };
+                                  for (const [k, v] of Object.entries(scale)) el.style.setProperty(`--custom-green-${k}`, v);
+                                  el.style.setProperty('--custom-accent-rgb', hexToRgb(val));
+                                } else if (key === 'border') {
+                                  el.style.setProperty('--custom-border', val);
+                                  el.style.setProperty('--custom-border-rgb', hexToRgb(val));
+                                } else {
+                                  const varMap: Record<string, string> = { bg: '--custom-bg', surface: '--custom-surface', sidebar: '--custom-sidebar', text: '--custom-text', textSecondary: '--custom-text-secondary' };
+                                  if (varMap[key]) el.style.setProperty(varMap[key], val);
+                                }
+                              });
+                            }}
+                            onChange={e => setCustomTheme(prev => ({ ...prev, [key]: e.target.value }))}
+                            className="w-8 h-8 rounded cursor-pointer border border-green-900/50 bg-transparent [&::-webkit-color-swatch-wrapper]:p-0.5 [&::-webkit-color-swatch]:rounded" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-xs text-green-600">{label}</span>
+                              <span className="hex-label text-[10px] text-green-800 font-mono">{customTheme[key]}</span>
+                            </div>
+                            <div className="text-[10px] text-green-800/60">{hint}</div>
+                          </div>
+                        </div>
+                      ))}
+                      <button onClick={() => setCustomTheme(DEFAULT_CUSTOM_THEME)}
+                        className="text-[10px] text-green-700 hover:text-green-500 transition-colors">
+                        Reset to defaults
+                      </button>
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-xs text-green-600 block mb-2">Font</label>
+                    <select value={fontFamily}
+                      onChange={e => setFontFamily(e.target.value)}
+                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                      <option value="">Default (Monospace)</option>
+                      <option value="ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, monospace">Cascadia Code</option>
+                      <option value="'JetBrains Mono', ui-monospace, monospace">JetBrains Mono</option>
+                      <option value="'Fira Code', ui-monospace, monospace">Fira Code</option>
+                      <option value="Consolas, ui-monospace, monospace">Consolas</option>
+                      <option value="'Courier New', Courier, monospace">Courier New</option>
+                      <option value="Inter, system-ui, -apple-system, sans-serif">Inter (Sans-serif)</option>
+                      <option value="system-ui, -apple-system, 'Segoe UI', sans-serif">System UI (Sans-serif)</option>
+                      <option value="'Segoe UI', Tahoma, Geneva, sans-serif">Segoe UI</option>
+                      <option value="Arial, Helvetica, sans-serif">Arial</option>
+                      <option value="Verdana, Geneva, sans-serif">Verdana</option>
+                      <option value="Georgia, 'Times New Roman', serif">Georgia (Serif)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-green-600">UI Scale</label>
+                      <span className="text-xs text-green-500 font-mono">{uiScale}%</span>
+                    </div>
+                    <input type="range" min="50" max="150" step="5" value={uiScale}
+                      onChange={e => setUiScale(parseInt(e.target.value))}
+                      className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
+                    <div className="relative text-[10px] text-green-800 mt-1 h-4">
+                      <span className="absolute left-0">50%</span>
+                      <span className="absolute" style={{ left: '50%', transform: 'translateX(-50%)' }}>100%</span>
+                      <span className="absolute right-0">150%</span>
+                    </div>
+                  </div>
+                    </div>
+                  </div>
+
+              {/* Keybind Settings */}
+              <div className="pt-4 border-t border-green-900/30">
+                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                  <Command className="w-4 h-4" />
+                  KEYBINDS
+                </h3>
+                <div className="space-y-3 pl-6">
+                  {/* Push-to-Talk mode toggle */}
+                  <div className="pb-3 border-b border-green-900/20">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input type="checkbox" checked={pushToTalkMode} onChange={e => setPushToTalkMode(e.target.checked)}
+                        className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                      <div>
+                        <span className="text-sm text-green-500">Push to Talk</span>
+                        <span className="text-[10px] text-green-800 block">Hold key to transmit. VAD gate is disabled in this mode.</span>
+                      </div>
+                    </label>
+                  </div>
+                  {(['toggleMute', 'toggleDeafen', 'pushToTalk'] as const).map(action => {
+                    const labels: Record<string, string> = { toggleMute: 'Mute / Unmute', toggleDeafen: 'Deafen / Undeafen', pushToTalk: 'Push to Talk' };
+                    const bind = keybinds[action];
+                    const isRecording = recordingKeybind === action;
+                    const disabled = action === 'pushToTalk' && !pushToTalkMode;
+                    return (
+                      <div key={action} className={`flex items-center justify-between ${disabled ? 'opacity-40' : ''}`}>
+                        <span className="text-sm text-green-500">{labels[action]}</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            disabled={disabled}
+                            onClick={() => !disabled && setRecordingKeybind(isRecording ? null : action)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-mono transition-all min-w-[120px] text-center ${
+                              isRecording
+                                ? 'bg-green-900/40 border-2 border-green-500 text-green-400 animate-pulse'
+                                : bind
+                                  ? 'bg-[#0a0e0a] border border-green-900/50 text-green-500 hover:border-green-700'
+                                  : 'bg-[#0a0e0a] border border-green-900/50 text-green-800 hover:border-green-700'
+                            }`}>
+                            {isRecording ? 'Press a key...' : bind ? formatKeyBind(bind) : 'Not set'}
+                          </button>
+                          {bind && !isRecording && !disabled && (
+                            <button onClick={() => setKeybinds(prev => ({ ...prev, [action]: null }))}
+                              className="p-1 text-green-800 hover:text-red-400 transition-colors">
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <p className="text-[10px] text-green-800 pt-2">Click the field and press the desired key. Press Escape to cancel.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-green-900/30 bg-[#0d120d]/40 flex items-center gap-3">
+              <button onClick={() => { window.electronAPI.checkForUpdates(); }}
+                className="px-4 py-2 rounded-lg bg-green-900/20 text-green-700 hover:bg-green-900/40 hover:text-green-400 transition-all text-xs flex items-center gap-1.5">
+                <Download className="w-3.5 h-3.5" />
+                Check for Updates
+              </button>
+              <div className="flex-1" />
+              <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
+                className="px-6 py-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
+                Cancel
+              </button>
+              <button onClick={() => { if (currentVoiceRoom) restartAudio(); setShowSettings(false); setRecordingKeybind(null); }}
+                className="px-6 py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold">
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+  );
+
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   //  CONNECT SCREEN
-  // ═════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   const hasActiveRdvDm = !!(activeDmTab && openDmTabs.some(t => t.username === activeDmTab && !!t.rendezvousId));
 
-  if ((!isConnected || showHome) && !showSettings && !hasActiveRdvDm) {
+  if ((!isConnected || showHome) && !hasActiveRdvDm) {
     return (
       <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
-        {/* ── Draggable titlebar ── */}
+        {/* â”€â”€ Draggable titlebar â”€â”€ */}
         <div className="flex items-center bg-[#0d120d] border-b border-green-900/30 select-none"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
           {isMac ? (
@@ -3990,7 +4430,7 @@ export function TerminalForum() {
           )}
         </div>
 
-        {/* ── Server Tab Bar ──────────────────────────────────── */}
+        {/* â”€â”€ Server Tab Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         {openTabs.length > 0 && (
         <div className="flex items-center bg-[#0d120d]/80 border-b border-green-900/30 px-2 gap-0.5 overflow-x-auto shrink-0 scrollbar-none">
           {openTabs.map(tabId => {
@@ -4062,14 +4502,14 @@ export function TerminalForum() {
         </div>
         )}
 
-        {/* ── Connect Screen Content ── */}
+        {/* â”€â”€ Connect Screen Content â”€â”€ */}
         <div className="flex-1 flex items-center justify-center overflow-y-auto">
           <div className="w-full max-w-2xl px-8 py-12">
             {/* Header */}
             <div className="text-center mb-12">
               <Terminal className="w-12 h-12 mx-auto mb-4 text-green-500" />
               <h1 className="text-3xl font-bold text-green-400 mb-1">ECHO</h1>
-              <p className="text-xs text-green-700">{appVersion ? `v${appVersion}` : ''} — Secure VoIP</p>
+              <p className="text-xs text-green-700">{appVersion ? `v${appVersion}` : ''} â€” Secure VoIP</p>
             </div>
 
             {/* Pinned Servers */}
@@ -4118,7 +4558,7 @@ export function TerminalForum() {
                         </div>
                       )}
                       {!server.trusted && (
-                        <div className="absolute -top-1 -left-1 w-4 h-4 bg-red-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Untrusted server — GIFs blocked, file downloads may be unsafe">
+                        <div className="absolute -top-1 -left-1 w-4 h-4 bg-red-600 rounded-full flex items-center justify-center border border-[#0a0e0a]" title="Untrusted server â€” GIFs blocked, file downloads may be unsafe">
                           <Shield className="w-2.5 h-2.5 text-white" />
                         </div>
                       )}
@@ -4184,7 +4624,7 @@ export function TerminalForum() {
                             <div className="text-sm text-green-400 font-bold truncate">{friend.username}</div>
                             <div className="text-xs flex items-center gap-1">
                               <span className="text-green-700 truncate">{server?.name || 'Unknown server'}</span>
-                              <span className="text-green-900 shrink-0">·</span>
+                              <span className="text-green-900 shrink-0">Â·</span>
                               <span className={`shrink-0 ${online ? (friendStatus === 'away' ? 'text-yellow-600' : 'text-green-600') : 'text-green-900'}`}>
                                 {online ? (friendStatus === 'away' ? 'Away' : 'Online') : 'Offline'}
                               </span>
@@ -4270,10 +4710,10 @@ export function TerminalForum() {
                         </div>
                         <div className="flex-1 text-left min-w-0">
                           <div className="text-sm text-green-400 font-bold truncate">{srv.serverName}</div>
-                          <div className="text-xs text-green-700 truncate">{srv.username} · {srv.host}:{srv.port}</div>
+                          <div className="text-xs text-green-700 truncate">{srv.username} Â· {srv.host}:{srv.port}</div>
                         </div>
                         {srv.tokenExpired && (
-                          <span className="text-[9px] text-red-500 shrink-0" title="Session expired — click to reconnect">EXPIRED</span>
+                          <span className="text-[9px] text-red-500 shrink-0" title="Session expired â€” click to reconnect">EXPIRED</span>
                         )}
                         {!srv.tokenExpired && pendingIn.length > 0 && (
                           <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 animate-pulse">
@@ -4302,7 +4742,7 @@ export function TerminalForum() {
                             <input value={rendezvousSearch}
                               onChange={e => { setRendezvousSearch(e.target.value); setRendezvousSearchResult(null); setRendezvousSearchStatus(''); }}
                               onKeyDown={e => e.key === 'Enter' && handleRendezvousSearch(srv)}
-                              placeholder="Search username…"
+                              placeholder="Search usernameâ€¦"
                               className="flex-1 bg-black/40 border border-green-900/40 rounded px-3 py-1.5 text-xs text-green-300 placeholder-green-900 outline-none focus:border-green-700" />
                             <button onClick={() => handleRendezvousSearch(srv)}
                               className="px-3 py-1.5 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded text-xs transition-all">
@@ -4310,7 +4750,7 @@ export function TerminalForum() {
                             </button>
                           </div>
                           {rendezvousSearchStatus && (
-                            <div className={`text-xs ${rendezvousSearchStatus.startsWith('✓') ? 'text-green-500' : 'text-green-700'}`}>
+                            <div className={`text-xs ${rendezvousSearchStatus.startsWith('âœ“') ? 'text-green-500' : 'text-green-700'}`}>
                               {rendezvousSearchStatus}
                             </div>
                           )}
@@ -4406,7 +4846,7 @@ export function TerminalForum() {
           </div>
         </div>
 
-        {/* ── Voice indicator when browsing servers ── */}
+        {/* â”€â”€ Voice indicator when browsing servers â”€â”€ */}
         {showHome && isConnected && currentVoiceRoom && (
           <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg px-5 py-3 flex items-center gap-4 z-40 shadow-2xl shadow-green-900/30">
             <Volume2 className="w-4 h-4 text-green-500 animate-pulse" />
@@ -4419,7 +4859,7 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Login Dialog ── */}
+        {/* â”€â”€ Login Dialog â”€â”€ */}
         {loginDialog && (() => {
           const server = pinnedServers.find(s => s.id === loginDialog);
           if (!server) return null;
@@ -4489,7 +4929,7 @@ export function TerminalForum() {
           );
         })()}
 
-        {/* ── Untrusted Server Confirmation ── */}
+        {/* â”€â”€ Untrusted Server Confirmation â”€â”€ */}
         {untrustedConfirm && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-[#0d120d]/95 border border-red-900/50 rounded-lg shadow-2xl shadow-red-900/30 w-full max-w-sm">
@@ -4519,7 +4959,7 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Add Rendezvous Dialog ── */}
+        {/* â”€â”€ Add Rendezvous Dialog â”€â”€ */}
         {rendezvousDialog && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
@@ -4558,11 +4998,11 @@ export function TerminalForum() {
                   <input type="password" value={rendezvousForm.password}
                     onChange={e => setRendezvousForm(p => ({ ...p, password: e.target.value }))}
                     onKeyDown={e => e.key === 'Enter' && connectRendezvousServer()}
-                    placeholder="••••••••"
+                    placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                     className="w-full bg-black/40 border border-green-900/40 rounded px-3 py-2 text-sm text-green-300 placeholder-green-900 outline-none focus:border-green-600" />
                 </div>
                 {rendezvousFormStatus && (
-                  <div className={`text-xs ${rendezvousFormStatus.startsWith('✓') ? 'text-green-500' : 'text-red-400'}`}>
+                  <div className={`text-xs ${rendezvousFormStatus.startsWith('âœ“') ? 'text-green-500' : 'text-red-400'}`}>
                     {rendezvousFormStatus}
                   </div>
                 )}
@@ -4575,7 +5015,7 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Add Server Dialog ── */}
+        {/* â”€â”€ Add Server Dialog â”€â”€ */}
         {addServerDialog && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
@@ -4595,7 +5035,7 @@ export function TerminalForum() {
                   <span className="text-[10px] text-green-800">Port 5001 is used by default if no port is specified</span>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs text-green-700 block">{'>'} CUSTOM NAME <span className="text-green-800">(optional — auto-fetched from server)</span></label>
+                  <label className="text-xs text-green-700 block">{'>'} CUSTOM NAME <span className="text-green-800">(optional â€” auto-fetched from server)</span></label>
                   <input type="text" value={newServerName} onChange={e => setNewServerName(e.target.value)}
                     placeholder="Leave empty to use server name"
                     className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
@@ -4619,7 +5059,7 @@ export function TerminalForum() {
                 {!newServerTrusted && (
                   <div className="flex items-start gap-2 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2.5 text-[10px] text-red-700 leading-relaxed">
                     <Shield className="w-3 h-3 mt-0.5 flex-shrink-0 text-red-700" />
-                    <span>Untrusted — GIFs will be blocked and file downloads will show a warning. The server operator can still see your username, password, and all non-DM messages. Use a unique password.</span>
+                    <span>Untrusted â€” GIFs will be blocked and file downloads will show a warning. The server operator can still see your username, password, and all non-DM messages. Use a unique password.</span>
                   </div>
                 )}
               </div>
@@ -4627,7 +5067,7 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Friend Context Menu ── */}
+        {/* â”€â”€ Friend Context Menu â”€â”€ */}
         {friendContextMenu && (
           <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[160px] z-50"
             style={{ left: Math.min(friendContextMenu.x, window.innerWidth - 180), top: Math.min(friendContextMenu.y, window.innerHeight - 100) }}
@@ -4647,7 +5087,7 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Rendezvous Friend Context Menu ── */}
+        {/* â”€â”€ Rendezvous Friend Context Menu â”€â”€ */}
         {rdvFriendContextMenu && (() => {
           const srv = rendezvousServers.find(s => s.id === rdvFriendContextMenu.rendezvousId);
           return (
@@ -4674,7 +5114,7 @@ export function TerminalForum() {
           );
         })()}
 
-        {/* ── Server Context Menu ── */}
+        {/* â”€â”€ Server Context Menu â”€â”€ */}
         {serverContextMenu && (() => {
           const server = pinnedServers.find(s => s.id === serverContextMenu.serverId);
           if (!server) return null;
@@ -4754,14 +5194,14 @@ export function TerminalForum() {
           );
         })()}
 
-        {/* ── Update available / downloading toast ── */}
+        {/* â”€â”€ Update available / downloading toast â”€â”€ */}
         {updateAvailable && !updateDismissed && (
           <div className="fixed bottom-4 right-4 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-4 z-50 max-w-xs">
             <div className="flex items-start gap-3">
               <Download className="w-5 h-5 text-green-500 shrink-0 mt-0.5 animate-bounce" />
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-green-400 font-bold">Update available</p>
-                <p className="text-xs text-green-700 mt-1">Version {updateAvailable} is downloading…</p>
+                <p className="text-xs text-green-700 mt-1">Version {updateAvailable} is downloadingâ€¦</p>
                 {updateProgress !== null && (
                   <div className="mt-2 h-1.5 bg-green-900/40 rounded-full overflow-hidden">
                     <div className="h-full bg-green-500 transition-all duration-300 rounded-full" style={{ width: `${updateProgress}%` }} />
@@ -4775,7 +5215,7 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Update ready toast ── */}
+        {/* â”€â”€ Update ready toast â”€â”€ */}
         {updateReady && !updateDismissed && (
           <div className="fixed bottom-4 right-4 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-4 z-50 max-w-xs">
             <div className="flex items-start gap-3">
@@ -4801,7 +5241,7 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Server Password Dialog ── */}
+        {/* â”€â”€ Server Password Dialog â”€â”€ */}
         {serverPasswordDialog && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
@@ -4857,7 +5297,7 @@ export function TerminalForum() {
                   connectedServerIdRef.current = prevServerId;
                   const msg = err?.message || '';
                   if (msg.includes('SERVER_PASSWORD_FAIL')) {
-                    setStatus('Forkert server-adgangskode — prøv igen');
+                    setStatus('Forkert server-adgangskode â€” prÃ¸v igen');
                     setServerPasswordInput('');
                   } else {
                     setStatus(`Failed: ${msg}`);
@@ -4884,18 +5324,19 @@ export function TerminalForum() {
             </div>
           </div>
         )}
+      {settingsModal}
       </div>
     );
   }
 
-  // ═════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   //  MAIN UI
-  // ═════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   return (
    <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
 
-     {/* ── Draggable titlebar ─────────────────────────────── */}
+     {/* â”€â”€ Draggable titlebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
      <div className={`flex items-center bg-[#0d120d] border-b border-green-900/30 select-none ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}
        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
        {isMac ? (
@@ -4904,7 +5345,7 @@ export function TerminalForum() {
            <div className="flex-1 flex items-center justify-center min-w-0">
              <Terminal className="w-4 h-4 shrink-0 mr-2" />
              <span className="text-xs font-bold truncate">ECHO</span>
-                 <span className="text-xs text-green-700 truncate ml-1">— {nickname}</span>
+                 <span className="text-xs text-green-700 truncate ml-1">â€” {nickname}</span>
                   </div>
                   <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
                     <button onClick={navBack} disabled={!canNavBack}
@@ -4941,7 +5382,7 @@ export function TerminalForum() {
            <div className="flex items-center gap-2 px-4 py-2 flex-1 min-w-0">
              <Terminal className="w-4 h-4 shrink-0" />
              <span className="text-xs font-bold truncate">ECHO</span>
-              <span className="text-xs text-green-700 truncate">— {nickname}</span>
+              <span className="text-xs text-green-700 truncate">â€” {nickname}</span>
              </div>
              <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
                <button onClick={navBack} disabled={!canNavBack}
@@ -4989,7 +5430,7 @@ export function TerminalForum() {
        )}
      </div>
 
-     {/* ── Server + DM Tab Bar ──────────────────────────────── */}
+     {/* â”€â”€ Server + DM Tab Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
      {(openTabs.length > 0 || openDmTabs.length > 0) && (
      <div className={`flex items-center bg-[#0d120d]/80 border-b border-green-900/30 px-2 gap-0.5 overflow-x-auto shrink-0 scrollbar-none ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}>
        {openTabs.map(tabId => {
@@ -5060,7 +5501,7 @@ export function TerminalForum() {
            </div>
          );
        })}
-       {/* ── DM tabs ──────────────────────────────────────── */}
+       {/* â”€â”€ DM tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
        {openDmTabs.map(dm => {
          const isActiveDm = activeDmTab === dm.username;
          const dmUnread = dmUnreadCounts[dm.username] || 0;
@@ -5097,10 +5538,10 @@ export function TerminalForum() {
      </div>
      )}
 
-     {/* ── Main content wrapper with padding ──────────────── */}
+     {/* â”€â”€ Main content wrapper with padding â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
      <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? '' : 'p-1.5 gap-1.5'}`}>
 
-      {/* ── Inline DM Chat ─────────────────────────────────── */}
+      {/* â”€â”€ Inline DM Chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {activeDmTab && openDmTabs.some(t => t.username === activeDmTab) ? (() => {
         const dmTab = openDmTabs.find(t => t.username === activeDmTab);
         if (!dmTab) return null;
@@ -5110,18 +5551,18 @@ export function TerminalForum() {
             {/* DM header */}
             <div className="px-4 py-3 border-b border-green-900/30 flex items-center gap-3 shrink-0">
               <Send className="w-4 h-4 text-green-600" />
-              <span className="text-sm text-green-400 font-bold">DM — {activeDmTab}</span>
+              <span className="text-sm text-green-400 font-bold">DM â€” {activeDmTab}</span>
               <div className="ml-auto flex flex-col items-end gap-0.5">
                 <span className="flex items-center gap-1 text-[10px] text-green-700" title="End-to-end encrypted with ECDH P-256 + AES-256-GCM">
                   <Lock className="w-3 h-3 text-green-600" />
                   E2EE
                 </span>
                 {dmKeyFingerprints[activeDmTab] ? (
-                  <span className="text-[9px] text-green-800 font-mono tracking-tight" title="Key fingerprint — verify with your contact out-of-band to confirm no server MITM">
+                  <span className="text-[9px] text-green-800 font-mono tracking-tight" title="Key fingerprint â€” verify with your contact out-of-band to confirm no server MITM">
                     {dmKeyFingerprints[activeDmTab]}
                   </span>
                 ) : (
-                  <span className="text-[9px] text-yellow-800" title="Peer key not yet received — fingerprint unavailable">
+                  <span className="text-[9px] text-yellow-800" title="Peer key not yet received â€” fingerprint unavailable">
                     key pending
                   </span>
                 )}
@@ -5131,7 +5572,7 @@ export function TerminalForum() {
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
               {msgs.length === 0 && (
                 <div className="flex-1 flex items-center justify-center h-full text-green-800 text-sm">
-                  No messages yet — say hi!
+                  No messages yet â€” say hi!
                 </div>
               )}
               {msgs.map(msg => {
@@ -5140,7 +5581,7 @@ export function TerminalForum() {
                   <div key={msg.id} className={`flex items-end gap-2 ${isMe ? 'flex-row-reverse' : ''}`}>
                     <UserAvatar name={msg.sender} size="sm" />
                     <div className={`max-w-[70%] px-3 py-2 rounded-xl ${isMe ? 'bg-green-900/40 text-green-400 rounded-br-sm' : 'bg-slate-700/20 border border-slate-600/15 text-slate-300 rounded-bl-sm'}`}>
-                      <div className={`text-[10px] mb-0.5 font-semibold ${isMe ? 'text-green-500/70 text-right' : 'text-blue-400/70'}`}>{msg.sender} · {new Date(msg.timestamp).toLocaleTimeString()}</div>
+                      <div className={`text-[10px] mb-0.5 font-semibold ${isMe ? 'text-green-500/70 text-right' : 'text-blue-400/70'}`}>{msg.sender} Â· {new Date(msg.timestamp).toLocaleTimeString()}</div>
                       <div className="text-sm break-words whitespace-pre-wrap">{renderMessageBody(msg.body)}</div>
                     </div>
                   </div>
@@ -5217,7 +5658,7 @@ export function TerminalForum() {
                     } catch {}
                   }
 
-                  // Inline file — send unencrypted so server can transcode if needed
+                  // Inline file â€” send unencrypted so server can transcode if needed
                   const fileBody = `__FILE__:${fName}:${fMime}:${fData}`;
                   window.electronAPI.sendDm(dmTab.serverId, dmTab.username, fileBody);
                   setPendingDmFile(null);
@@ -5262,7 +5703,7 @@ export function TerminalForum() {
                   if (file.size > maxBytes) {
                     const sizeMB = (file.size / 1024 / 1024).toFixed(1);
                     const maxMB = ((serverInfo?.maxFileSizeKB || 2048) / 1024).toFixed(0);
-                    setDmError(`File too large (${sizeMB} MB) — server limit is ${maxMB} MB`);
+                    setDmError(`File too large (${sizeMB} MB) â€” server limit is ${maxMB} MB`);
                     setTimeout(() => setDmError(null), 5000);
                     if (dmFileInputRef.current) dmFileInputRef.current.value = '';
                     return;
@@ -5292,10 +5733,10 @@ export function TerminalForum() {
         );
       })() : (
       <>
-      {/* ── Main content ───────────────────────────────────── */}
+      {/* â”€â”€ Main content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <div className="flex-1 flex gap-0 overflow-hidden">
 
-        {/* ── Left sidebar: rooms ─────────────────────────── */}
+        {/* â”€â”€ Left sidebar: rooms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         <div className={`bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10 flex flex-col shrink-0 ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}
           style={{ width: leftSidebarWidth }}>
           <div className="flex-1 overflow-y-auto">
@@ -5568,7 +6009,7 @@ export function TerminalForum() {
           </div>
         </div>
 
-        {/* ── Left resize handle ──────────────────────────── */}
+        {/* â”€â”€ Left resize handle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         {!(isCallFullscreen && viewMode === 'voice' && currentVoiceRoom) && (
           <div
             className="w-[3px] shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-green-500/20 transition-colors"
@@ -5577,10 +6018,10 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Center panel ────────────────────────────────── */}
+        {/* â”€â”€ Center panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         <div className={`flex-1 flex flex-col overflow-hidden ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'bg-black' : 'bg-[#0d120d]/60 backdrop-blur-sm rounded-lg shadow-lg shadow-green-900/10'}`}>
           {viewMode === 'voice' && currentVoiceRoom ? (
-            /* ── Voice / Video call ─────────────────────── */
+            /* â”€â”€ Voice / Video call â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
             <div className={`flex-1 flex flex-col relative group/call ${hideUiOverlay && isCallFullscreen && !mouseActive ? 'cursor-none' : ''}`}
               onMouseMove={() => {
                 if (hideUiOverlay && isCallFullscreen) {
@@ -5596,7 +6037,7 @@ export function TerminalForum() {
                 }
               }}>
               {isVideoMode ? (
-                /* ── Video Grid Mode ─────────────────────── */
+                /* â”€â”€ Video Grid Mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
                 <div className={`flex-1 flex flex-col ${hideUiOverlay && isCallFullscreen ? 'p-0' : 'p-4'}`}>
                   <div className={`flex-1 ${selectedVideoFeed ? '' : `grid gap-4 ${
                     usersInRoom.length === 1 ? 'grid-cols-1' :
@@ -5744,12 +6185,12 @@ export function TerminalForum() {
                       <button onClick={() => {
                           setHideUiOverlay(h => {
                             if (!h) {
-                              // Turning ON — start idle timer
+                              // Turning ON â€” start idle timer
                               setMouseActive(true);
                               if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current);
                               mouseIdleTimerRef.current = setTimeout(() => setMouseActive(false), 3000);
                             } else {
-                              // Turning OFF — clear timer, show everything
+                              // Turning OFF â€” clear timer, show everything
                               setMouseActive(true);
                               if (mouseIdleTimerRef.current) clearTimeout(mouseIdleTimerRef.current);
                             }
@@ -5769,7 +6210,7 @@ export function TerminalForum() {
                   </div>
                 </div>
               ) : (
-                /* ── Voice Only Mode ─────────────────────── */
+                /* â”€â”€ Voice Only Mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
                 <div className="flex-1 flex flex-col">
                   <div className="flex-1 flex flex-col items-center justify-center p-8">
                     <div className={`grid gap-8 mb-8 ${
@@ -5908,7 +6349,7 @@ export function TerminalForum() {
               )}
             </div>
               ) : currentTextRoom ? (
-                /* ── Text chat view ─────────────────────────── */
+                /* â”€â”€ Text chat view â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
                 <div className="flex-1 flex flex-col min-h-0"
                   onDragOver={e => { e.preventDefault(); e.stopPropagation(); }}
                   onDrop={e => { e.preventDefault(); e.stopPropagation(); const file = e.dataTransfer.files?.[0]; if (file) stageFile(file); }}>
@@ -5999,7 +6440,7 @@ export function TerminalForum() {
               )}
               <div ref={chatScrollRef} onScroll={handleChatScroll} className="flex-1 overflow-y-auto p-6 space-y-0">
                 {currentTextRoom && roomLoadingMore[currentTextRoom] && (
-                  <div className="text-center text-xs text-green-700 py-2">Loading older messages…</div>
+                  <div className="text-center text-xs text-green-700 py-2">Loading older messagesâ€¦</div>
                 )}
                 {currentMessages.map((msg, idx) => {
                   const prev = idx > 0 ? currentMessages[idx - 1] : null;
@@ -6040,7 +6481,7 @@ export function TerminalForum() {
                       </button>
                       {reactionPickerMsgId === msg.msgId && (
                         <div className="absolute z-50 mt-1 bg-[#0d120d] border border-green-900/50 rounded-lg shadow-xl shadow-black/40 p-2 flex flex-wrap gap-1 w-56">
-                          {['👍','👎','❤️','😂','😮','😢','😡','🔥','✅','🎉','💯','👀','💀','🤔','🙏','💪','⭐','🥳'].map(e => (
+                          {['ðŸ‘','ðŸ‘Ž','â¤ï¸','ðŸ˜‚','ðŸ˜®','ðŸ˜¢','ðŸ˜¡','ðŸ”¥','âœ…','ðŸŽ‰','ðŸ’¯','ðŸ‘€','ðŸ’€','ðŸ¤”','ðŸ™','ðŸ’ª','â­','ðŸ¥³'].map(e => (
                             <button key={e} type="button"
                               onClick={() => { sendToServer(`CMD:REACT:${currentTextRoom}:${msg.msgId}:${e}`); setReactionPickerMsgId(null); }}
                               className="w-8 h-8 flex items-center justify-center text-lg hover:bg-green-900/30 rounded transition-all">
@@ -6154,7 +6595,7 @@ export function TerminalForum() {
                     <span className="text-[11px] text-green-700 italic">
                       {(typingUsers[currentTextRoom] || []).slice(0, 3).join(', ')}
                       {(typingUsers[currentTextRoom] || []).length > 3 ? ' and others' : ''}
-                      {' '}{(typingUsers[currentTextRoom] || []).length === 1 ? 'is' : 'are'} typing…
+                      {' '}{(typingUsers[currentTextRoom] || []).length === 1 ? 'is' : 'are'} typingâ€¦
                     </span>
                   </div>
                 )}
@@ -6228,7 +6669,7 @@ export function TerminalForum() {
                       const colonMatch = before.match(/:([a-zA-Z0-9_+-]{1,})$/);
                       if (colonMatch && !before.match(/:([a-zA-Z0-9_+-]+):$/)) { setEmojiQuery(colonMatch[1]); setEmojiAutoIndex(0); }
                       else setEmojiQuery(null);
-                      // Typing indicator — throttle to one event per 2 s per room
+                      // Typing indicator â€” throttle to one event per 2 s per room
                       if (v.trim() && currentTextRoom && isConnected) {
                         const now = Date.now();
                         if (now - (typingLastSentRef.current[currentTextRoom] || 0) > 2000) {
@@ -6311,7 +6752,7 @@ export function TerminalForum() {
                         )}
                         <div className="text-[10px] text-green-700 px-1 py-1 font-bold uppercase">Standard</div>
                         <div className="grid grid-cols-8 gap-1">
-                          {['😀','😂','😅','😊','😎','😍','🥳','😭','😤','🤔','🤯','🥺','😴','🤡','👍','👎','👏','🙌','🤝','✌️','🤙','💪','❤️','🔥','⭐','💯','🎉','🎶','💀','👀','🫡','🫠','😈','💩','🤖','👾','🐐','🦊','🐱','🐶','☕','🍕','🍺','🎮','💻','🛠️','⚡','✅','❌','⚠️','💬','📌','🚀','🌍','🌙','☀️','🌈','💎'].map(emoji => (
+                          {['ðŸ˜€','ðŸ˜‚','ðŸ˜…','ðŸ˜Š','ðŸ˜Ž','ðŸ˜','ðŸ¥³','ðŸ˜­','ðŸ˜¤','ðŸ¤”','ðŸ¤¯','ðŸ¥º','ðŸ˜´','ðŸ¤¡','ðŸ‘','ðŸ‘Ž','ðŸ‘','ðŸ™Œ','ðŸ¤','âœŒï¸','ðŸ¤™','ðŸ’ª','â¤ï¸','ðŸ”¥','â­','ðŸ’¯','ðŸŽ‰','ðŸŽ¶','ðŸ’€','ðŸ‘€','ðŸ«¡','ðŸ« ','ðŸ˜ˆ','ðŸ’©','ðŸ¤–','ðŸ‘¾','ðŸ','ðŸ¦Š','ðŸ±','ðŸ¶','â˜•','ðŸ•','ðŸº','ðŸŽ®','ðŸ’»','ðŸ› ï¸','âš¡','âœ…','âŒ','âš ï¸','ðŸ’¬','ðŸ“Œ','ðŸš€','ðŸŒ','ðŸŒ™','â˜€ï¸','ðŸŒˆ','ðŸ’Ž'].map(emoji => (
                             <button key={emoji} type="button"
                               className="w-8 h-8 flex items-center justify-center text-lg hover:bg-green-900/30 rounded transition-all"
                               onClick={() => { setInput(prev => prev + emoji); setShowEmojiPicker(false); inputRef.current?.focus(); }}>
@@ -6373,7 +6814,7 @@ export function TerminalForum() {
               </div>
             </div>
           ) : (
-            /* ── No room selected ───────────────────────── */
+            /* â”€â”€ No room selected â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
             <div className="flex-1 flex items-center justify-center text-green-700">
               <div className="text-center">
                 <Terminal className="w-12 h-12 mx-auto mb-4 opacity-30" />
@@ -6383,7 +6824,7 @@ export function TerminalForum() {
           )}
         </div>
 
-        {/* ── Right resize handle ─────────────────────────── */}
+        {/* â”€â”€ Right resize handle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         {showUserList && !(isCallFullscreen && viewMode === 'voice' && currentVoiceRoom) && (
           <div
             className="w-[3px] shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-green-500/20 transition-colors"
@@ -6392,12 +6833,12 @@ export function TerminalForum() {
           </div>
         )}
 
-        {/* ── Right sidebar: users ─────────────────────── */}
+        {/* â”€â”€ Right sidebar: users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         {showUserList && (
         <div className={`bg-[#0d120d]/60 backdrop-blur-sm rounded-lg overflow-y-auto shadow-lg shadow-green-900/10 shrink-0 ${isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}
           style={{ width: rightSidebarWidth }}>
           <div className="p-4 border-b border-green-900/30">
-            <div className="text-xs text-green-700">ONLINE — {onlineUsersList.length}</div>
+            <div className="text-xs text-green-700">ONLINE â€” {onlineUsersList.length}</div>
           </div>
           <div className="p-3">
             {onlineUsersList.map(u => (
@@ -6412,7 +6853,7 @@ export function TerminalForum() {
                     <span className="text-[10px] text-green-800 truncate block">{u.roles.join(', ')}</span>
                   )}
                   {u.voiceRoom && (
-                    <span className="text-xs text-green-800">🔊 {u.voiceRoom}</span>
+                    <span className="text-xs text-green-800">ðŸ”Š {u.voiceRoom}</span>
                   )}
                 </div>
               </div>
@@ -6421,7 +6862,7 @@ export function TerminalForum() {
           {awayUsersList.length > 0 && (
             <>
               <div className="p-4 border-b border-green-900/30 border-t border-green-900/30">
-                <div className="text-xs text-yellow-700">AWAY — {awayUsersList.length}</div>
+                <div className="text-xs text-yellow-700">AWAY â€” {awayUsersList.length}</div>
               </div>
               <div className="p-3">
                 {awayUsersList.map(u => (
@@ -6436,7 +6877,7 @@ export function TerminalForum() {
                         <span className="text-[10px] text-green-800 truncate block">{u.roles.join(', ')}</span>
                       )}
                       {u.voiceRoom && (
-                        <span className="text-xs text-green-800">🔊 {u.voiceRoom}</span>
+                        <span className="text-xs text-green-800">ðŸ”Š {u.voiceRoom}</span>
                       )}
                     </div>
                   </div>
@@ -6447,7 +6888,7 @@ export function TerminalForum() {
           {offlineUsersList.length > 0 && (
             <>
               <div className="p-4 border-b border-green-900/30 border-t border-green-900/30">
-                <div className="text-xs text-red-700">OFFLINE — {offlineUsersList.length}</div>
+                <div className="text-xs text-red-700">OFFLINE â€” {offlineUsersList.length}</div>
               </div>
               <div className="p-3">
                 {offlineUsersList.map(u => (
@@ -6466,439 +6907,24 @@ export function TerminalForum() {
       </>
       )}
       </div>{/* end content wrapper */}
+      {/* -- Settings Modal -- */}
+      {settingsModal}
 
-      {/* ── Settings Modal ─────────────────────────────────── */}
-      {showSettings && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-          onMouseDown={() => { setShowSettings(false); setRecordingKeybind(null); }}>
-          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
-            onMouseDown={e => e.stopPropagation()}>
-            {/* Header */}
-            <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between sticky top-0">
-              <div className="flex items-center gap-3">
-                <Settings className="w-6 h-6 text-green-500" />
-                <div>
-                  <h2 className="text-xl font-bold text-green-400">SETTINGS</h2>
-                  <p className="text-[10px] text-green-700">Global — applies to all servers</p>
-                </div>
-              </div>
-              <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
-                className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Content */}
-            <div className="p-6 space-y-6">
-              {/* Audio Settings */}
-              <div>
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Headphones className="w-4 h-4" />
-                  AUDIO SETTINGS
-                </h3>
-                <div className="space-y-3 pl-6">
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Microphone</label>
-                    <select value={selectedInput}
-                      onChange={e => { setSelectedInput(e.target.value); selectedInputRef.current = e.target.value; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="">Default Microphone</option>
-                      {audioInputs.map(d => (
-                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 8)}`}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Output</label>
-                    <select value={selectedOutput}
-                      onChange={e => { setSelectedOutput(e.target.value); selectedOutputRef.current = e.target.value; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="">Default Output</option>
-                      {audioOutputs.map(d => (
-                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Output ${d.deviceId.slice(0, 8)}`}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Microphone Activity</label>
-                    {currentVoiceRoom ? (
-                      <>
-                        <div className="w-full h-3 bg-green-900/30 rounded-full overflow-hidden relative">
-                          <div className={`h-full rounded-full transition-all duration-75 ${micLevel > 0.6 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                            style={{ width: `${micLevel * 100}%` }} />
-                          {inputSensitivity > 0 && (
-                            <div className="absolute top-0 h-full w-0.5 bg-red-500/70" style={{ left: `${inputSensitivity}%` }} />
-                          )}
-                        </div>
-                        <span className="text-xs text-green-700 mt-1 block">
-                          {micLevel > 0.05
-                            ? (inputSensitivity > 0 && micLevel < inputSensitivity / 100
-                              ? '○ Below threshold — gated'
-                              : '● Capturing audio')
-                            : '○ No audio'}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="text-xs text-green-800">Join a voice channel to test microphone</span>
-                    )}
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Input Sensitivity</label>
-                    <div className="flex items-center gap-3">
-                      <input type="range" min={0} max={100} value={inputSensitivity}
-                        onChange={e => setInputSensitivity(parseInt(e.target.value))}
-                        className="flex-1 accent-green-500 h-1.5" />
-                      <span className="text-xs text-green-600 w-8 text-right">{inputSensitivity}%</span>
-                    </div>
-                    <span className="text-[10px] text-green-800 mt-1 block">
-                      {inputSensitivity === 0 ? 'No gate — all audio passes through' : 'Audio below this level will be silenced'}
-                    </span>
-                  </div>
-                  {inputSensitivity > 0 && (
-                    <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
-                      <div>
-                        <label className="text-xs text-green-600 block mb-1">Attack Time</label>
-                        <div className="flex items-center gap-3">
-                          <input type="range" min={5} max={200} step={5} value={gateAttack}
-                            onChange={e => setGateAttack(parseInt(e.target.value))}
-                            className="flex-1 accent-green-500 h-1.5" />
-                          <span className="text-xs text-green-600 w-12 text-right">{gateAttack} ms</span>
-                        </div>
-                        <span className="text-[10px] text-green-800 block">How fast the gate opens when you speak</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-green-600 block mb-1">Hold Time</label>
-                        <div className="flex items-center gap-3">
-                          <input type="range" min={0} max={500} step={10} value={gateHold}
-                            onChange={e => setGateHold(parseInt(e.target.value))}
-                            className="flex-1 accent-green-500 h-1.5" />
-                          <span className="text-xs text-green-600 w-12 text-right">{gateHold} ms</span>
-                        </div>
-                        <span className="text-[10px] text-green-800 block">How long the gate stays open after you stop</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-green-600 block mb-1">Release Time</label>
-                        <div className="flex items-center gap-3">
-                          <input type="range" min={20} max={1000} step={10} value={gateRelease}
-                            onChange={e => setGateRelease(parseInt(e.target.value))}
-                            className="flex-1 accent-green-500 h-1.5" />
-                          <span className="text-xs text-green-600 w-12 text-right">{gateRelease} ms</span>
-                        </div>
-                        <span className="text-[10px] text-green-800 block">How fast the gate fades to silence</span>
-                      </div>
-                    </div>
-                  )}
-                  <div className="pt-3 border-t border-green-900/20">
-                    <label className="text-xs text-green-600 block mb-2">Audio Processing</label>
-                    <div className="space-y-2">
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={echoCancellation}
-                          onChange={e => setEchoCancellation(e.target.checked)}
-                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                        <div>
-                          <span className="text-sm text-green-500">Echo Cancellation</span>
-                          <span className="text-[10px] text-green-800 block">Prevents speakers from feeding back into the mic</span>
-                        </div>
-                      </label>
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={noiseSuppression}
-                          onChange={e => setNoiseSuppression(e.target.checked)}
-                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                        <div>
-                          <span className="text-sm text-green-500">Noise Suppression</span>
-                          <span className="text-[10px] text-green-800 block">Reduces background noise (fans, typing, etc.)</span>
-                        </div>
-                      </label>
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={autoGainControl}
-                          onChange={e => setAutoGainControl(e.target.checked)}
-                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                        <div>
-                          <span className="text-sm text-green-500">Auto Gain Control</span>
-                          <span className="text-[10px] text-green-800 block">Automatically adjusts microphone volume</span>
-                        </div>
-                      </label>
-                    </div>
-                    <span className="text-[10px] text-green-800 mt-2 block">Changes apply on next voice join or via Apply below</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Video Settings */}
-              <div className="pt-4 border-t border-green-900/30">
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Video className="w-4 h-4" />
-                  VIDEO SETTINGS
-                </h3>
-                <div className="space-y-3 pl-6">
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Camera</label>
-                    <select value={selectedVideoInput}
-                      onChange={e => { setSelectedVideoInput(e.target.value); selectedVideoInputRef.current = e.target.value; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="">Default Camera</option>
-                      {videoInputs.map(d => (
-                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 8)}`}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Resolution</label>
-                    <select value={videoResolution}
-                      onChange={e => { const r = e.target.value as VideoResolution; setVideoResolution(r); videoResolutionRef.current = r; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      {Object.entries(VIDEO_RESOLUTIONS).map(([key, r]) => (
-                        <option key={key} value={key}>{r.label} ({r.width}×{r.height})</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">FPS</label>
-                    <select value={videoFps}
-                      onChange={e => { const f = parseInt(e.target.value) as VideoFps; setVideoFps(f); videoFpsRef.current = f; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      {VIDEO_FPS_OPTIONS.map(f => (
-                        <option key={f} value={f}>{f} fps</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="text-xs text-green-800 space-y-1">
-                    <div>Resolution: {VIDEO_RESOLUTIONS[videoResolution].width}×{VIDEO_RESOLUTIONS[videoResolution].height}</div>
-                    <div>Framerate: {videoFps} fps</div>
-                    <div>Codec: H.264 (VP8 fallback)</div>
-                    <div>Bitrate: {(getVideoBitrate(VIDEO_RESOLUTIONS[videoResolution].width, VIDEO_RESOLUTIONS[videoResolution].height, videoFps) / 1_000_000).toFixed(1)} Mbps</div>
-                    <div>Transport: TCP (reliable)</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Notification Sounds */}
-              <div className="pt-4 border-t border-green-900/30">
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Bell className="w-4 h-4" />
-                  NOTIFICATION SOUNDS
-                </h3>
-                <div className="space-y-3 pl-6">
-                  <label className="flex items-center gap-3 cursor-pointer">
-                    <input type="checkbox" checked={notificationSounds}
-                      onChange={e => setNotificationSounds(e.target.checked)}
-                      className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                    <span className="text-sm text-green-500">Enable UI sounds</span>
-                  </label>
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs text-green-600">Volume</label>
-                      <span className="text-xs text-green-500 font-mono">{notificationVolume}%</span>
-                    </div>
-                    <input type="range" min="0" max="100" step="5" value={notificationVolume}
-                      onChange={e => setNotificationVolume(parseInt(e.target.value))}
-                      disabled={!notificationSounds}
-                      className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500 disabled:opacity-40" />
-                  </div>
-                  <div className="text-xs text-green-800 space-y-0.5">
-                    <div>• Message received</div>
-                    <div>• Join / leave voice</div>
-                    <div>• User joins / leaves your room</div>
-                    <div>• Mute / unmute / deafen</div>
-                    <div>• Camera / screen share started</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Appearance Settings */}
-              <div className="pt-4 border-t border-green-900/30">
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Monitor className="w-4 h-4" />
-                  APPEARANCE
-                </h3>
-                <div className="space-y-3 pl-6">
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Theme Color</label>
-                    <select value={theme}
-                      onChange={e => setTheme(e.target.value as ThemeColor)}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="mono">Mono (Default)</option>
-                      <option value="light">Light</option>
-                      <option value="custom">Custom</option>
-                    </select>
-                  </div>
-                  {theme === 'custom' && (
-                    <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
-                      {([
-                        ['accent', 'Accent', 'Buttons, links, active states'],
-                        ['bg', 'Background', 'Main content area'],
-                        ['surface', 'Surface', 'Headers, input bar, modals'],
-                        ['sidebar', 'Sidebar', 'Channel list, user list panels'],
-                        ['border', 'Borders', 'Dividers and outlines'],
-                        ['text', 'Primary Text', 'Messages, usernames, labels'],
-                        ['textSecondary', 'Secondary Text', 'Timestamps, hints, muted labels'],
-                      ] as [keyof CustomThemeColors, string, string][]).map(([key, label, hint]) => (
-                        <div key={key} className="flex items-center gap-3">
-                          <input type="color" value={customTheme[key]}
-                            onInput={e => {
-                              const val = (e.target as HTMLInputElement).value;
-                              const hexSpan = (e.target as HTMLElement).parentElement?.querySelector('.hex-label');
-                              if (hexSpan) hexSpan.textContent = val;
-                              cancelAnimationFrame(colorPickerRafRef.current);
-                              colorPickerRafRef.current = requestAnimationFrame(() => {
-                                const el = document.documentElement;
-                                if (key === 'accent') {
-                                  const scale = generateScale(val);
-                                  lastAccentScaleRef.current = { accent: val, scale };
-                                  for (const [k, v] of Object.entries(scale)) el.style.setProperty(`--custom-green-${k}`, v);
-                                  el.style.setProperty('--custom-accent-rgb', hexToRgb(val));
-                                } else if (key === 'border') {
-                                  el.style.setProperty('--custom-border', val);
-                                  el.style.setProperty('--custom-border-rgb', hexToRgb(val));
-                                } else {
-                                  const varMap: Record<string, string> = { bg: '--custom-bg', surface: '--custom-surface', sidebar: '--custom-sidebar', text: '--custom-text', textSecondary: '--custom-text-secondary' };
-                                  if (varMap[key]) el.style.setProperty(varMap[key], val);
-                                }
-                              });
-                            }}
-                            onChange={e => setCustomTheme(prev => ({ ...prev, [key]: e.target.value }))}
-                            className="w-8 h-8 rounded cursor-pointer border border-green-900/50 bg-transparent [&::-webkit-color-swatch-wrapper]:p-0.5 [&::-webkit-color-swatch]:rounded" />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-baseline gap-2">
-                              <span className="text-xs text-green-600">{label}</span>
-                              <span className="hex-label text-[10px] text-green-800 font-mono">{customTheme[key]}</span>
-                            </div>
-                            <div className="text-[10px] text-green-800/60">{hint}</div>
-                          </div>
-                        </div>
-                      ))}
-                      <button onClick={() => setCustomTheme(DEFAULT_CUSTOM_THEME)}
-                        className="text-[10px] text-green-700 hover:text-green-500 transition-colors">
-                        Reset to defaults
-                      </button>
-                    </div>
-                  )}
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Font</label>
-                    <select value={fontFamily}
-                      onChange={e => setFontFamily(e.target.value)}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="">Default (Monospace)</option>
-                      <option value="ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, monospace">Cascadia Code</option>
-                      <option value="'JetBrains Mono', ui-monospace, monospace">JetBrains Mono</option>
-                      <option value="'Fira Code', ui-monospace, monospace">Fira Code</option>
-                      <option value="Consolas, ui-monospace, monospace">Consolas</option>
-                      <option value="'Courier New', Courier, monospace">Courier New</option>
-                      <option value="Inter, system-ui, -apple-system, sans-serif">Inter (Sans-serif)</option>
-                      <option value="system-ui, -apple-system, 'Segoe UI', sans-serif">System UI (Sans-serif)</option>
-                      <option value="'Segoe UI', Tahoma, Geneva, sans-serif">Segoe UI</option>
-                      <option value="Arial, Helvetica, sans-serif">Arial</option>
-                      <option value="Verdana, Geneva, sans-serif">Verdana</option>
-                      <option value="Georgia, 'Times New Roman', serif">Georgia (Serif)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs text-green-600">UI Scale</label>
-                      <span className="text-xs text-green-500 font-mono">{uiScale}%</span>
-                    </div>
-                    <input type="range" min="50" max="150" step="5" value={uiScale}
-                      onChange={e => setUiScale(parseInt(e.target.value))}
-                      className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
-                    <div className="relative text-[10px] text-green-800 mt-1 h-4">
-                      <span className="absolute left-0">50%</span>
-                      <span className="absolute" style={{ left: '50%', transform: 'translateX(-50%)' }}>100%</span>
-                      <span className="absolute right-0">150%</span>
-                    </div>
-                  </div>
-                    </div>
-                  </div>
-
-              {/* Keybind Settings */}
-              <div className="pt-4 border-t border-green-900/30">
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Command className="w-4 h-4" />
-                  KEYBINDS
-                </h3>
-                <div className="space-y-3 pl-6">
-                  {/* Push-to-Talk mode toggle */}
-                  <div className="pb-3 border-b border-green-900/20">
-                    <label className="flex items-center gap-3 cursor-pointer">
-                      <input type="checkbox" checked={pushToTalkMode} onChange={e => setPushToTalkMode(e.target.checked)}
-                        className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                      <div>
-                        <span className="text-sm text-green-500">Push to Talk</span>
-                        <span className="text-[10px] text-green-800 block">Hold key to transmit. VAD gate is disabled in this mode.</span>
-                      </div>
-                    </label>
-                  </div>
-                  {(['toggleMute', 'toggleDeafen', 'pushToTalk'] as const).map(action => {
-                    const labels: Record<string, string> = { toggleMute: 'Mute / Unmute', toggleDeafen: 'Deafen / Undeafen', pushToTalk: 'Push to Talk' };
-                    const bind = keybinds[action];
-                    const isRecording = recordingKeybind === action;
-                    const disabled = action === 'pushToTalk' && !pushToTalkMode;
-                    return (
-                      <div key={action} className={`flex items-center justify-between ${disabled ? 'opacity-40' : ''}`}>
-                        <span className="text-sm text-green-500">{labels[action]}</span>
-                        <div className="flex items-center gap-2">
-                          <button
-                            disabled={disabled}
-                            onClick={() => !disabled && setRecordingKeybind(isRecording ? null : action)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-mono transition-all min-w-[120px] text-center ${
-                              isRecording
-                                ? 'bg-green-900/40 border-2 border-green-500 text-green-400 animate-pulse'
-                                : bind
-                                  ? 'bg-[#0a0e0a] border border-green-900/50 text-green-500 hover:border-green-700'
-                                  : 'bg-[#0a0e0a] border border-green-900/50 text-green-800 hover:border-green-700'
-                            }`}>
-                            {isRecording ? 'Press a key...' : bind ? formatKeyBind(bind) : 'Not set'}
-                          </button>
-                          {bind && !isRecording && !disabled && (
-                            <button onClick={() => setKeybinds(prev => ({ ...prev, [action]: null }))}
-                              className="p-1 text-green-800 hover:text-red-400 transition-colors">
-                              <X className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <p className="text-[10px] text-green-800 pt-2">Click the field and press the desired key. Press Escape to cancel.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="p-6 border-t border-green-900/30 bg-[#0d120d]/40 flex items-center gap-3">
-              <button onClick={() => { window.electronAPI.checkForUpdates(); }}
-                className="px-4 py-2 rounded-lg bg-green-900/20 text-green-700 hover:bg-green-900/40 hover:text-green-400 transition-all text-xs flex items-center gap-1.5">
-                <Download className="w-3.5 h-3.5" />
-                Check for Updates
-              </button>
-              <div className="flex-1" />
-              <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
-                className="px-6 py-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
-                Cancel
-              </button>
-              <button onClick={() => { if (currentVoiceRoom) restartAudio(); setShowSettings(false); setRecordingKeybind(null); }}
-                className="px-6 py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold">
-                Save Changes
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Server Settings Modal (admin only) ─────────────────── */}
+      {/* â”€â”€ Server Settings Modal (admin only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {showServerSettings && serverInfo && (() => {
         const ALL_PERMS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings'];
         const PERM_LABELS: Record<string, string> = {
-          admin: 'Administrator — full access to everything',
-          manage_roles: 'Manage Roles — create, delete, assign roles',
-          create_rooms: 'Create Rooms — create voice/text channels',
-          delete_rooms: 'Delete Rooms — delete voice/text channels',
-          reorder_rooms: 'Reorder Rooms — reorder channels',
-          kick_users: 'Kick Users — remove users from the server',
-          delete_messages: 'Delete Messages — delete any user\'s messages',
-          pin_messages: 'Pin Messages — pin/unpin messages in text channels',
-          manage_soundboard: 'Manage Soundboard — upload/delete sounds',
-          manage_emojis: 'Manage Emojis — upload/delete custom emojis',
-          server_settings: 'Server Settings — update server configuration',
+          admin: 'Administrator â€” full access to everything',
+          manage_roles: 'Manage Roles â€” create, delete, assign roles',
+          create_rooms: 'Create Rooms â€” create voice/text channels',
+          delete_rooms: 'Delete Rooms â€” delete voice/text channels',
+          reorder_rooms: 'Reorder Rooms â€” reorder channels',
+          kick_users: 'Kick Users â€” remove users from the server',
+          delete_messages: 'Delete Messages â€” delete any user\'s messages',
+          pin_messages: 'Pin Messages â€” pin/unpin messages in text channels',
+          manage_soundboard: 'Manage Soundboard â€” upload/delete sounds',
+          manage_emojis: 'Manage Emojis â€” upload/delete custom emojis',
+          server_settings: 'Server Settings â€” update server configuration',
         };
         const NumberField = ({ label, value, field, unit, min, max }: { label: string; value: number; field: string; unit?: string; min?: number; max?: number }) => (
           <div>
@@ -7090,7 +7116,7 @@ export function TerminalForum() {
                           <p className="text-[10px] text-red-500/70 mb-3">Permanently deletes ALL chat history, avatars, soundboard sounds, custom emojis, and custom roles. Rooms are reset to defaults. All users are kicked. This action cannot be undone.</p>
                           <button onClick={() => { setWipeServerDialog(true); setWipeConfirmName(''); setWipeConfirmCheck(false); }}
                             className="px-4 py-2 rounded-lg bg-red-900/30 border border-red-800/50 text-red-400 hover:bg-red-900/50 hover:border-red-700/50 transition-all text-xs font-bold">
-                            Wipe Server…
+                            Wipe Serverâ€¦
                           </button>
                         </div>
                       </div>
@@ -7127,7 +7153,7 @@ export function TerminalForum() {
                             return (
                               <div key={role.name} className="bg-[#0a0e0a] border border-green-700/50 rounded-lg p-4 space-y-3">
                                 <div className="flex items-center justify-between">
-                                  <span className="text-xs text-green-600 font-bold uppercase">Editing — {role.name}</span>
+                                  <span className="text-xs text-green-600 font-bold uppercase">Editing â€” {role.name}</span>
                                   <button onClick={() => setEditingRole(null)} className="p-1 text-green-700 hover:text-green-400 transition-colors">
                                     <X className="w-3.5 h-3.5" />
                                   </button>
@@ -7310,7 +7336,7 @@ export function TerminalForum() {
                                     }`}
                                     style={has && !isProtected ? { backgroundColor: role.color + '40', color: role.color } : undefined}
                                     title={has ? `Remove ${role.name}` : `Assign ${role.name}`}>
-                                    {has ? <span>✓ {role.name}</span> : role.name}
+                                    {has ? <span>âœ“ {role.name}</span> : role.name}
                                   </button>
                                 );
                               })}
@@ -7453,7 +7479,7 @@ export function TerminalForum() {
         );
       })()}
 
-      {/* ── Room Context Menu ── */}
+      {/* â”€â”€ Room Context Menu â”€â”€ */}
       {roomContextMenu && (
         <div className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[160px] z-50"
           style={{ left: Math.min(roomContextMenu.x, window.innerWidth - 180), top: Math.min(roomContextMenu.y, window.innerHeight - 120) }}
@@ -7526,7 +7552,7 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── User Context Menu ────────────────────────────────── */}
+      {/* â”€â”€ User Context Menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {userContextMenu && (() => {
         const menuWidth = 280;
         const menuHeight = 400;
@@ -7644,7 +7670,7 @@ export function TerminalForum() {
                       }`}>
                       <span className="w-2 h-2 rounded-full" style={{ backgroundColor: role.color }} />
                       <span>{role.name}</span>
-                      {has && <span className="ml-auto text-green-600">✓</span>}
+                      {has && <span className="ml-auto text-green-600">âœ“</span>}
                     </button>
                   );
                 })}
@@ -7669,7 +7695,7 @@ export function TerminalForum() {
         );
       })()}
 
-      {/* ── Message Context Menu ─────────────────────────────── */}
+      {/* â”€â”€ Message Context Menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {msgContextMenu && (() => {
         const isPinned = (pinnedMessages[msgContextMenu.room] || []).some(m => m.msgId === msgContextMenu.msgId);
         const canDelete = msgContextMenu.sender === nickname || hasPermission('delete_messages');
@@ -7719,7 +7745,7 @@ export function TerminalForum() {
         );
       })()}
 
-      {/* ── Screen Share dialog overlay ────────────────────── */}
+      {/* â”€â”€ Screen Share dialog overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {screenShareDialog && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-[#0d120d] border border-green-900/50 rounded-lg w-[640px] max-h-[85vh] shadow-2xl shadow-green-900/30 flex flex-col">
@@ -7782,7 +7808,7 @@ export function TerminalForum() {
                   onChange={e => setScreenShareResolution(e.target.value as VideoResolution)}
                   className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 transition-all">
                   {Object.entries(VIDEO_RESOLUTIONS).map(([key, r]) => (
-                    <option key={key} value={key}>{r.label} ({r.width}×{r.height})</option>
+                    <option key={key} value={key}>{r.label} ({r.width}Ã—{r.height})</option>
                   ))}
                 </select>
               </div>
@@ -7797,7 +7823,7 @@ export function TerminalForum() {
                 </select>
                 {serverInfo && (
                   <div className="text-xs text-green-800 mt-1">
-                    Server max: {serverInfo.maxScreenWidth}×{serverInfo.maxScreenHeight} @ {serverInfo.maxFps}fps
+                    Server max: {serverInfo.maxScreenWidth}Ã—{serverInfo.maxScreenHeight} @ {serverInfo.maxFps}fps
                   </div>
                 )}
               </div>
@@ -7860,7 +7886,7 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── E2EE Passphrase Prompt ────────────────────────────── */}
+      {/* â”€â”€ E2EE Passphrase Prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {e2eePrompt && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
@@ -7868,7 +7894,7 @@ export function TerminalForum() {
               <Lock className="w-5 h-5 text-green-500" />
               <div>
                 <h3 className="text-sm font-bold text-green-400">END-TO-END ENCRYPTION</h3>
-                <p className="text-[10px] text-green-700">This server requires E2EE — enter passphrase</p>
+                <p className="text-[10px] text-green-700">This server requires E2EE â€” enter passphrase</p>
               </div>
             </div>
             <form onSubmit={async (e) => {
@@ -7896,7 +7922,7 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── Avatar Editor Modal ───────────────────────────── */}
+      {/* â”€â”€ Avatar Editor Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {lightboxSrc && (
         <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center cursor-pointer"
           onClick={() => setLightboxSrc(null)}>
@@ -7961,7 +7987,7 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── Logo Editor Modal ────────────────────────────── */}
+      {/* â”€â”€ Logo Editor Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {logoEditor && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
@@ -8017,12 +8043,12 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── Emoji Editor Modal ────────────────────────────── */}
+      {/* â”€â”€ Emoji Editor Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {emojiEditor && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
             <div className="bg-green-900/40 p-4 border-b border-green-900/50 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-green-400">CROP EMOJI — :{emojiEditor.name}:</h3>
+              <h3 className="text-sm font-bold text-green-400">CROP EMOJI â€” :{emojiEditor.name}:</h3>
               <button onClick={() => setEmojiEditor(null)} className="p-1 text-green-600 hover:text-green-400">
                 <X className="w-4 h-4" />
               </button>
@@ -8073,7 +8099,7 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── Create / Edit Room Dialog ─────────────────────── */}
+      {/* â”€â”€ Create / Edit Room Dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {createRoomDialog && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
@@ -8155,7 +8181,7 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── Wipe Server Confirmation Dialog ──────────────── */}
+      {/* â”€â”€ Wipe Server Confirmation Dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {wipeServerDialog && serverInfo && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
           <div className="bg-[#0d120d]/95 border border-red-900/50 rounded-lg shadow-2xl shadow-red-900/30 w-full max-w-md">
@@ -8217,14 +8243,14 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── Update available / downloading toast ── */}
+      {/* â”€â”€ Update available / downloading toast â”€â”€ */}
       {updateAvailable && !updateDismissed && (
         <div className="fixed bottom-4 right-4 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-4 z-50 max-w-xs">
           <div className="flex items-start gap-3">
             <Download className="w-5 h-5 text-green-500 shrink-0 mt-0.5 animate-bounce" />
             <div className="flex-1 min-w-0">
               <p className="text-sm text-green-400 font-bold">Update available</p>
-              <p className="text-xs text-green-700 mt-1">Version {updateAvailable} is downloading…</p>
+              <p className="text-xs text-green-700 mt-1">Version {updateAvailable} is downloadingâ€¦</p>
               {updateProgress !== null && (
                 <div className="mt-2 h-1.5 bg-green-900/40 rounded-full overflow-hidden">
                   <div className="h-full bg-green-500 transition-all duration-300 rounded-full" style={{ width: `${updateProgress}%` }} />
@@ -8238,7 +8264,7 @@ export function TerminalForum() {
         </div>
       )}
 
-      {/* ── Update notification toast ── */}
+      {/* â”€â”€ Update notification toast â”€â”€ */}
       {updateReady && !updateDismissed && (
         <div className="fixed bottom-4 right-4 bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-4 z-50 max-w-xs">
           <div className="flex items-start gap-3">

@@ -21,6 +21,15 @@ public class RendezvousConfig
     /// <summary>Number of days before undelivered offline messages are automatically deleted.</summary>
     public int MessageTtlDays { get; set; } = 30;
 
+    /// <summary>Maximum messages a user can send per rate-limit window.</summary>
+    public int RateLimitMessages { get; set; } = 30;
+
+    /// <summary>Rate-limit window in seconds.</summary>
+    public int RateLimitWindowSeconds { get; set; } = 60;
+
+    /// <summary>WebSocket heartbeat interval in seconds. Clients that miss 3 heartbeats are disconnected.</summary>
+    public int HeartbeatIntervalSeconds { get; set; } = 25;
+
     private static readonly JsonSerializerOptions _jsonOpts = new() { WriteIndented = true };
 
     public static RendezvousConfig Load(string path)
