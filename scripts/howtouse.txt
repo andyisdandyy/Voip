@@ -1,0 +1,4 @@
+Use it like:
+- .\scripts\release.ps1 server 1.2.3
+- .\scripts\release.ps1 client 1.2.3
+- .\scripts\release.ps1 both 1.2.3
