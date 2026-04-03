@@ -9,7 +9,10 @@ using System.Text.Json.Serialization;
 public class ServerConfig
 {
     // ── Server identity ─────────────────────────────────────
+    /// <summary>Display name of the server shown in clients and invites.</summary>
     public string ServerName { get; set; } = "Echo Server";
+
+    /// <summary>Optional password required to join the server.</summary>
     public string? ServerPassword { get; set; }
 
     /// <summary>When true, new registrations require a valid invite code. Existing users can still log in.</summary>
@@ -34,8 +37,13 @@ public class ServerConfig
     public string? EncryptionKey { get; set; }
 
     // ── Network ─────────────────────────────────────────────
+    /// <summary>IP/host the voice UDP server binds to (usually 0.0.0.0).</summary>
     public string VoiceHost { get; set; } = "0.0.0.0";
+
+    /// <summary>UDP port used for real-time voice/media packets.</summary>
     public int UdpPort { get; set; } = 5000;
+
+    /// <summary>TCP port used for chat, commands, and control traffic.</summary>
     public int TcpPort { get; set; } = 5001;
 
     /// <summary>
@@ -67,12 +75,25 @@ public class ServerConfig
     public bool BindLocalhost { get; set; } = false;
 
     // ── Quality limits (global for all rooms) ────────────────
+    /// <summary>Maximum allowed camera stream width in pixels.</summary>
     public int MaxCameraWidth { get; set; } = 1920;
+
+    /// <summary>Maximum allowed camera stream height in pixels.</summary>
     public int MaxCameraHeight { get; set; } = 1080;
+
+    /// <summary>Maximum allowed screen-share width in pixels.</summary>
     public int MaxScreenWidth { get; set; } = 1920;
+
+    /// <summary>Maximum allowed screen-share height in pixels.</summary>
     public int MaxScreenHeight { get; set; } = 1080;
+
+    /// <summary>Maximum allowed video frames per second.</summary>
     public int MaxFps { get; set; } = 30;
+
+    /// <summary>Maximum allowed screen-share bitrate in kbps.</summary>
     public int MaxScreenBitrate { get; set; } = 20000;
+
+    /// <summary>Default voice bitrate in bps for rooms without an override.</summary>
     public int DefaultBitrate { get; set; } = 96000;
 
     /// <summary>Maximum file/image upload size in KB (default 2048 = 2 MB).</summary>

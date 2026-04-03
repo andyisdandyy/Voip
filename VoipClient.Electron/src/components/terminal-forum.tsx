@@ -132,6 +132,58 @@ function getRawReplyToMessageId(msg: any): string | null {
   return v.trim() ? v : null;
 }
 
+function tryParseProtocolTimestamp(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^\d+$/.test(trimmed)) {
+    const numeric = Number(trimmed);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseReplyEventPayload(payload: string): {
+  room: string;
+  msgId: string;
+  sender: string;
+  timestamp: number;
+  replyToMessageId: string;
+  text: string;
+} | null {
+  const i1 = payload.indexOf(':');
+  const i2 = i1 >= 0 ? payload.indexOf(':', i1 + 1) : -1;
+  const i3 = i2 >= 0 ? payload.indexOf(':', i2 + 1) : -1;
+  if (i1 < 0 || i2 < 0 || i3 < 0) return null;
+
+  const room = payload.substring(0, i1);
+  const msgId = payload.substring(i1 + 1, i2);
+  const sender = payload.substring(i2 + 1, i3);
+  const rest = payload.substring(i3 + 1);
+
+  for (let split = rest.indexOf(':'); split >= 0; split = rest.indexOf(':', split + 1)) {
+    const timestamp = tryParseProtocolTimestamp(rest.substring(0, split));
+    if (timestamp === null) continue;
+
+    const replyEnd = rest.indexOf(':', split + 1);
+    if (replyEnd < 0) break;
+
+    const replyToMessageId = rest.substring(split + 1, replyEnd);
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(replyToMessageId)) continue;
+
+    return {
+      room,
+      msgId,
+      sender,
+      timestamp,
+      replyToMessageId,
+      text: rest.substring(replyEnd + 1),
+    };
+  }
+
+  return null;
+}
+
 function getPinnedDedupKey(msg: Pick<ChatMsg, 'msgId' | 'sender' | 'timestamp' | 'body'>): string {
   return msg.msgId || `${msg.sender}|${msg.timestamp}|${msg.body}`;
 }
@@ -1846,28 +1898,18 @@ export function TerminalForum() {
     } else if (line.startsWith(PROTOCOL.msgReply)) {
       // MSG_REPLY:<room>:<msgId>:<user>:<isoTime>:<replyToMsgId>:<text>
       const payload = line.substring(PROTOCOL.msgReply.length);
-      const i1 = payload.indexOf(':');
-      const i2 = i1 >= 0 ? payload.indexOf(':', i1 + 1) : -1;
-      const i3 = i2 >= 0 ? payload.indexOf(':', i2 + 1) : -1;
-      const i4 = i3 >= 0 ? payload.indexOf(':', i3 + 1) : -1;
-      const i5 = i4 >= 0 ? payload.indexOf(':', i4 + 1) : -1;
-      if (i1 >= 0 && i2 >= 0 && i3 >= 0 && i4 >= 0 && i5 >= 0) {
-        const room = payload.substring(0, i1);
-        const msgId = payload.substring(i1 + 1, i2);
-        const sender = payload.substring(i2 + 1, i3);
-        const isoTime = payload.substring(i3 + 1, i4);
-        const replyToMsgId = payload.substring(i4 + 1, i5);
-        const text = payload.substring(i5 + 1);
-        e2eeDecryptText(text).then(body => {
+      const parsed = parseReplyEventPayload(payload);
+      if (parsed) {
+        e2eeDecryptText(parsed.text).then(body => {
           setRoomMessages(prev => ({
             ...prev,
-            [room]: [...(prev[room] || []), {
+            [parsed.room]: [...(prev[parsed.room] || []), {
               id: crypto.randomUUID(),
-              msgId,
-              sender,
+              msgId: parsed.msgId,
+              sender: parsed.sender,
               body,
-              timestamp: new Date(isoTime).getTime() || Date.now(),
-              replyToMessageId: replyToMsgId || null,
+              timestamp: parsed.timestamp,
+              replyToMessageId: parsed.replyToMessageId || null,
             }],
           }));
         });
@@ -3794,7 +3836,7 @@ export function TerminalForum() {
         const mentions = e2eeKeyRef.current ? [...new Set((input.match(/@(\w+)/g) || []).map(m => m.substring(1)))] : [];
         const body = await e2eeEncryptText(input);
         if (replyTarget && replyTarget.room === currentTextRoom) {
-          sendToServer(`${PROTOCOL.msgReply}${currentTextRoom}:${replyTarget.msgId}:${body}`);
+          sendToServer(`CMD:${PROTOCOL.msgReply}${currentTextRoom}:${replyTarget.msgId}:${body}`);
           setReplyTarget(null);
         } else {
           sendToServer(`MSG:${currentTextRoom}:${body}`);
@@ -3858,6 +3900,7 @@ export function TerminalForum() {
   const executeSearch = useCallback((append = false) => {
     if (!currentTextRoom) return;
     const q = searchQuery.trim();
+    const limit = 25;
     if (!q) {
       setSearchResults([]);
       setSearchError(null);
@@ -3873,8 +3916,49 @@ export function TerminalForum() {
     setSearchPanelOpen(true);
     setSearchLoading(true);
     setSearchError(null);
-    sendToServer(`${PROTOCOL.cmdSearch}${currentTextRoom}:${q}:25:${cursor}`);
-  }, [currentTextRoom, searchQuery, searchCursorByRoom, sendToServer]);
+
+    // Server-side search cannot match encrypted message bodies.
+    // In E2EE mode, search through loaded/decrypted messages in the client.
+    if (e2eeKeyRef.current) {
+      const roomMessagesForSearch = roomMessages[currentTextRoom] || [];
+      const qLower = q.toLowerCase();
+      const matches = roomMessagesForSearch
+        .filter(m => {
+          if (m.sender.toLowerCase().includes(qLower)) return true;
+          if (m.body.startsWith('ENC:')) return false;
+          if (m.body.startsWith('__FILE__:')) return false;
+          if (m.body.startsWith('__FILE_REF__:')) return false;
+          if (m.body.startsWith('__GIF__:')) return false;
+          return m.body.toLowerCase().includes(qLower);
+        })
+        .sort((a, b) => b.timestamp - a.timestamp);
+      const start = append ? (parseInt(searchCursorByRoom[currentTextRoom] || '0', 10) || 0) : 0;
+      const page = matches.slice(start, start + limit).map(m => ({
+        msgId: m.msgId,
+        sender: m.sender,
+        body: m.body,
+        timestamp: m.timestamp,
+        edited: m.edited,
+      }));
+      const nextCursor = start + page.length < matches.length ? String(start + page.length) : null;
+
+      setSearchResults(prev => {
+        const seen = new Set((append ? prev : []).map(r => r.msgId));
+        const merged = append ? [...prev] : [];
+        for (const r of page) {
+          if (seen.has(r.msgId)) continue;
+          seen.add(r.msgId);
+          merged.push(r);
+        }
+        return merged;
+      });
+      setSearchCursorByRoom(prev => ({ ...prev, [currentTextRoom]: nextCursor }));
+      setSearchLoading(false);
+      return;
+    }
+
+    sendToServer(`${PROTOCOL.cmdSearch}${currentTextRoom}:${q}:${limit}:${cursor}`);
+  }, [currentTextRoom, searchQuery, searchCursorByRoom, sendToServer, roomMessages]);
 
   const jumpToSearchResult = useCallback((result: SearchResultEntry) => {
     if (!currentTextRoom) return;
@@ -5825,7 +5909,7 @@ export function TerminalForum() {
                           {isLocal && pushToTalkMode && (
                             <div className={`absolute top-1 right-1 z-20 px-1.5 py-0.5 rounded text-[9px] font-bold pointer-events-none ${pttHeld ? 'bg-green-900/80 text-green-300' : 'bg-red-900/80 text-red-400'}`}>PTT</div>
                           )}
-                          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-green-950/50 to-green-900/30">
+                          <div className="absolute inset-0 flex items-center justify-center bg-black">
                             {isLocal ? (
                               (isCameraOn || isScreenSharing) ? (
                                 <video autoPlay muted playsInline className="absolute inset-0 w-full h-full object-contain"
