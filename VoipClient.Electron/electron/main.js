@@ -121,6 +121,11 @@ function createTray() {
   tray.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
 }
 
+function sendToMainWindow(channel, ...args) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try { mainWindow.webContents.send(channel, ...args); } catch {}
+}
+
 // ── E2EE (End-to-End Encryption) ────────────────────────────
 // Uses AES-256-GCM with a PBKDF2-derived key. When enabled, audio
 // and video payloads are encrypted before sending and decrypted on
@@ -459,17 +464,17 @@ function setupAutoUpdater() {
   autoUpdater.on('update-available', (info) => {
     console.log(`[Updater] Update available: ${info.version}`);
     _updaterAvailableVersion = info.version;
-    mainWindow?.webContents.send('updater:available', info.version);
+    sendToMainWindow('updater:available', info.version);
   });
 
   autoUpdater.on('update-not-available', () => {
     console.log('[Updater] Up to date');
-    mainWindow?.webContents.send('updater:not-available');
+    sendToMainWindow('updater:not-available');
   });
 
   autoUpdater.on('download-progress', (progress) => {
     _updaterProgress = Math.round(progress.percent);
-    mainWindow?.webContents.send('updater:progress', _updaterProgress);
+    sendToMainWindow('updater:progress', _updaterProgress);
   });
 
   autoUpdater.on('update-downloaded', (info) => {
@@ -477,17 +482,17 @@ function setupAutoUpdater() {
     _updaterDownloadedVersion = info.version;
     _updaterAvailableVersion = null;
     _updaterProgress = null;
-    mainWindow?.webContents.send('updater:downloaded', info.version);
+    sendToMainWindow('updater:downloaded', info.version);
   });
 
   autoUpdater.on('error', (err) => {
     console.error('[Updater] Error:', err.message);
-    mainWindow?.webContents.send('updater:not-available');
+    sendToMainWindow('updater:not-available');
   });
 
   // Check immediately, then every 30 minutes
   autoUpdater.checkForUpdates().catch(() => {
-    mainWindow?.webContents.send('updater:not-available');
+    sendToMainWindow('updater:not-available');
   });
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
@@ -575,8 +580,8 @@ function setAppBadge(count) {
 
 function setupIPC() {
   // TCP Chat
-  ipcMain.handle('tcp:connect', async (_event, serverId, host, port, username, password, isRegister, serverPassword) => {
-    return connectChat(serverId, host, port, username, password, isRegister, serverPassword);
+  ipcMain.handle('tcp:connect', async (_event, serverId, host, port, username, password, isRegister, serverPassword, inviteCode) => {
+    return connectChat(serverId, host, port, username, password, isRegister, serverPassword, inviteCode);
   });
 
   ipcMain.on('tcp:send', (_event, serverId, message) => {
@@ -646,14 +651,18 @@ function setupIPC() {
     try {
       const sources = await desktopCapturer.getSources({
         types: ['screen', 'window'],
-        thumbnailSize: { width: 320, height: 180 },
+        thumbnailSize: { width: 256, height: 144 },
         fetchWindowIcons: true,
       });
       return sources.map(s => ({
         id: s.id,
         name: s.name,
-        thumbnail: s.thumbnail.toDataURL(),
-        appIcon: s.appIcon ? s.appIcon.toDataURL() : null,
+        thumbnail: !s.thumbnail.isEmpty()
+          ? `data:image/jpeg;base64,${s.thumbnail.toJPEG(70).toString('base64')}`
+          : '',
+        appIcon: s.appIcon && !s.appIcon.isEmpty()
+          ? `data:image/png;base64,${s.appIcon.toPNG().toString('base64')}`
+          : null,
         isScreen: s.id.startsWith('screen:'),
       }));
     } catch (err) {
@@ -782,25 +791,25 @@ function setupIPC() {
   ipcMain.on('updater:check', () => {
     if (!app.isPackaged) {
       // Dev mode — nothing to check; let the renderer reset its spinner
-      mainWindow?.webContents.send('updater:not-available');
+      sendToMainWindow('updater:not-available');
       return;
     }
     // If already downloaded, just re-notify so the renderer can show the prompt
     if (_updaterDownloadedVersion) {
-      mainWindow?.webContents.send('updater:downloaded', _updaterDownloadedVersion);
+      sendToMainWindow('updater:downloaded', _updaterDownloadedVersion);
       return;
     }
     // If currently downloading, re-send progress so the renderer re-shows the toast
     if (_updaterAvailableVersion) {
-      mainWindow?.webContents.send('updater:available', _updaterAvailableVersion);
+      sendToMainWindow('updater:available', _updaterAvailableVersion);
       if (_updaterProgress !== null) {
-        mainWindow?.webContents.send('updater:progress', _updaterProgress);
+        sendToMainWindow('updater:progress', _updaterProgress);
       }
       return;
     }
     // No cached state — trigger a fresh network check
     autoUpdater.checkForUpdates().catch(() => {
-      mainWindow?.webContents.send('updater:not-available');
+      sendToMainWindow('updater:not-available');
     });
   });
 
@@ -830,7 +839,7 @@ function setupIPC() {
     win.loadFile(path.join(__dirname, 'popout-video.html'));
     win.on('closed', () => {
       popoutWindows.delete(username);
-      mainWindow?.webContents.send('popout:closed', username);
+      sendToMainWindow('popout:closed', username);
     });
     popoutWindows.set(username, win);
     console.log(`[Popout] Opened for ${username}`);
@@ -890,7 +899,7 @@ function setupIPC() {
 // After auth, relays chat messages and video frames between
 // the server and the renderer process, tagged with serverId.
 
-function connectChat(serverId, host, port, username, password, isRegister, serverPassword) {
+function connectChat(serverId, host, port, username, password, isRegister, serverPassword, inviteCode) {
   return new Promise((resolve, reject) => {
     // If this server already has a connection, close it first
     disconnectChatForServer(serverId);
@@ -946,9 +955,17 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
           }
           if (line === 'SERVER_PASSWORD_OK' || line === 'READY') {
             serverPwDone = true;
-            const prefix = isRegister ? 'REGISTER' : 'AUTH';
-            sock.write(`${prefix}:${username}:${password}\n`);
-            console.log(`[TCP:${serverId}] ${line === 'READY' ? 'No server password needed' : 'Server password accepted'}, sent ${prefix}`);
+            let authLine;
+            let mode;
+            if (isRegister && inviteCode && String(inviteCode).trim()) {
+              authLine = `REGISTER_WITH_INVITE:${String(inviteCode).trim()}:${username}:${password}`;
+              mode = 'REGISTER_WITH_INVITE';
+            } else {
+              mode = isRegister ? 'REGISTER' : 'AUTH';
+              authLine = `${mode}:${username}:${password}`;
+            }
+            sock.write(`${authLine}\n`);
+            console.log(`[TCP:${serverId}] ${line === 'READY' ? 'No server password needed' : 'Server password accepted'}, sent ${mode}`);
             continue;
           }
           if (line.startsWith('SERVER_PASSWORD_FAIL:')) {
@@ -990,7 +1007,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
             const codec = (flags & 0x02) ? 'vp8' : 'h264';
             const raw = Buffer.from(line.substring(i2 + 1), 'base64');
             const encodedData = e2eeDecrypt(raw, conn?.e2eeKey);
-            mainWindow?.webContents.send('udp:video', senderName, encodedData, isKeyFrame, codec);
+            sendToMainWindow('udp:video', senderName, encodedData, isKeyFrame, codec);
             const popWin = popoutWindows.get(senderName);
             if (popWin && !popWin.isDestroyed()) {
               popWin.webContents.send('popout:video-frame', encodedData, isKeyFrame, codec);
@@ -1012,7 +1029,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
             const fromUser = line.substring(3, i1);
             const text = line.substring(i1 + 1);
             // Pass raw — renderer decrypts with ECDH-derived key
-            mainWindow?.webContents.send('tcp:message', serverId, `DM:${fromUser}:${text}`);
+            sendToMainWindow('tcp:message', serverId, `DM:${fromUser}:${text}`);
           }
           continue;
         }
@@ -1022,13 +1039,13 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
           if (i1 >= 0) {
             const target = line.substring(8, i1);
             const text = line.substring(i1 + 1);
-            mainWindow?.webContents.send('tcp:message', serverId, `DM_SENT:${target}:${text}`);
+            sendToMainWindow('tcp:message', serverId, `DM_SENT:${target}:${text}`);
           } else {
-            mainWindow?.webContents.send('tcp:message', serverId, line);
+            sendToMainWindow('tcp:message', serverId, line);
           }
           continue;
         }
-        mainWindow?.webContents.send('tcp:message', serverId, line);
+        sendToMainWindow('tcp:message', serverId, line);
       }
     });
 
@@ -1036,7 +1053,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
       console.error(`[TCP:${serverId}] Error:`, err.message);
       if (!settled) {
         settle(() => reject(err));
-        mainWindow?.webContents.send('tcp:error', serverId, err.message);
+        sendToMainWindow('tcp:error', serverId, err.message);
       }
     });
 
@@ -1064,7 +1081,7 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
         tcpConnections.delete(serverId);
       }
       if (activeVoiceServerId === serverId) activeVoiceServerId = null;
-      mainWindow?.webContents.send('tcp:disconnected', serverId);
+      sendToMainWindow('tcp:disconnected', serverId);
     });
     }; // end setupEvents
 
@@ -1232,7 +1249,7 @@ function startAutoConnect(serverId, host, ssePort, token) {
                 try {
                   const d = JSON.parse(currentData);
                   console.log(`[AutoConnect:${serverId}] Mention from ${d.sender} in ${d.room}`);
-                  mainWindow?.webContents.send('autoconnect:mention', serverId, d.room, d.sender, d.text);
+                  sendToMainWindow('autoconnect:mention', serverId, d.room, d.sender, d.text);
                 } catch {}
               }
               currentEvent = '';
@@ -1342,7 +1359,7 @@ function startVoice(host, port, username) {
         const prefix = msg.toString('utf8', 0, Math.min(msg.length, 8));
         if (prefix.startsWith('WELCOME:')) {
           console.log('[UDP] Handshake complete');
-          mainWindow?.webContents.send('udp:connected');
+          sendToMainWindow('udp:connected');
           return;
         }
         if (prefix.startsWith('GOODBYE')) return;
@@ -1377,7 +1394,7 @@ function startVoice(host, port, username) {
               stereo[i * 2] = monoView[i];
               stereo[i * 2 + 1] = monoView[i];
             }
-            mainWindow?.webContents.send('udp:audio', senderName, Buffer.from(stereo.buffer));
+            sendToMainWindow('udp:audio', senderName, Buffer.from(stereo.buffer));
             if (++_audioRecvCount % 250 === 1 || _audioRecvCount === 1) console.log(`[Audio] Recv #${_audioRecvCount} from '${senderName}' (${payload.length}B wire → ${stereo.buffer.byteLength}B stereo)`);
           } catch (err) {
             console.error('[UDP] Voice decode error:', err.message);
@@ -1387,7 +1404,7 @@ function startVoice(host, port, username) {
           try {
             const decrypted = e2eeDecrypt(payload, getVoiceE2eeKey());
             const pcm = screenCodec.decode(decrypted);
-            mainWindow?.webContents.send('udp:screen-audio', senderName, Buffer.from(pcm));
+            sendToMainWindow('udp:screen-audio', senderName, Buffer.from(pcm));
             if (++_screenAudioRecvCount % 250 === 1 || _screenAudioRecvCount === 1) console.log(`[ScreenAudio] Recv #${_screenAudioRecvCount} from '${senderName}' (${payload.length}B wire → ${pcm.length}B stereo)`);
           } catch (err) {
             console.error('[UDP] Screen audio decode error:', err.message);

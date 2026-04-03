@@ -237,6 +237,30 @@ Toggle trust via right-click → "Mark as trusted/untrusted" on any server card 
 
 Click any text channel in the left sidebar to join it. The channel name is prefixed with `#` (public) or a lock icon (role-restricted).
 
+### Searching Messages
+
+- Click the **search icon** in the channel header.
+- Enter a query to search messages in the current channel.
+- Results show sender, time, and snippet; click a result to jump to that message.
+- Use **Load more** to fetch older matches.
+- Keyboard shortcut: `Ctrl+F` / `Cmd+F` opens channel search.
+
+### Replying to Messages
+
+- Right-click a message and choose **Reply**.
+- A reply context pill appears above the composer; click **X** to cancel.
+- Sent replies show a quoted parent preview.
+- Clicking the quoted preview jumps to the parent message (or shows a fallback status if not loaded/deleted).
+- Keyboard shortcuts:
+  - `Ctrl+R` / `Cmd+R` prepares a reply to the latest message in the current channel.
+  - `Esc` clears the active reply target.
+
+### Error Messages (common)
+
+- Invite-only registration without token: "Registration requires an invite code for this server."
+- Invalid/expired invite: "Invite code is invalid or expired."
+- Search permission denied: "You do not have access to search this channel."
+
 ### Sending Messages
 
 Type in the input bar at the bottom and press **Enter** to send. Messages appear in real-time for all users in the channel.
@@ -477,6 +501,7 @@ Available permissions:
 | `manage_soundboard` | Upload/delete soundboard sounds |
 | `manage_emojis` | Upload/delete custom emojis |
 | `server_settings` | Update server configuration |
+| `announce` | Post in read-only / announcement text channels |
 
 ### Room Management
 
@@ -485,6 +510,9 @@ Users with `create_rooms` permission can:
 - Right-click a channel → "Edit channel" to rename or change role restrictions.
 - Right-click → "Delete channel" (requires `delete_rooms`).
 - Drag channels to reorder (requires `reorder_rooms`).
+
+Text channels can be marked **read-only** (announcement mode). In read-only channels,
+only users with `announce` (or `admin`) can post; others see the composer disabled.
 
 ### Soundboard Management
 
@@ -506,6 +534,15 @@ Users with `server_settings` permission can edit:
 - Server name and logo.
 - Camera/screen share resolution and bitrate limits.
 - Max FPS, voice bitrate, and file size limits.
+
+Users with `server_settings` can also manage **Invites**:
+- Create one-time or limited-use invite codes.
+- Set optional expiry dates.
+- Copy/revoke existing invites and refresh the invite list.
+
+If `InviteOnly` is enabled on the server, registration requires an invite code.
+In the login dialog, switch to **REGISTER** and enter the invite code in the
+Invite Code field (sent using `REGISTER_WITH_INVITE`).
 
 Click the 🛡️ shield icon in the bottom-left controls to open.
 

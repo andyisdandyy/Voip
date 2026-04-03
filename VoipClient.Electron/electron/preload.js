@@ -2,8 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // ── TCP Chat (multi-server) ────────────────────────────────
-  connectChat: (serverId, host, port, username, password, isRegister, serverPassword) =>
-    ipcRenderer.invoke('tcp:connect', serverId, host, port, username, password, isRegister, serverPassword),
+  connectChat: (serverId, host, port, username, password, isRegister, serverPassword, inviteCode) =>
+    ipcRenderer.invoke('tcp:connect', serverId, host, port, username, password, isRegister, serverPassword, inviteCode),
 
   sendChat: (serverId, message) =>
     ipcRenderer.send('tcp:send', serverId, message),

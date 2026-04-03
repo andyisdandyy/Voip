@@ -165,6 +165,9 @@ public class NotificationServer
             d.Cts.Cancel();
             clients.TryRemove(d, out _);
         }
+
+        if (clients.IsEmpty)
+            _subscribers.TryRemove(targetUsername, out _);
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -172,12 +175,19 @@ public class NotificationServer
         _listener.Start();
         _log?.Invoke($"[SSE] Notification server listening on {_listener.Prefixes.First()}");
 
+        using var stopRegistration = ct.Register(() =>
+        {
+            try { _listener.Stop(); } catch { }
+        });
+
         // Periodic token cleanup
         _ = Task.Run(async () =>
         {
             while (!ct.IsCancellationRequested)
             {
-                await Task.Delay(TimeSpan.FromMinutes(30), ct).ConfigureAwait(false);
+                try { await Task.Delay(TimeSpan.FromMinutes(30), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+
                 foreach (var kv in _tokens)
                 {
                     if (DateTime.UtcNow - kv.Value.issuedAt > TokenLifetime)
@@ -208,7 +218,8 @@ public class NotificationServer
         var response = context.Response;
 
         // Only accept GET /events
-        if (request.HttpMethod != "GET" || request.Url?.AbsolutePath != "/events")
+        if (!string.Equals(request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(request.Url?.AbsolutePath, "/events", StringComparison.Ordinal))
         {
             response.StatusCode = 404;
             response.Close();
@@ -274,6 +285,8 @@ public class NotificationServer
         finally
         {
             bag.TryRemove(client, out _);
+            if (bag.IsEmpty)
+                _subscribers.TryRemove(username, out _);
             cts.Cancel();
             _log?.Invoke($"[SSE] '{username}' disconnected from notifications");
             if (OnPresenceChanged is { } onDisconnect) _ = Task.Run(onDisconnect);

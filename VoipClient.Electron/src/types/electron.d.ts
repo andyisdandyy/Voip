@@ -1,7 +1,7 @@
 export {};
 
 interface ElectronAPI {
-  connectChat: (serverId: string, host: string, port: number, username: string, password: string, isRegister: boolean, serverPassword?: string) => Promise<{ success: boolean }>;
+  connectChat: (serverId: string, host: string, port: number, username: string, password: string, isRegister: boolean, serverPassword?: string, inviteCode?: string) => Promise<{ success: boolean }>;
   sendChat: (serverId: string, message: string) => void;
   disconnectChat: (serverId?: string) => void;
   requestDiag: (serverId: string) => void;

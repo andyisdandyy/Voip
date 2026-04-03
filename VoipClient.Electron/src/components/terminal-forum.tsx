@@ -5,29 +5,52 @@ import {
   Trash2, UserPlus, Video, VideoOff, Share2, Minus, Square, Maximize, Minimize2,
   Plus, LogOut, Command, Wifi, WifiOff, Home, Paperclip, Download, FileText, Send, Smile, Moon, Image as ImageIcon,
   Music, Upload, Play, Trash, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Eye, EyeOff, Shield, Sliders, Users, Check,
-  PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil, SmilePlus, RefreshCw,
+  PanelRightClose, PanelRightOpen, ExternalLink, Pin, Pencil, SmilePlus, RefreshCw, Megaphone, Search, CornerLeftUp,
 } from 'lucide-react';
 
 // ── Types ───────────────────────────────────────────────────
 
 interface VoiceRoom { name: string; allowedRoles: string[]; bitrate: number }
-interface TextRoom  { name: string; allowedRoles: string[] }
+interface TextRoom  { name: string; allowedRoles: string[]; readOnly: boolean }
 interface UserInfo  { name: string; voiceRoom: string | null; online: boolean; status: 'online' | 'away' | 'offline'; roles: string[]; roleColor: string | null; avatar: string | null; muted: boolean; deafened: boolean }
-interface ChatMsg   { id: string; msgId: string; sender: string; body: string; timestamp: number; edited?: boolean }
+interface ChatMsg   { id: string; msgId: string; sender: string; body: string; timestamp: number; edited?: boolean; replyToMessageId?: string | null }
 interface UserContextMenu { userId: string; x: number; y: number }
 interface MsgContextMenu { msgId: string; sender: string; room: string; x: number; y: number }
 interface UserSetting { name: string; volume: number; isMuted: boolean; soundboardMuted: boolean; screenMuted: boolean; screenVolume: number }
 interface PinnedServer { id: string; name: string; address: string; username?: string; password?: string; serverPassword?: string; autoConnect?: boolean; autoConnectTcp?: boolean; logo?: string; authToken?: string; ssePort?: number; trusted?: boolean }
-interface ServerInfo { serverName: string; serverLogo?: string; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string; ssePort?: number; fileServerPort?: number }
+interface ServerInfo { serverName: string; serverLogo?: string; inviteOnly?: boolean; voiceHost: string; udpPort: number; maxCameraWidth: number; maxCameraHeight: number; maxScreenWidth: number; maxScreenHeight: number; maxFps: number; maxScreenBitrate: number; maxFileSizeKB: number; maxSoundSizeKB: number; defaultBitrate: number; giphyApiKey?: string; ssePort?: number; fileServerPort?: number }
 interface ServerContextMenu { serverId: string; x: number; y: number }
 interface RoleInfo { name: string; color: string; priority: number; permissions: string[] }
 interface KeyBind { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
 interface DmTab { username: string; serverId: string }
 interface DmMessage { id: string; sender: string; body: string; timestamp: number }
+interface InviteEntry { token: string; createdBy: string; createdAt: string; maxUses?: number | null; uses: number; expiresAt?: string | null }
+interface SearchResultEntry { msgId: string; sender: string; body: string; timestamp: number; edited?: boolean }
+
+// ── Phase 0 protocol alignment (roadmap) ──────────────────
+const PROTOCOL = {
+  cmdSearch: 'CMD:SEARCH:',
+  searchResults: 'SEARCH_RESULTS:',
+  errorSearchInvalid: 'ERROR:SEARCH_INVALID',
+  errorSearchNoPermission: 'ERROR:SEARCH_NO_PERMISSION',
+  cmdCreateInvite: 'CMD:CREATE_INVITE',
+  cmdListInvites: 'CMD:LIST_INVITES',
+  cmdDeleteInvite: 'CMD:DELETE_INVITE:',
+  invites: 'INVITES:',
+  inviteCreated: 'INVITE_CREATED:',
+  inviteDeleted: 'INVITE_DELETED:',
+  msgReply: 'MSG_REPLY:',
+  msgEdited: 'MSG_EDITED:',
+  errorReadOnlyChannel: 'ERROR:READ_ONLY_CHANNEL',
+} as const;
 
 // Unique key for a DM tab — prevents collisions when two servers have users with the same name
 const dmTabKey = (dm: Pick<DmTab, 'username' | 'serverId'>): string =>
   `${dm.serverId}:${dm.username}`;
+
+// Unique key for per-peer DM crypto state (case-insensitive username)
+const dmPeerKey = (serverId: string, username: string): string =>
+  `${serverId}:${username.toLowerCase()}`;
 
 interface Friend { username: string; serverId: string }
 
@@ -48,10 +71,10 @@ function getVideoBitrate(width: number, height: number, fps: number): number {
   return Math.round(base * (fps / 30));
 }
 
-type ThemeColor = 'mono' | 'light' | 'custom';
+type ThemeColor = 'mono' | 'light' | 'dark' | 'custom';
 
 interface CustomThemeColors { accent: string; bg: string; surface: string; sidebar: string; border: string; text: string; textSecondary: string }
-const DEFAULT_CUSTOM_THEME: CustomThemeColors = { accent: '#3b82f6', bg: '#1a1a1a', surface: '#242424', sidebar: '#1e1e1e', border: '#333333', text: '#e0e0e0', textSecondary: '#888888' };
+const DEFAULT_CUSTOM_THEME: CustomThemeColors = { accent: '#5ec2ff', bg: '#111829', surface: '#182338', sidebar: '#141e31', border: '#2f4668', text: '#e9f1ff', textSecondary: '#a8bbd8' };
 
 function hexToHsl(hex: string): [number, number, number] {
   const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -91,16 +114,59 @@ function hexToRgb(hex: string): string {
   return `${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}`;
 }
 
+function getRawMsgId(msg: any): string {
+  const raw = msg?.Id ?? msg?.id ?? msg?.MsgId ?? msg?.msgId ?? '';
+  return typeof raw === 'string' ? raw : String(raw);
+}
+
+function getRawMsgTimestamp(msg: any): number {
+  const raw = msg?.Time ?? msg?.time ?? msg?.Timestamp ?? msg?.timestamp;
+  const parsed = new Date(raw ?? 0).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function getRawReplyToMessageId(msg: any): string | null {
+  const raw = msg?.ReplyToMessageId ?? msg?.replyToMessageId ?? msg?.ReplyToMsgId ?? msg?.reply_to_msg_id ?? null;
+  if (raw === null || raw === undefined) return null;
+  const v = typeof raw === 'string' ? raw : String(raw);
+  return v.trim() ? v : null;
+}
+
+function getPinnedDedupKey(msg: Pick<ChatMsg, 'msgId' | 'sender' | 'timestamp' | 'body'>): string {
+  return msg.msgId || `${msg.sender}|${msg.timestamp}|${msg.body}`;
+}
+
 function parseAddress(addr: string): { host: string; port: number } {
   const trimmed = addr.trim();
+  if (!trimmed) return { host: '', port: 5001 };
+
+  // Bracketed IPv6: [::1]:5001 or [::1]
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
+    if (end > 0) {
+      const host = trimmed.substring(1, end);
+      const rest = trimmed.substring(end + 1);
+      if (rest.startsWith(':')) {
+        const portStr = rest.substring(1);
+        const port = parseInt(portStr, 10);
+        if (!isNaN(port) && port > 0 && port <= 65535 && /^\d+$/.test(portStr)) {
+          return { host, port };
+        }
+      }
+      return { host, port: 5001 };
+    }
+  }
+
+  // host:port (single colon only)
   const colonIdx = trimmed.lastIndexOf(':');
-  if (colonIdx > 0) {
+  if (colonIdx > 0 && trimmed.indexOf(':') === colonIdx) {
     const portStr = trimmed.substring(colonIdx + 1);
-    const port = parseInt(portStr);
+    const port = parseInt(portStr, 10);
     if (!isNaN(port) && port > 0 && port <= 65535 && /^\d+$/.test(portStr)) {
       return { host: trimmed.substring(0, colonIdx), port };
     }
   }
+
   return { host: trimmed, port: 5001 };
 }
 
@@ -226,6 +292,13 @@ export function TerminalForum() {
   const [roomLoadingMore, setRoomLoadingMore] = useState<Record<string, boolean>>({});
   const [unreadRooms, setUnreadRooms] = useState<Set<string>>(new Set());
   const [mentionedRooms, setMentionedRooms] = useState<Record<string, number>>({});
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchResults, setSearchResults] = useState<SearchResultEntry[]>([]);
+  const [searchCursorByRoom, setSearchCursorByRoom] = useState<Record<string, string | null>>({});
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false);
+  const [activeSearchRoom, setActiveSearchRoom] = useState<string | null>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
   // Users
@@ -284,6 +357,7 @@ export function TerminalForum() {
   const [isRegister, setIsRegister] = useState(false);
   const [msgContextMenu, setMsgContextMenu] = useState<MsgContextMenu | null>(null);
   const [editingMsg, setEditingMsg] = useState<{ msgId: string; room: string; body: string } | null>(null);
+  const [replyTarget, setReplyTarget] = useState<{ room: string; msgId: string; sender: string; body: string } | null>(null);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; dataUrl: string } | null>(null);
   const [fileUploadStatus, setFileUploadStatus] = useState<string | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
@@ -305,8 +379,9 @@ export function TerminalForum() {
   const [screenShareFps, setScreenShareFps] = useState<VideoFps>(30);
   const [screenShareBitrate, setScreenShareBitrate] = useState(10000);
   const [screenShareVbr, setScreenShareVbr] = useState(false);
-  const [serverPasswordDialog, setServerPasswordDialog] = useState<{ address: string; username: string; password: string; isRegister: boolean; serverId?: string } | null>(null);
+  const [serverPasswordDialog, setServerPasswordDialog] = useState<{ address: string; username: string; password: string; isRegister: boolean; serverId?: string; inviteCode?: string } | null>(null);
   const [serverPasswordInput, setServerPasswordInput] = useState('');
+  const [registerInviteCode, setRegisterInviteCode] = useState('');
   const [screenSources, setScreenSources] = useState<Array<{id: string; name: string; thumbnail: string; appIcon: string | null; isScreen: boolean}>>([]);
   const [screenSourcesLoaded, setScreenSourcesLoaded] = useState(false);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
@@ -315,8 +390,8 @@ export function TerminalForum() {
   const [logoEditor, setLogoEditor] = useState<{ img: HTMLImageElement; zoom: number; offsetX: number; offsetY: number } | null>(null);
   const [emojiEditor, setEmojiEditor] = useState<{ img: HTMLImageElement; zoom: number; offsetX: number; offsetY: number; name: string } | null>(null);
   const [theme, setTheme] = useState<ThemeColor>(() => {
-    try { return (localStorage.getItem('voip-theme') as ThemeColor) || 'mono'; }
-    catch { return 'mono'; }
+    try { return (localStorage.getItem('voip-theme') as ThemeColor) || 'light'; }
+    catch { return 'light'; }
   });
   const [customTheme, setCustomTheme] = useState<CustomThemeColors>(() => {
     try { return { ...DEFAULT_CUSTOM_THEME, ...JSON.parse(localStorage.getItem('voip-custom-theme') || '{}') }; }
@@ -380,6 +455,17 @@ export function TerminalForum() {
   const dmInputRef = useRef<HTMLInputElement>(null);
   const dmFileInputRef = useRef<HTMLInputElement>(null);
   const activeDmTabRef = useRef<string | null>(null);
+  const roomMessagesRef = useRef<Record<string, ChatMsg[]>>({});
+
+  useEffect(() => {
+    setSearchResults([]);
+    setSearchError(null);
+    setSearchLoading(false);
+    setSearchPanelOpen(false);
+    setSearchCursorByRoom({});
+    setActiveSearchRoom(null);
+  }, [currentTextRoom]);
+  useEffect(() => { roomMessagesRef.current = roomMessages; }, [roomMessages]);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -405,6 +491,8 @@ export function TerminalForum() {
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const captureVideoElRef = useRef<HTMLVideoElement | null>(null);
   const videoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const videoFrameCallbackRef = useRef<number | null>(null);
+  const videoFrameSourceRef = useRef<HTMLVideoElement | null>(null);
   const activeVideosRef = useRef<Set<string>>(new Set());
   const videoTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const selectedVideoInputRef = useRef('');
@@ -416,6 +504,8 @@ export function TerminalForum() {
   const videoEncoderRef = useRef<VideoEncoder | null>(null);
   const videoCodecRef = useRef<string>('h264');
   const videoDecodersRef = useRef<Record<string, VideoDecoder>>({});
+  const videoCanvasRefs = useRef<Record<string, HTMLCanvasElement | null>>({});
+  const videoCanvasCtxRefs = useRef<Record<string, CanvasRenderingContext2D | null>>({});
   const decoderTsRef = useRef<Record<string, number>>({});
   const gotKeyframeRef = useRef<Record<string, boolean>>({});
   const forceKeyframeRef = useRef(false);
@@ -459,6 +549,19 @@ export function TerminalForum() {
   const ecdhPublicKeyB64Ref = useRef<string>('');
   const dmSharedKeysRef = useRef<Map<string, CryptoKey>>(new Map());
   const pendingDmKeyCallbacksRef = useRef<Map<string, Array<(key: CryptoKey | null) => void>>>(new Map());
+
+  const clearDmCryptoForServer = (serverId: string | null) => {
+    if (!serverId) return;
+    const prefix = `${serverId}:`;
+    for (const key of dmSharedKeysRef.current.keys()) {
+      if (key.startsWith(prefix)) dmSharedKeysRef.current.delete(key);
+    }
+    for (const [key, cbs] of pendingDmKeyCallbacksRef.current.entries()) {
+      if (!key.startsWith(prefix)) continue;
+      pendingDmKeyCallbacksRef.current.delete(key);
+      cbs.forEach(cb => cb(null));
+    }
+  };
 
   // ── Multi-server state cache ──────────────────────────────
   // Stores per-server state snapshots for background servers.
@@ -511,10 +614,6 @@ export function TerminalForum() {
     setE2eeActive(false); setE2eePrompt(false); e2eeKeyRef.current = null;
     setSelectedVideoFeed(null);
     setActiveDmTab(null); setOpenDmTabs([]); setDmMessages({}); setDmKeyFingerprints({});
-    // Clear per-server DM shared keys (not the session key pair itself)
-    dmSharedKeysRef.current.clear();
-    pendingDmKeyCallbacksRef.current.forEach(cbs => cbs.forEach(cb => cb(null)));
-    pendingDmKeyCallbacksRef.current.clear();
   }
 
   // ── ECDH DM encryption helpers ───────────────────────────
@@ -556,17 +655,26 @@ export function TerminalForum() {
     } catch { return null; }
   }
 
-  async function getDmSharedKey(username: string): Promise<CryptoKey | null> {
-    const cached = dmSharedKeysRef.current.get(username);
+  async function getDmSharedKey(serverId: string, username: string): Promise<CryptoKey | null> {
+    const peer = dmPeerKey(serverId, username);
+    const cached = dmSharedKeysRef.current.get(peer);
     if (cached) return cached;
-    sendToServer(`CMD:GET_DM_KEY:${username}`);
+    window.electronAPI.sendChat(serverId, `CMD:GET_DM_KEY:${username}`);
     return new Promise<CryptoKey | null>((resolve) => {
       let done = false;
       const cb = (key: CryptoKey | null) => { if (done) return; done = true; resolve(key); };
-      const existing = pendingDmKeyCallbacksRef.current.get(username) || [];
+      const existing = pendingDmKeyCallbacksRef.current.get(peer) || [];
       existing.push(cb);
-      pendingDmKeyCallbacksRef.current.set(username, existing);
-      setTimeout(() => cb(null), 5000);
+      pendingDmKeyCallbacksRef.current.set(peer, existing);
+      setTimeout(() => {
+        const callbacks = pendingDmKeyCallbacksRef.current.get(peer);
+        if (callbacks) {
+          const filtered = callbacks.filter(fn => fn !== cb);
+          if (filtered.length > 0) pendingDmKeyCallbacksRef.current.set(peer, filtered);
+          else pendingDmKeyCallbacksRef.current.delete(peer);
+        }
+        cb(null);
+      }, 5000);
     });
   }
 
@@ -705,7 +813,12 @@ export function TerminalForum() {
   // Settings
   const [showSettings, setShowSettings] = useState(false);
   const [showServerSettings, setShowServerSettings] = useState(false);
-  const [serverSettingsTab, setServerSettingsTab] = useState<'general' | 'roles' | 'soundboard' | 'emojis'>('general');
+  const [serverSettingsTab, setServerSettingsTab] = useState<'general' | 'roles' | 'soundboard' | 'emojis' | 'invites'>('general');
+  const [serverInvites, setServerInvites] = useState<InviteEntry[]>([]);
+
+  useEffect(() => {
+    if (!isRegister) setRegisterInviteCode('');
+  }, [isRegister]);
   const [audioInputs, setAudioInputs]   = useState<MediaDeviceInfo[]>([]);
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedInput, setSelectedInput]   = useState('');
@@ -771,6 +884,7 @@ export function TerminalForum() {
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomRoles, setNewRoomRoles] = useState<string[]>([]);
   const [newRoomBitrate, setNewRoomBitrate] = useState('96000');
+  const [newRoomReadOnly, setNewRoomReadOnly] = useState(false);
 
   // Role editing
   const [editingRole, setEditingRole] = useState<string | null>(null);
@@ -1326,6 +1440,42 @@ export function TerminalForum() {
     return () => window.removeEventListener('keydown', handler);
   }, [editingMsg]);
 
+  // Keyboard shortcuts for search/reply UX polish
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!currentTextRoomRef.current) return;
+      const target = e.target as HTMLElement | null;
+      const inInput = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setSearchPanelOpen(true);
+        setTimeout(() => {
+          const input = document.querySelector<HTMLInputElement>('input[placeholder="Search this channel..."]');
+          input?.focus();
+          input?.select();
+        }, 0);
+        return;
+      }
+      if (e.key === 'Escape' && replyTarget) {
+        e.preventDefault();
+        setReplyTarget(null);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r' && !inInput) {
+        const room = currentTextRoomRef.current;
+        if (!room) return;
+        const msgs = roomMessagesRef.current[room] || [];
+        if (msgs.length === 0) return;
+        const last = msgs[msgs.length - 1];
+        e.preventDefault();
+        setReplyTarget({ room, msgId: last.msgId, sender: last.sender, body: last.body });
+        setTimeout(() => inputRef.current?.focus(), 0);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [replyTarget]);
+
   // PTT key-up handler
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1422,6 +1572,7 @@ export function TerminalForum() {
         setServerInfo({
           serverName: d.ServerName || '',
           serverLogo: d.ServerLogo || undefined,
+          inviteOnly: !!d.InviteOnly,
           voiceHost: d.VoiceHost || '',
           udpPort: d.UdpPort || 5000,
           maxCameraWidth: d.MaxCameraWidth || 1920,
@@ -1493,6 +1644,7 @@ export function TerminalForum() {
         }));
         const newTextRooms: TextRoom[] = (d.TextRooms || []).map((r: any) => ({
           name: r.Name, allowedRoles: r.AllowedRoles || [],
+          readOnly: !!r.ReadOnly,
         }));
         setVoiceRooms(newVoiceRooms);
         setTextRooms(newTextRooms);
@@ -1547,6 +1699,24 @@ export function TerminalForum() {
           s.id === sid ? { ...s, authToken: token } : s
         ));
       }
+    } else if (line.startsWith(PROTOCOL.invites)) {
+      try {
+        const data: any[] = JSON.parse(line.substring(PROTOCOL.invites.length));
+        setServerInvites((data || []).map(i => ({
+          token: i.Token || i.token || '',
+          createdBy: i.CreatedBy || i.createdBy || '',
+          createdAt: i.CreatedAt || i.createdAt || '',
+          maxUses: i.MaxUses ?? i.maxUses ?? null,
+          uses: i.Uses ?? i.uses ?? 0,
+          expiresAt: i.ExpiresAt ?? i.expiresAt ?? null,
+        })));
+      } catch {}
+    } else if (line.startsWith(PROTOCOL.inviteCreated)) {
+      sendToServer('CMD:LIST_INVITES');
+      setStatus('Invite created');
+    } else if (line.startsWith(PROTOCOL.inviteDeleted)) {
+      sendToServer('CMD:LIST_INVITES');
+      setStatus('Invite revoked');
     } else if (line === 'KICKED') {
       setStatus('You were kicked from the server');
       setIsConnected(false);
@@ -1598,11 +1768,12 @@ export function TerminalForum() {
             const prevScrollTop = scrollEl?.scrollTop || 0;
             Promise.all(msgs.map(async m => ({
               id: crypto.randomUUID(),
-              msgId: m.Id || '',
+              msgId: getRawMsgId(m),
               sender: m.User || '',
               body: await e2eeDecryptText(m.Text || ''),
-              timestamp: new Date(m.Time).getTime(),
+              timestamp: getRawMsgTimestamp(m),
               edited: !!m.Edited,
+              replyToMessageId: getRawReplyToMessageId(m),
             }))).then(formatted => {
               setRoomMessages(prev => {
                 const existing = prev[room] || [];
@@ -1622,6 +1793,45 @@ export function TerminalForum() {
           } catch {}
         }
       }
+    } else if (line.startsWith(PROTOCOL.searchResults)) {
+      // SEARCH_RESULTS:<room>:<nextCursor>:<json>
+      const payload = line.substring(PROTOCOL.searchResults.length);
+      const i1 = payload.indexOf(':');
+      const i2 = i1 >= 0 ? payload.indexOf(':', i1 + 1) : -1;
+      if (i1 >= 0 && i2 >= 0) {
+        const room = payload.substring(0, i1);
+        const nextCursor = payload.substring(i1 + 1, i2) || null;
+        if (activeSearchRoom && room !== activeSearchRoom) return;
+        try {
+          const msgs: any[] = JSON.parse(payload.substring(i2 + 1));
+          Promise.all(msgs.map(async m => ({
+            msgId: getRawMsgId(m),
+            sender: m.User || '',
+            body: await e2eeDecryptText(m.Text || ''),
+            timestamp: getRawMsgTimestamp(m),
+            edited: !!m.Edited,
+            replyToMessageId: getRawReplyToMessageId(m),
+          }))).then(results => {
+            setSearchResults(prev => {
+              const seen = new Set(prev.map(r => r.msgId));
+              const merged = [...prev];
+              for (const r of results) {
+                if (!seen.has(r.msgId)) {
+                  seen.add(r.msgId);
+                  merged.push(r);
+                }
+              }
+              return merged;
+            });
+            setSearchCursorByRoom(prev => ({ ...prev, [room]: nextCursor }));
+            setSearchLoading(false);
+            setSearchError(null);
+          });
+        } catch {
+          setSearchLoading(false);
+          setSearchError('Could not read search results from server.');
+        }
+      }
     } else if (line.startsWith('MSG_DELETED:')) {
       const payload = line.substring(12);
       const idx = payload.indexOf(':');
@@ -1633,9 +1843,39 @@ export function TerminalForum() {
           [room]: (prev[room] || []).filter(m => m.msgId !== msgId),
         }));
       }
-    } else if (line.startsWith('MSG_EDITED:')) {
+    } else if (line.startsWith(PROTOCOL.msgReply)) {
+      // MSG_REPLY:<room>:<msgId>:<user>:<isoTime>:<replyToMsgId>:<text>
+      const payload = line.substring(PROTOCOL.msgReply.length);
+      const i1 = payload.indexOf(':');
+      const i2 = i1 >= 0 ? payload.indexOf(':', i1 + 1) : -1;
+      const i3 = i2 >= 0 ? payload.indexOf(':', i2 + 1) : -1;
+      const i4 = i3 >= 0 ? payload.indexOf(':', i3 + 1) : -1;
+      const i5 = i4 >= 0 ? payload.indexOf(':', i4 + 1) : -1;
+      if (i1 >= 0 && i2 >= 0 && i3 >= 0 && i4 >= 0 && i5 >= 0) {
+        const room = payload.substring(0, i1);
+        const msgId = payload.substring(i1 + 1, i2);
+        const sender = payload.substring(i2 + 1, i3);
+        const isoTime = payload.substring(i3 + 1, i4);
+        const replyToMsgId = payload.substring(i4 + 1, i5);
+        const text = payload.substring(i5 + 1);
+        e2eeDecryptText(text).then(body => {
+          setRoomMessages(prev => ({
+            ...prev,
+            [room]: [...(prev[room] || []), {
+              id: crypto.randomUUID(),
+              msgId,
+              sender,
+              body,
+              timestamp: new Date(isoTime).getTime() || Date.now(),
+              replyToMessageId: replyToMsgId || null,
+            }],
+          }));
+        });
+      }
+    } else if (line.startsWith(PROTOCOL.msgEdited)) {
       // MSG_EDITED:<room>:<msgId>:<newText>
-      const payload = line.substring(11);
+      // Thread metadata (e.g. replyToMessageId) must be preserved by id when this event arrives.
+      const payload = line.substring(PROTOCOL.msgEdited.length);
       const i1 = payload.indexOf(':');
       const i2 = i1 >= 0 ? payload.indexOf(':', i1 + 1) : -1;
       if (i1 >= 0 && i2 >= 0) {
@@ -1678,7 +1918,7 @@ export function TerminalForum() {
       const text = rest2.substring(i3 + 1);
       const now = Date.now();
       if (sender !== nicknameRef.current) {
-        const level = resolveNotifLevel(connectedServerIdRef.current ?? '', room);
+        const level = resolveNotifLevel(serverId, room);
         if (level === 'all') playUiSound('message');
         if (level !== 'none') {
           if (viewModeRef.current !== 'text' || currentTextRoomRef.current !== room) {
@@ -1689,7 +1929,7 @@ export function TerminalForum() {
       e2eeDecryptText(text).then(body => {
         setRoomMessages(prev => ({
           ...prev,
-          [room]: [...(prev[room] || []), { id: crypto.randomUUID(), msgId, sender, body, timestamp: now }],
+          [room]: [...(prev[room] || []), { id: crypto.randomUUID(), msgId, sender, body, timestamp: now, replyToMessageId: null }],
         }));
       });
     } else if (line.startsWith('TYPING:')) {
@@ -1739,12 +1979,13 @@ export function TerminalForum() {
           const msgs: any[] = JSON.parse(payload.substring(idx + 1));
           Promise.all(msgs.map(async m => ({
             id: crypto.randomUUID(),
-            msgId: m.Id || '',
+            msgId: getRawMsgId(m),
             sender: m.User || '',
             body: await e2eeDecryptText(m.Text || ''),
-            timestamp: new Date(m.Time).getTime(),
+            timestamp: getRawMsgTimestamp(m),
           }))).then(formatted => {
-            setPinnedMessages(prev => ({ ...prev, [room]: formatted }));
+            const deduped = formatted.filter((m, i, arr) => arr.findIndex(x => getPinnedDedupKey(x) === getPinnedDedupKey(m)) === i);
+            setPinnedMessages(prev => ({ ...prev, [room]: deduped }));
           });
         } catch {}
       }
@@ -1759,15 +2000,20 @@ export function TerminalForum() {
         setRoomMessages(prev => {
           const msgs = prev[room] || [];
           const msg = msgs.find(m => m.msgId === msgId);
-          if (msg) {
-            setPinnedMessages(p => ({
-              ...p,
-              [room]: [...(p[room] || []), msg],
-            }));
-          }
-          return prev;
-        });
-      }
+            if (msg) {
+              setPinnedMessages(p => {
+                const current = p[room] || [];
+                const msgKey = getPinnedDedupKey(msg);
+                if (current.some(existing => getPinnedDedupKey(existing) === msgKey)) return p;
+                return {
+                  ...p,
+                  [room]: [...current, msg],
+                };
+              });
+            }
+            return prev;
+          });
+        }
     } else if (line.startsWith('MSG_UNPINNED:')) {
       // MSG_UNPINNED:<room>:<msgId>
       const payload = line.substring(13);
@@ -1780,6 +2026,14 @@ export function TerminalForum() {
           [room]: (prev[room] || []).filter(m => m.msgId !== msgId),
         }));
       }
+    } else if (line === PROTOCOL.errorReadOnlyChannel) {
+      setStatus('⚠ This channel is read-only. You need announce permission to post.');
+    } else if (line === PROTOCOL.errorSearchInvalid) {
+      setSearchLoading(false);
+      setSearchError('Search request is invalid. Try a shorter query or reset filters.');
+    } else if (line === PROTOCOL.errorSearchNoPermission) {
+      setSearchLoading(false);
+      setSearchError('You do not have access to search this channel.');
     } else if (line.startsWith('ERROR:')) {
       setStatus(`⚠ ${line.substring(6)}`);
     } else if (line.startsWith('CAMERA_ON:')) {
@@ -1832,7 +2086,7 @@ export function TerminalForum() {
         const sender = line.substring(i1 + 1, i2);
         const rawBody = line.substring(i2 + 1);
         const notifBody = rawBody && !rawBody.startsWith('ENC:') ? rawBody.substring(0, 100) : undefined;
-        const level = resolveNotifLevel(connectedServerIdRef.current ?? '', room);
+        const level = resolveNotifLevel(serverId, room);
         if (level !== 'none') {
           playUiSound('message');
           window.electronAPI.showNotification(`@${sender} i #${room}`, notifBody);
@@ -1847,11 +2101,12 @@ export function TerminalForum() {
       if (i1 >= 0) {
         const username = line.substring(7, i1);
         const pubKeyB64 = line.substring(i1 + 1);
-        const callbacks = pendingDmKeyCallbacksRef.current.get(username) || [];
-        pendingDmKeyCallbacksRef.current.delete(username);
+        const peer = dmPeerKey(serverId, username);
+        const callbacks = pendingDmKeyCallbacksRef.current.get(peer) || [];
+        pendingDmKeyCallbacksRef.current.delete(peer);
         if (pubKeyB64) {
           deriveDmSharedKey(pubKeyB64).then(key => {
-            if (key) dmSharedKeysRef.current.set(username, key);
+            if (key) dmSharedKeysRef.current.set(peer, key);
             callbacks.forEach(cb => cb(key));
           });
           const raw = Uint8Array.from(atob(pubKeyB64), c => c.charCodeAt(0));
@@ -1881,16 +2136,17 @@ export function TerminalForum() {
           if (activeDmTabRef.current !== dmKey_str) {
             setDmUnreadCounts(prev => ({ ...prev, [dmKey_str]: (prev[dmKey_str] || 0) + 1 }));
           }
-          const dmLevel = resolveNotifLevel(connectedServerIdRef.current ?? '');
+          const dmLevel = resolveNotifLevel(serverId);
           if (notificationSoundsRef.current && dmLevel !== 'none') playUiSound('message');
           if (dmLevel !== 'none') window.electronAPI.showNotification(`DM from ${fromUser}`, body.substring(0, 100));
         };
         if (rawText.startsWith('DMENC:')) {
-          const cachedKey = dmSharedKeysRef.current.get(fromUser);
+          const peer = dmPeerKey(serverId, fromUser);
+          const cachedKey = dmSharedKeysRef.current.get(peer);
           if (cachedKey) {
             dmDecrypt(rawText, cachedKey).then(handleDecrypted);
           } else {
-            getDmSharedKey(fromUser).then(key => {
+            getDmSharedKey(serverId, fromUser).then(key => {
               (key ? dmDecrypt(rawText, key) : Promise.resolve(rawText)).then(handleDecrypted);
             });
           }
@@ -1910,11 +2166,12 @@ export function TerminalForum() {
           setDmMessages(prev => ({ ...prev, [dmKey_str]: [...(prev[dmKey_str] || []), msg] }));
         };
         if (rawText.startsWith('DMENC:')) {
-          const cachedKey = dmSharedKeysRef.current.get(target);
+          const peer = dmPeerKey(serverId, target);
+          const cachedKey = dmSharedKeysRef.current.get(peer);
           if (cachedKey) {
             dmDecrypt(rawText, cachedKey).then(handleDecrypted);
           } else {
-            getDmSharedKey(target).then(key => {
+            getDmSharedKey(serverId, target).then(key => {
               (key ? dmDecrypt(rawText, key) : Promise.resolve(rawText)).then(handleDecrypted);
             });
           }
@@ -1968,7 +2225,10 @@ export function TerminalForum() {
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
           let audioCtx = audioCtxRef.current;
           if (!audioCtx || audioCtx.state === 'closed') {
-            audioCtx = new AudioContext({ sampleRate: 48000 });
+            if (!uiSoundCtxRef.current || uiSoundCtxRef.current.state === 'closed') {
+              uiSoundCtxRef.current = new AudioContext({ sampleRate: 48000 });
+            }
+            audioCtx = uiSoundCtxRef.current;
           }
           if (audioCtx.state === 'suspended') {
             audioCtx.resume().catch(() => {});
@@ -2015,6 +2275,7 @@ export function TerminalForum() {
         setConnectedServerIds(prev => { const s = new Set(prev); s.delete(serverId); return s; });
       }),
       window.electronAPI.onChatDisconnected((serverId) => {
+        clearDmCryptoForServer(serverId);
         setConnectedServerIds(prev => { const s = new Set(prev); s.delete(serverId); return s; });
         delete serverStatesRef.current[serverId];
         // If the voice server disconnected (even in background), clean up audio
@@ -2109,12 +2370,12 @@ export function TerminalForum() {
           const decoderCodec = codec === 'vp8' ? 'vp8' : 'avc1.640028';
           decoder = new VideoDecoder({
             output: (frame) => {
-              const canvasEl = document.getElementById(`vc-${senderName}`) as HTMLCanvasElement | null;
-              if (canvasEl) {
+              const canvasEl = videoCanvasRefs.current[senderName];
+              const ctx = videoCanvasCtxRefs.current[senderName];
+              if (canvasEl && ctx) {
                 canvasEl.width = frame.displayWidth;
                 canvasEl.height = frame.displayHeight;
-                const ctx = canvasEl.getContext('2d');
-                if (ctx) ctx.drawImage(frame, 0, 0);
+                ctx.drawImage(frame, 0, 0);
               }
               frame.close();
             },
@@ -2175,7 +2436,7 @@ export function TerminalForum() {
         continue;
       }
       if (server.autoConnect && server.authToken && server.ssePort) {
-        const { host } = parseAddress(server.address);
+        const host = parseHostFromAddress(server.address);
         window.electronAPI.startAutoConnect(server.id, host, server.ssePort, server.authToken);
       } else {
         window.electronAPI.stopAutoConnect(server.id);
@@ -2197,7 +2458,8 @@ export function TerminalForum() {
     (async () => {
       for (const server of targets) {
         if (connectedServerIds.has(server.id)) continue;
-        const { host, port } = parseAddress(server.address);
+        const { port } = parseAddress(server.address);
+        const host = parseHostFromAddress(server.address);
         setConnecting(true);
         setConnectingToServerId(server.id);
         nicknameRef.current = server.username!;
@@ -2392,6 +2654,43 @@ export function TerminalForum() {
     return { encoder, codec: codecId };
   }
 
+  function stopVideoCaptureLoop() {
+    if (videoIntervalRef.current) {
+      clearInterval(videoIntervalRef.current);
+      videoIntervalRef.current = null;
+    }
+    const source = videoFrameSourceRef.current as (HTMLVideoElement & { cancelVideoFrameCallback?: (handle: number) => void }) | null;
+    if (source && videoFrameCallbackRef.current != null && typeof source.cancelVideoFrameCallback === 'function') {
+      try { source.cancelVideoFrameCallback(videoFrameCallbackRef.current); } catch {}
+    }
+    videoFrameCallbackRef.current = null;
+    videoFrameSourceRef.current = null;
+  }
+
+  function startVideoCaptureLoop(videoEl: HTMLVideoElement, fps: number, captureFrame: () => void) {
+    stopVideoCaptureLoop();
+    const frameVideo = videoEl as HTMLVideoElement & {
+      requestVideoFrameCallback?: (callback: (...args: any[]) => void) => number;
+    };
+    if (typeof frameVideo.requestVideoFrameCallback === 'function') {
+      videoFrameSourceRef.current = videoEl;
+      const schedule = () => {
+        if (captureVideoElRef.current !== videoEl || !videoEncoderRef.current) {
+          videoFrameCallbackRef.current = null;
+          videoFrameSourceRef.current = null;
+          return;
+        }
+        videoFrameCallbackRef.current = frameVideo.requestVideoFrameCallback!(() => {
+          try { captureFrame(); }
+          finally { schedule(); }
+        });
+      };
+      schedule();
+      return;
+    }
+    videoIntervalRef.current = setInterval(captureFrame, Math.max(1, Math.round(1000 / fps)));
+  }
+
   async function startCamera() {
     if (captureTypeRef.current !== 'none') stopVideoCapture();
     try {
@@ -2426,19 +2725,23 @@ export function TerminalForum() {
       const ctx = canvas.getContext('2d')!;
       let frameCount = 0;
       let lastTime = -1;
+      let lastEncodeAt = 0;
       const keyInterval = capFps * 2;
-      videoIntervalRef.current = setInterval(() => {
+      startVideoCaptureLoop(videoEl, capFps, () => {
         if (videoEl.readyState >= 2 && enc.state === 'configured' && videoEl.currentTime !== lastTime) {
+          const nowMs = performance.now();
+          if (nowMs - lastEncodeAt < (1000 / capFps) * 0.9) return;
+          lastEncodeAt = nowMs;
           lastTime = videoEl.currentTime;
           ctx.drawImage(videoEl, 0, 0, capW, capH);
-          const frame = new VideoFrame(canvas, { timestamp: performance.now() * 1000 });
+          const frame = new VideoFrame(canvas, { timestamp: nowMs * 1000 });
           const forceKey = forceKeyframeRef.current;
           if (forceKey) forceKeyframeRef.current = false;
           enc.encode(frame, { keyFrame: frameCount % keyInterval === 0 || forceKey });
           frame.close();
           frameCount++;
         }
-      }, Math.round(1000 / capFps));
+      });
       captureTypeRef.current = 'camera';
       setIsCameraOn(true);
       sendToVoice('CMD:CAMERA_ON');
@@ -2538,19 +2841,23 @@ export function TerminalForum() {
       const ctx2 = canvas.getContext('2d')!;
       let frameCount = 0;
       let lastTime = -1;
+      let lastEncodeAt = 0;
       const keyInterval = capFps * 2;
-      videoIntervalRef.current = setInterval(() => {
+      startVideoCaptureLoop(videoEl, capFps, () => {
         if (videoEl.readyState >= 2 && enc.state === 'configured' && videoEl.currentTime !== lastTime) {
+          const nowMs = performance.now();
+          if (nowMs - lastEncodeAt < (1000 / capFps) * 0.9) return;
+          lastEncodeAt = nowMs;
           lastTime = videoEl.currentTime;
           ctx2.drawImage(videoEl, 0, 0, ew, eh);
-          const frame = new VideoFrame(canvas, { timestamp: performance.now() * 1000 });
+          const frame = new VideoFrame(canvas, { timestamp: nowMs * 1000 });
           const forceKey = forceKeyframeRef.current;
           if (forceKey) forceKeyframeRef.current = false;
           enc.encode(frame, { keyFrame: frameCount % keyInterval === 0 || forceKey });
           frame.close();
           frameCount++;
         }
-      }, Math.round(1000 / capFps));
+      });
       stream.getVideoTracks()[0]?.addEventListener('ended', () => stopVideoCapture());
       captureTypeRef.current = 'screen';
       setIsScreenSharing(true);
@@ -2567,10 +2874,7 @@ export function TerminalForum() {
   }
 
   function stopVideoCapture() {
-    if (videoIntervalRef.current) {
-      clearInterval(videoIntervalRef.current);
-      videoIntervalRef.current = null;
-    }
+    stopVideoCaptureLoop();
     if (videoEncoderRef.current) {
       try { videoEncoderRef.current.close(); } catch {}
       videoEncoderRef.current = null;
@@ -2868,7 +3172,7 @@ export function TerminalForum() {
         const fileName = parts[1];
         const mimeType = parts.slice(2).join(':');
         const currentServer = pinnedServers.find(s => s.id === connectedServerIdRef.current);
-        const serverHost = currentServer?.address?.split(':')[0] || '';
+        const serverHost = currentServer ? parseHostFromAddress(currentServer.address) : '';
         const filePort = serverInfo?.fileServerPort;
         const fileUrl = filePort ? `http://${serverHost}:${filePort}/file/${fileId}` : '';
         if (mimeType.startsWith('video/') && fileUrl) {
@@ -3049,6 +3353,16 @@ export function TerminalForum() {
     }
   }
 
+  const parseHostFromAddress = (addr: string): string => {
+    const trimmed = addr.trim();
+    if (trimmed.startsWith('[')) {
+      const end = trimmed.indexOf(']');
+      if (end > 0) return trimmed.substring(1, end);
+    }
+    const { host } = parseAddress(addr);
+    return host;
+  };
+
   // ── Call duration timer
 
   useEffect(() => {
@@ -3154,7 +3468,7 @@ export function TerminalForum() {
   const offlineUsersList = useMemo(() => onlineUsers.filter(u => !u.online), [onlineUsers]);
 
   const myPermissions = useMemo(() => {
-    const ALL_PERMS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings'];
+    const ALL_PERMS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings', 'announce'];
     const perms = new Set<string>();
     const myUser = onlineUsers.find(u => u.name === nickname);
     if (myUser) {
@@ -3269,7 +3583,8 @@ export function TerminalForum() {
       resetServerState();
     }
     if (server.username && server.password) {
-      const { host, port } = parseAddress(server.address);
+      const { port } = parseAddress(server.address);
+      const host = parseHostFromAddress(server.address);
       window.electronAPI.stopAutoConnect(server.id);
       setConnecting(true);
       setConnectingToServerId(server.id);
@@ -3294,11 +3609,13 @@ export function TerminalForum() {
         connectedServerIdRef.current = prevServerId;
         const msg = err?.message || '';
         if (msg.includes('SERVER_PASSWORD_REQUIRED') || msg.includes('SERVER_PASSWORD_FAIL')) {
-          setServerPasswordDialog({ address: server.address, username: server.username, password: server.password, isRegister: false, serverId: server.id });
+          setServerPasswordDialog({ address: server.address, username: server.username, password: server.password, isRegister: false, serverId: server.id, inviteCode: '' });
           setServerPasswordInput('');
           setStatus(msg.includes('FAIL') ? 'Forkert server-adgangskode' : 'Server kræver adgangskode');
         } else {
-          setStatus(`Failed: ${msg}`);
+          if (msg.includes('invite-only')) setStatus('Registration requires an invite code for this server.');
+          else if (msg.includes('Invalid or expired invite code') || msg.includes('expired invite')) setStatus('Invite code is invalid or expired.');
+          else setStatus(`Connection failed: ${msg}`);
         }
       }
       setConnectingToServerId(null);
@@ -3307,6 +3624,7 @@ export function TerminalForum() {
       setLoginDialog(server.id);
       setNickname('');
       setPassword('');
+      setRegisterInviteCode('');
       setIsRegister(false);
     }
   };
@@ -3318,14 +3636,15 @@ export function TerminalForum() {
     if (!server) return;
     setConnecting(true);
     setStatus(isRegister ? 'Registering...' : 'Logging in...');
-    const { host, port } = parseAddress(server.address);
+    const { port } = parseAddress(server.address);
+    const host = parseHostFromAddress(server.address);
     // Set ref BEFORE await so incoming messages are recognized as active server
     const prevServerId = connectedServerIdRef.current;
     connectedServerIdRef.current = loginDialog;
     try {
       nicknameRef.current = nickname;
       connectedHostRef.current = host;
-      await window.electronAPI.connectChat(loginDialog, host, port, nickname, password, isRegister, server.serverPassword);
+      await window.electronAPI.connectChat(loginDialog, host, port, nickname, password, isRegister, server.serverPassword, isRegister ? registerInviteCode.trim() : undefined);
       setPinnedServers(prev => prev.map(s =>
         s.id === loginDialog ? { ...s, username: nickname, password } : s
       ));
@@ -3344,11 +3663,13 @@ export function TerminalForum() {
       const msg = err?.message || '';
       if (msg.includes('SERVER_PASSWORD_REQUIRED') || msg.includes('SERVER_PASSWORD_FAIL')) {
        setLoginDialog(null);
-       setServerPasswordDialog({ address: server.address, username: nickname, password, isRegister, serverId: server.id });
-       setServerPasswordInput('');
-       setStatus(msg.includes('FAIL') ? 'Forkert server-adgangskode' : 'Server kræver adgangskode');
+       setServerPasswordDialog({ address: server.address, username: nickname, password, isRegister, serverId: server.id, inviteCode: isRegister ? registerInviteCode.trim() : '' });
+        setServerPasswordInput('');
+        setStatus(msg.includes('FAIL') ? 'Forkert server-adgangskode' : 'Server kræver adgangskode');
       } else {
-        setStatus(`Failed: ${msg}`);
+        if (msg.includes('invite-only')) setStatus('Registration requires an invite code for this server.');
+        else if (msg.includes('Invalid or expired invite code') || msg.includes('expired invite')) setStatus('Invite code is invalid or expired.');
+        else setStatus(`Connection failed: ${msg}`);
       }
     }
     setConnectingToServerId(null);
@@ -3408,9 +3729,14 @@ export function TerminalForum() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentTextRoom) return;
+    const currentRoomDef = textRooms.find(r => r.name === currentTextRoom);
+    if (currentRoomDef?.readOnly && !hasPermission('announce')) {
+      setStatus('⚠ This channel is read-only. You need announce permission to post.');
+      return;
+    }
     if (!input.trim() && !pendingFile) return;
     try {
-      if (pendingFile) {
+    if (pendingFile) {
         let { name: fName, mimeType: fMime, base64: fData } = pendingFile;
         setFileUploadStatus('Sending…');
 
@@ -3419,7 +3745,7 @@ export function TerminalForum() {
         // 2. Else send inline as base64
         const fileServerPort = serverInfo?.fileServerPort;
         const currentServer = pinnedServers.find(s => s.id === connectedServerIdRef.current);
-        const serverHost = currentServer?.address?.split(':')[0];
+        const serverHost = currentServer ? parseHostFromAddress(currentServer.address) : '';
         const authToken = currentServer?.authToken;
 
         if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
@@ -3467,7 +3793,12 @@ export function TerminalForum() {
       if (input.trim()) {
         const mentions = e2eeKeyRef.current ? [...new Set((input.match(/@(\w+)/g) || []).map(m => m.substring(1)))] : [];
         const body = await e2eeEncryptText(input);
-        sendToServer(`MSG:${currentTextRoom}:${body}`);
+        if (replyTarget && replyTarget.room === currentTextRoom) {
+          sendToServer(`${PROTOCOL.msgReply}${currentTextRoom}:${replyTarget.msgId}:${body}`);
+          setReplyTarget(null);
+        } else {
+          sendToServer(`MSG:${currentTextRoom}:${body}`);
+        }
         if (mentions.length > 0) {
           sendToServer(`CMD:NOTIFY_MENTIONS:${currentTextRoom}:${mentions.join(',')}`);
         }
@@ -3524,6 +3855,48 @@ export function TerminalForum() {
     sendToServer(`CMD:JOIN_TEXT:${room.name}`);
   };
 
+  const executeSearch = useCallback((append = false) => {
+    if (!currentTextRoom) return;
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchResults([]);
+      setSearchError(null);
+      setSearchCursorByRoom(prev => ({ ...prev, [currentTextRoom]: null }));
+      return;
+    }
+    const cursor = append ? (searchCursorByRoom[currentTextRoom] || '') : '';
+    if (!append) {
+      setSearchResults([]);
+      setSearchCursorByRoom(prev => ({ ...prev, [currentTextRoom]: null }));
+      setActiveSearchRoom(currentTextRoom);
+    }
+    setSearchPanelOpen(true);
+    setSearchLoading(true);
+    setSearchError(null);
+    sendToServer(`${PROTOCOL.cmdSearch}${currentTextRoom}:${q}:25:${cursor}`);
+  }, [currentTextRoom, searchQuery, searchCursorByRoom, sendToServer]);
+
+  const jumpToSearchResult = useCallback((result: SearchResultEntry) => {
+    if (!currentTextRoom) return;
+    setCurrentText(currentTextRoom);
+    setViewModeTracked('text');
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(`[data-msg-id="${result.msgId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('ring-1', 'ring-green-500/70');
+        setTimeout(() => el.classList.remove('ring-1', 'ring-green-500/70'), 1200);
+        return;
+      }
+      // If message not currently loaded, fetch older history and keep UX clear.
+      if (!roomLoadingMore[currentTextRoom]) {
+        setRoomLoadingMore(prev => ({ ...prev, [currentTextRoom]: true }));
+        sendToServer(`CMD:FETCH_HISTORY:${currentTextRoom}:${(roomMessages[currentTextRoom] || [])[0]?.msgId || ''}:50`);
+      }
+      setStatus('Loading older messages to locate search result…');
+    });
+  }, [currentTextRoom, roomLoadingMore, roomMessages, sendToServer]);
+
   const leaveVoice = () => {
     setHideUiOverlay(false);
     setMouseActive(true);
@@ -3539,6 +3912,7 @@ export function TerminalForum() {
       setVoiceServerId(null);
     }
     if (sid) {
+      clearDmCryptoForServer(sid);
       window.electronAPI.disconnectChat(sid);
       setConnectedServerIds(prev => { const s = new Set(prev); s.delete(sid); return s; });
       delete serverStatesRef.current[sid];
@@ -3580,13 +3954,425 @@ export function TerminalForum() {
     }
   };
 
+  const settingsModal = showSettings && (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      onMouseDown={() => { setShowSettings(false); setRecordingKeybind(null); }}>
+      <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+        onMouseDown={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between sticky top-0">
+          <div className="flex items-center gap-3">
+            <Settings className="w-6 h-6 text-green-500" />
+            <div>
+              <h2 className="text-xl font-bold text-green-400">SETTINGS</h2>
+              <p className="text-[10px] text-green-700">Global — applies to all servers</p>
+            </div>
+          </div>
+          <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
+            className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 space-y-6">
+          {/* Audio Settings */}
+          <div>
+            <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+              <Headphones className="w-4 h-4" />
+              AUDIO SETTINGS
+            </h3>
+            <div className="space-y-3 pl-6">
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Microphone</label>
+                <select value={selectedInput}
+                  onChange={e => { setSelectedInput(e.target.value); selectedInputRef.current = e.target.value; }}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                  <option value="">Default Microphone</option>
+                  {audioInputs.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 8)}`}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Output</label>
+                <select value={selectedOutput}
+                  onChange={e => { setSelectedOutput(e.target.value); selectedOutputRef.current = e.target.value; }}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                  <option value="">Default Output</option>
+                  {audioOutputs.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Output ${d.deviceId.slice(0, 8)}`}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Microphone Activity</label>
+                {currentVoiceRoom ? (
+                  <>
+                    <div className="w-full h-3 bg-green-900/30 rounded-full overflow-hidden relative">
+                      <div className={`h-full rounded-full transition-all duration-75 ${micLevel > 0.6 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                        style={{ width: `${micLevel * 100}%` }} />
+                      {inputSensitivity > 0 && (
+                        <div className="absolute top-0 h-full w-0.5 bg-red-500/70" style={{ left: `${inputSensitivity}%` }} />
+                      )}
+                    </div>
+                    <span className="text-xs text-green-700 mt-1 block">
+                      {micLevel > 0.05
+                        ? (inputSensitivity > 0 && micLevel < inputSensitivity / 100
+                          ? '○ Below threshold — gated'
+                          : '● Capturing audio')
+                        : '○ No audio'}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-green-800">Join a voice channel to test microphone</span>
+                )}
+              </div>
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Input Sensitivity</label>
+                <div className="flex items-center gap-3">
+                  <input type="range" min={0} max={100} value={inputSensitivity}
+                    onChange={e => setInputSensitivity(parseInt(e.target.value))}
+                    className="flex-1 accent-green-500 h-1.5" />
+                  <span className="text-xs text-green-600 w-8 text-right">{inputSensitivity}%</span>
+                </div>
+                <span className="text-[10px] text-green-800 mt-1 block">
+                  {inputSensitivity === 0 ? 'No gate — all audio passes through' : 'Audio below this level will be silenced'}
+                </span>
+              </div>
+              {inputSensitivity > 0 && (
+                <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
+                  <div>
+                    <label className="text-xs text-green-600 block mb-1">Attack Time</label>
+                    <div className="flex items-center gap-3">
+                      <input type="range" min={5} max={200} step={5} value={gateAttack}
+                        onChange={e => setGateAttack(parseInt(e.target.value))}
+                        className="flex-1 accent-green-500 h-1.5" />
+                      <span className="text-xs text-green-600 w-12 text-right">{gateAttack} ms</span>
+                    </div>
+                    <span className="text-[10px] text-green-800 block">How fast the gate opens when you speak</span>
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-1">Hold Time</label>
+                    <div className="flex items-center gap-3">
+                      <input type="range" min={0} max={500} step={10} value={gateHold}
+                        onChange={e => setGateHold(parseInt(e.target.value))}
+                        className="flex-1 accent-green-500 h-1.5" />
+                      <span className="text-xs text-green-600 w-12 text-right">{gateHold} ms</span>
+                    </div>
+                    <span className="text-[10px] text-green-800 block">How long the gate stays open after you stop</span>
+                  </div>
+                  <div>
+                    <label className="text-xs text-green-600 block mb-1">Release Time</label>
+                    <div className="flex items-center gap-3">
+                      <input type="range" min={20} max={1000} step={10} value={gateRelease}
+                        onChange={e => setGateRelease(parseInt(e.target.value))}
+                        className="flex-1 accent-green-500 h-1.5" />
+                      <span className="text-xs text-green-600 w-12 text-right">{gateRelease} ms</span>
+                    </div>
+                    <span className="text-[10px] text-green-800 block">How fast the gate fades to silence</span>
+                  </div>
+                </div>
+              )}
+              <div className="pt-3 border-t border-green-900/20">
+                <label className="text-xs text-green-600 block mb-2">Audio Processing</label>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" checked={echoCancellation}
+                      onChange={e => setEchoCancellation(e.target.checked)}
+                      className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                    <div>
+                      <span className="text-sm text-green-500">Echo Cancellation</span>
+                      <span className="text-[10px] text-green-800 block">Prevents speakers from feeding back into the mic</span>
+                    </div>
+                  </label>
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" checked={noiseSuppression}
+                      onChange={e => setNoiseSuppression(e.target.checked)}
+                      className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                    <div>
+                      <span className="text-sm text-green-500">Noise Suppression</span>
+                      <span className="text-[10px] text-green-800 block">Reduces background noise (fans, typing, etc.)</span>
+                    </div>
+                  </label>
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" checked={autoGainControl}
+                      onChange={e => setAutoGainControl(e.target.checked)}
+                      className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                    <div>
+                      <span className="text-sm text-green-500">Auto Gain Control</span>
+                      <span className="text-[10px] text-green-800 block">Automatically adjusts microphone volume</span>
+                    </div>
+                  </label>
+                </div>
+                <span className="text-[10px] text-green-800 mt-2 block">Changes apply on next voice join or via Apply below</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Video Settings */}
+          <div className="pt-4 border-t border-green-900/30">
+            <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+              <Video className="w-4 h-4" />
+              VIDEO SETTINGS
+            </h3>
+            <div className="space-y-3 pl-6">
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Camera</label>
+                <select value={selectedVideoInput}
+                  onChange={e => { setSelectedVideoInput(e.target.value); selectedVideoInputRef.current = e.target.value; }}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                  <option value="">Default Camera</option>
+                  {videoInputs.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 8)}`}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Resolution</label>
+                <select value={videoResolution}
+                  onChange={e => { const r = e.target.value as VideoResolution; setVideoResolution(r); videoResolutionRef.current = r; }}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                  {Object.entries(VIDEO_RESOLUTIONS).map(([key, r]) => (
+                    <option key={key} value={key}>{r.label} ({r.width}×{r.height})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-green-600 block mb-2">FPS</label>
+                <select value={videoFps}
+                  onChange={e => { const f = parseInt(e.target.value) as VideoFps; setVideoFps(f); videoFpsRef.current = f; }}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                  {VIDEO_FPS_OPTIONS.map(f => (
+                    <option key={f} value={f}>{f} fps</option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-xs text-green-800 space-y-1">
+                <div>Resolution: {VIDEO_RESOLUTIONS[videoResolution].width}×{VIDEO_RESOLUTIONS[videoResolution].height}</div>
+                <div>Framerate: {videoFps} fps</div>
+                <div>Codec: H.264 (VP8 fallback)</div>
+                <div>Bitrate: {(getVideoBitrate(VIDEO_RESOLUTIONS[videoResolution].width, VIDEO_RESOLUTIONS[videoResolution].height, videoFps) / 1_000_000).toFixed(1)} Mbps</div>
+                <div>Transport: TCP (reliable)</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Notification Sounds */}
+          <div className="pt-4 border-t border-green-900/30">
+            <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+              <Bell className="w-4 h-4" />
+              NOTIFICATION SOUNDS
+            </h3>
+            <div className="space-y-3 pl-6">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input type="checkbox" checked={notificationSounds}
+                  onChange={e => setNotificationSounds(e.target.checked)}
+                  className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                <span className="text-sm text-green-500">Enable UI sounds</span>
+              </label>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs text-green-600">Volume</label>
+                  <span className="text-xs text-green-500 font-mono">{notificationVolume}%</span>
+                </div>
+                <input type="range" min="0" max="100" step="5" value={notificationVolume}
+                  onChange={e => setNotificationVolume(parseInt(e.target.value))}
+                  disabled={!notificationSounds}
+                  className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500 disabled:opacity-40" />
+              </div>
+              <div className="text-xs text-green-800 space-y-0.5">
+                <div>• Message received</div>
+                <div>• Join / leave voice</div>
+                <div>• User joins / leaves your room</div>
+                <div>• Mute / unmute / deafen</div>
+                <div>• Camera / screen share started</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Appearance Settings */}
+          <div className="pt-4 border-t border-green-900/30">
+            <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+              <Monitor className="w-4 h-4" />
+              APPEARANCE
+            </h3>
+            <div className="space-y-3 pl-6">
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Theme Color</label>
+                <select value={theme}
+                  onChange={e => setTheme(e.target.value as ThemeColor)}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                  <option value="light">Daylight</option>
+                  <option value="dark">Dark Mode</option>
+                  <option value="mono">Midnight Mono</option>
+                  <option value="custom">Custom Palette</option>
+                </select>
+              </div>
+              {theme === 'custom' && (
+                <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
+                  {([
+                    ['accent', 'Accent', 'Buttons, links, active states'],
+                    ['bg', 'Background', 'Main content area'],
+                    ['surface', 'Surface', 'Headers, input bar, modals'],
+                    ['sidebar', 'Sidebar', 'Channel list, user list panels'],
+                    ['border', 'Borders', 'Dividers and outlines'],
+                    ['text', 'Primary Text', 'Messages, usernames, labels'],
+                    ['textSecondary', 'Secondary Text', 'Timestamps, hints, muted labels'],
+                  ] as [keyof CustomThemeColors, string, string][]).map(([key, label, hint]) => (
+                    <div key={key} className="flex items-center gap-3">
+                      <input type="color" value={customTheme[key]}
+                        onInput={e => {
+                          const val = (e.target as HTMLInputElement).value;
+                          const hexSpan = (e.target as HTMLElement).parentElement?.querySelector('.hex-label');
+                          if (hexSpan) hexSpan.textContent = val;
+                          cancelAnimationFrame(colorPickerRafRef.current);
+                          colorPickerRafRef.current = requestAnimationFrame(() => {
+                            const el = document.documentElement;
+                            if (key === 'accent') {
+                              const scale = generateScale(val);
+                              lastAccentScaleRef.current = { accent: val, scale };
+                              for (const [k, v] of Object.entries(scale)) el.style.setProperty(`--custom-green-${k}`, v);
+                              el.style.setProperty('--custom-accent-rgb', hexToRgb(val));
+                            } else if (key === 'border') {
+                              el.style.setProperty('--custom-border', val);
+                              el.style.setProperty('--custom-border-rgb', hexToRgb(val));
+                            } else {
+                              const varMap: Record<string, string> = { bg: '--custom-bg', surface: '--custom-surface', sidebar: '--custom-sidebar', text: '--custom-text', textSecondary: '--custom-text-secondary' };
+                              if (varMap[key]) el.style.setProperty(varMap[key], val);
+                            }
+                          });
+                        }}
+                        onChange={e => setCustomTheme(prev => ({ ...prev, [key]: e.target.value }))}
+                        className="w-8 h-8 rounded cursor-pointer border border-green-900/50 bg-transparent [&::-webkit-color-swatch-wrapper]:p-0.5 [&::-webkit-color-swatch]:rounded" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-xs text-green-600">{label}</span>
+                          <span className="hex-label text-[10px] text-green-800 font-mono">{customTheme[key]}</span>
+                        </div>
+                        <div className="text-[10px] text-green-800/60">{hint}</div>
+                      </div>
+                    </div>
+                  ))}
+                  <button onClick={() => setCustomTheme(DEFAULT_CUSTOM_THEME)}
+                    className="text-[10px] text-green-700 hover:text-green-500 transition-colors">
+                    Reset to defaults
+                  </button>
+                </div>
+              )}
+              <div>
+                <label className="text-xs text-green-600 block mb-2">Font</label>
+                <select value={fontFamily}
+                  onChange={e => setFontFamily(e.target.value)}
+                  className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
+                  <option value="">Default (Space Grotesk)</option>
+                  <option value="'Space Grotesk', 'Avenir Next', sans-serif">Space Grotesk</option>
+                  <option value="'Sora', 'Avenir Next', sans-serif">Sora</option>
+                  <option value="'IBM Plex Sans', 'Avenir Next', sans-serif">IBM Plex Sans</option>
+                  <option value="'JetBrains Mono', 'Cascadia Code', monospace">JetBrains Mono</option>
+                  <option value="'Fraunces', Georgia, serif">Fraunces</option>
+                  <option value="'Merriweather', Georgia, serif">Merriweather</option>
+                </select>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs text-green-600">UI Scale</label>
+                  <span className="text-xs text-green-500 font-mono">{uiScale}%</span>
+                </div>
+                <input type="range" min="50" max="150" step="5" value={uiScale}
+                  onChange={e => setUiScale(parseInt(e.target.value))}
+                  className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
+                <div className="relative text-[10px] text-green-800 mt-1 h-4">
+                  <span className="absolute left-0">50%</span>
+                  <span className="absolute" style={{ left: '50%', transform: 'translateX(-50%)' }}>100%</span>
+                  <span className="absolute right-0">150%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Keybind Settings */}
+          <div className="pt-4 border-t border-green-900/30">
+            <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+              <Command className="w-4 h-4" />
+              KEYBINDS
+            </h3>
+            <div className="space-y-3 pl-6">
+              {/* Push-to-Talk mode toggle */}
+              <div className="pb-3 border-b border-green-900/20">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input type="checkbox" checked={pushToTalkMode} onChange={e => setPushToTalkMode(e.target.checked)}
+                    className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
+                  <div>
+                    <span className="text-sm text-green-500">Push to Talk</span>
+                    <span className="text-[10px] text-green-800 block">Hold key to transmit. VAD gate is disabled in this mode.</span>
+                  </div>
+                </label>
+              </div>
+              {(['toggleMute', 'toggleDeafen', 'pushToTalk'] as const).map(action => {
+                const labels: Record<string, string> = { toggleMute: 'Mute / Unmute', toggleDeafen: 'Deafen / Undeafen', pushToTalk: 'Push to Talk' };
+                const bind = keybinds[action];
+                const isRecording = recordingKeybind === action;
+                const disabled = action === 'pushToTalk' && !pushToTalkMode;
+                return (
+                  <div key={action} className={`flex items-center justify-between ${disabled ? 'opacity-40' : ''}`}>
+                    <span className="text-sm text-green-500">{labels[action]}</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        disabled={disabled}
+                        onClick={() => !disabled && setRecordingKeybind(isRecording ? null : action)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-mono transition-all min-w-[120px] text-center ${
+                          isRecording
+                            ? 'bg-green-900/40 border-2 border-green-500 text-green-400 animate-pulse'
+                            : bind
+                              ? 'bg-[#0a0e0a] border border-green-900/50 text-green-500 hover:border-green-700'
+                              : 'bg-[#0a0e0a] border border-green-900/50 text-green-800 hover:border-green-700'
+                        }`}>
+                        {isRecording ? 'Press a key...' : bind ? formatKeyBind(bind) : 'Not set'}
+                      </button>
+                      {bind && !isRecording && !disabled && (
+                        <button onClick={() => setKeybinds(prev => ({ ...prev, [action]: null }))}
+                          className="p-1 text-green-800 hover:text-red-400 transition-colors">
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              <p className="text-[10px] text-green-800 pt-2">Click the field and press the desired key. Press Escape to cancel.</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="p-6 border-t border-green-900/30 bg-[#0d120d]/40 flex items-center gap-3">
+          <button onClick={() => { window.electronAPI.checkForUpdates(); }}
+            className="px-4 py-2 rounded-lg bg-green-900/20 text-green-700 hover:bg-green-900/40 hover:text-green-400 transition-all text-xs flex items-center gap-1.5">
+            <Download className="w-3.5 h-3.5" />
+            Check for Updates
+          </button>
+          <div className="flex-1" />
+          <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
+            className="px-6 py-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
+            Cancel
+          </button>
+          <button onClick={() => { if (currentVoiceRoom) restartAudio(); setShowSettings(false); setRecordingKeybind(null); }}
+            className="px-6 py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold">
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   // ═════════════════════════════════════════════════════════
   //  CONNECT SCREEN
   // ═════════════════════════════════════════════════════════
 
-  if ((!isConnected || showHome) && !showSettings) {
+  if (!isConnected || showHome) {
     return (
-      <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
+      <div className="echo-shell h-screen flex flex-col bg-[#0a0e0a] text-green-500" data-theme={theme}>
         {/* ── Draggable titlebar ── */}
         <div className="flex items-center bg-[#0d120d] border-b border-green-900/30 select-none"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
@@ -3960,6 +4746,14 @@ export function TerminalForum() {
                       placeholder="Enter your password..."
                       className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
                   </div>
+                  {isRegister && (
+                    <div className="space-y-2">
+                      <label className="text-xs text-green-700 block">{'>'} INVITE CODE <span className="text-green-800">(required for invite-only servers)</span></label>
+                      <input type="text" value={registerInviteCode} onChange={e => setRegisterInviteCode(e.target.value)}
+                        placeholder="Enter invite code (optional on open servers)"
+                        className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-3 text-green-500 placeholder-green-800 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all" />
+                    </div>
+                  )}
                   <button type="submit" disabled={!nickname.trim() || !password.trim() || connecting}
                     className="w-full bg-green-900/40 hover:bg-green-900/60 disabled:bg-green-900/20 disabled:cursor-not-allowed text-green-400 disabled:text-green-800 py-3 rounded-lg transition-all flex items-center justify-center gap-2 font-bold">
                     {isRegister ? <UserPlus className="w-5 h-5" /> : <LogIn className="w-5 h-5" />}
@@ -4228,7 +5022,8 @@ export function TerminalForum() {
               <form onSubmit={async (e) => {
                 e.preventDefault();
                 if (!serverPasswordInput.trim()) return;
-                const { host, port } = parseAddress(serverPasswordDialog.address);
+                const { port } = parseAddress(serverPasswordDialog.address);
+                const host = parseHostFromAddress(serverPasswordDialog.address);
                 const spServerId = serverPasswordDialog.serverId || crypto.randomUUID();
                 setConnecting(true);
                 setStatus('Connecting with server password...');
@@ -4242,7 +5037,7 @@ export function TerminalForum() {
                     spServerId,
                     host, port,
                     serverPasswordDialog.username, serverPasswordDialog.password,
-                    serverPasswordDialog.isRegister, serverPasswordInput
+                    serverPasswordDialog.isRegister, serverPasswordInput, serverPasswordDialog.inviteCode
                   );
                   if (serverPasswordDialog.serverId) {
                     setConnectedServerIds(prev => new Set(prev).add(serverPasswordDialog!.serverId!));
@@ -4268,7 +5063,9 @@ export function TerminalForum() {
                     setStatus('Forkert server-adgangskode — prøv igen');
                     setServerPasswordInput('');
                   } else {
-                    setStatus(`Failed: ${msg}`);
+                    if (msg.includes('invite-only')) setStatus('Registration requires an invite code for this server.');
+                    else if (msg.includes('Invalid or expired invite code') || msg.includes('expired invite')) setStatus('Invite code is invalid or expired.');
+                    else setStatus(`Connection failed: ${msg}`);
                   }
                 }
                 setConnecting(false);
@@ -4292,6 +5089,7 @@ export function TerminalForum() {
             </div>
           </div>
         )}
+        {settingsModal}
       </div>
     );
   }
@@ -4301,7 +5099,7 @@ export function TerminalForum() {
   // ═════════════════════════════════════════════════════════
 
   return (
-   <div className="h-screen flex flex-col bg-[#0a0e0a] text-green-500 font-mono" data-theme={theme}>
+   <div className="echo-shell h-screen flex flex-col bg-[#0a0e0a] text-green-500" data-theme={theme}>
 
      {/* ── Draggable titlebar ─────────────────────────────── */}
      <div className={`flex items-center bg-[#0d120d] border-b border-green-900/30 select-none ${hideUiOverlay && isCallFullscreen && viewMode === 'voice' && currentVoiceRoom ? 'hidden' : ''}`}
@@ -4599,7 +5397,7 @@ export function TerminalForum() {
                   // Use file server for video uploads in DMs when available
                   const fileServerPort = serverInfo?.fileServerPort;
                   const currentServer = pinnedServers.find(s => s.id === dmTab.serverId);
-                  const serverHost = currentServer?.address?.split(':')[0];
+                  const serverHost = currentServer ? parseHostFromAddress(currentServer.address) : '';
                   const authToken = currentServer?.authToken;
 
                   if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
@@ -4611,7 +5409,7 @@ export function TerminalForum() {
                       ]);
                       if (result?.fileId) {
                         const refBody = `__FILE_REF__:${result.fileId}:${result.fileName}:${result.mimeType}`;
-                        const dmKey = await getDmSharedKey(dmTab.username);
+                        const dmKey = await getDmSharedKey(dmTab.serverId, dmTab.username);
                         const encRefBody = dmKey ? await dmEncrypt(refBody, dmKey) : refBody;
                         window.electronAPI.sendDm(dmTab.serverId, dmTab.username, encRefBody);
                         setPendingDmFile(null);
@@ -4632,7 +5430,7 @@ export function TerminalForum() {
                   setPendingDmFile(null);
                 }
                 if (dmInput.trim()) {
-                  const dmKey = await getDmSharedKey(dmTab.username);
+                  const dmKey = await getDmSharedKey(dmTab.serverId, dmTab.username);
                   const body = dmKey ? await dmEncrypt(dmInput, dmKey) : dmInput;
                   window.electronAPI.sendDm(dmTab.serverId, dmTab.username, body);
                   setDmInput('');
@@ -4697,7 +5495,7 @@ export function TerminalForum() {
               <div className="flex items-center justify-between">
                 <div className="text-xs text-green-700">TEXT CHANNELS</div>
                 {hasPermission('create_rooms') && (
-                  <button onClick={() => { setCreateRoomDialog({ type: 'text' }); setNewRoomName(''); setNewRoomRoles([]); }}
+                  <button onClick={() => { setCreateRoomDialog({ type: 'text' }); setNewRoomName(''); setNewRoomRoles([]); setNewRoomReadOnly(false); }}
                     className="p-1 text-green-700 hover:text-green-400 transition-colors" title="Create text channel">
                     <Plus className="w-3.5 h-3.5" />
                   </button>
@@ -4739,8 +5537,9 @@ export function TerminalForum() {
                               ? 'text-green-400 font-bold hover:bg-green-900/20'
                               : 'text-green-700 hover:bg-green-900/20'
                       }`}>
-                      {r.allowedRoles.length > 0 ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
+                      {r.allowedRoles.length > 0 ? <Lock className="w-4 h-4" /> : r.readOnly ? <Megaphone className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
                       <span className="text-sm truncate flex-1">{r.name}</span>
+                      {r.readOnly && <span className="text-[10px] text-green-600/80">RO</span>}
                       {connectedServerId && (() => {
                         const chPref = notifPrefs[connectedServerId]?.[r.name];
                         if (chPref === 'none') return <span title="Muted"><BellOff className="w-3 h-3 text-green-800/60 shrink-0" /></span>;
@@ -4946,7 +5745,7 @@ export function TerminalForum() {
                 <Settings className="w-4 h-4" />
               </button>
               {(hasPermission('server_settings') || hasPermission('manage_roles') || hasPermission('manage_soundboard') || hasPermission('manage_emojis')) && (
-                <button onClick={() => setShowServerSettings(true)}
+                <button onClick={() => { if (hasPermission('server_settings')) sendToServer(PROTOCOL.cmdListInvites); setShowServerSettings(true); }}
                   className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all"
                   title="Server Settings">
                   <Shield className="w-4 h-4" />
@@ -5060,6 +5859,10 @@ export function TerminalForum() {
                                   </div>
                                 ) : null}
                                 <canvas id={`vc-${u.name}`}
+                                  ref={el => {
+                                    videoCanvasRefs.current[u.name] = el;
+                                    videoCanvasCtxRefs.current[u.name] = el ? el.getContext('2d') : null;
+                                  }}
                                   className="absolute inset-0 w-full h-full object-contain"
                                   style={{ display: watchingStreams.has(u.name) && !getUserSetting(u.name).screenMuted && (cameraUsers.has(u.name) || screenUsers.has(u.name)) ? 'block' : 'none' }} />
                               </>
@@ -5337,7 +6140,18 @@ export function TerminalForum() {
                 <div className="flex items-center gap-2">
                   <Hash className="w-5 h-5" />
                   <span className="font-bold">{currentTextRoom}</span>
+                  {textRooms.find(r => r.name === currentTextRoom)?.readOnly && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-green-800/60 bg-green-900/20 px-2 py-0.5 text-[10px] text-green-500">
+                      <Megaphone className="w-3 h-3" />
+                      Read-only
+                    </span>
+                  )}
                   <span className="text-xs text-green-700 ml-2">{currentMessages.length} messages</span>
+                  <button onClick={() => setSearchPanelOpen(v => !v)}
+                    className={`ml-2 p-2 rounded-lg transition-all ${searchPanelOpen ? 'bg-green-900/40 text-green-400' : 'text-green-700 hover:text-green-400 hover:bg-green-900/20'}`}
+                    title="Search messages">
+                    <Search className="w-4 h-4" />
+                  </button>
                   <button onClick={() => setShowPins(p => !p)}
                     className={`ml-auto p-2 rounded-lg transition-all flex items-center gap-1.5 ${
                       showPins ? 'bg-green-900/40 text-green-400' : 'text-green-700 hover:text-green-400 hover:bg-green-900/20'
@@ -5368,7 +6182,7 @@ export function TerminalForum() {
                           const dateStr = msgDate.toLocaleDateString('da-DK', { day: 'numeric', month: 'short' });
                           const senderUser = onlineUsers.find(u => u.name === msg.sender);
                           return (
-                            <div key={msg.msgId} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg px-3 py-2 group/pin">
+                            <div key={msg.msgId || msg.id} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg px-3 py-2 group/pin">
                               <div className="flex items-center justify-between mb-1">
                                 <span className="text-xs font-bold" style={{ color: senderUser?.roleColor || '#22c55e' }}>{msg.sender}</span>
                                 <div className="flex items-center gap-2">
@@ -5385,6 +6199,45 @@ export function TerminalForum() {
                             </div>
                           );
                         })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {searchPanelOpen && currentTextRoom && (
+                <div className="border-b border-green-900/30 bg-[#0d120d]/60">
+                  <div className="p-3">
+                    <form onSubmit={(e) => { e.preventDefault(); executeSearch(false); }} className="flex items-center gap-2">
+                      <Search className="w-4 h-4 text-green-600" />
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={e => setSearchQuery(e.target.value)}
+                        placeholder="Search this channel..."
+                        className="flex-1 bg-[#0a0e0a] border border-green-900/40 rounded-lg px-3 py-2 text-sm text-green-500 placeholder-green-800 outline-none focus:border-green-700"
+                      />
+                      <button type="submit" className="px-3 py-2 rounded-lg bg-green-900/30 text-green-400 hover:bg-green-900/50 text-xs font-bold transition-all">Search</button>
+                    </form>
+                    {searchLoading && <div className="text-xs text-green-700 mt-2">Searching…</div>}
+                    {searchError && <div className="text-xs text-red-500 mt-2">{searchError}</div>}
+                    {!searchLoading && !searchError && searchResults.length === 0 && searchQuery.trim() && (
+                      <div className="text-xs text-green-800 mt-2">No results</div>
+                    )}
+                    {searchResults.length > 0 && (
+                      <div className="mt-2 max-h-44 overflow-y-auto space-y-1">
+                        {searchResults.map(r => (
+                          <button key={r.msgId} type="button" onClick={() => jumpToSearchResult(r)}
+                            className="w-full text-left px-2 py-1.5 rounded hover:bg-green-900/20 transition-all">
+                            <div className="text-[11px] text-green-700">{r.sender} · {new Date(r.timestamp).toLocaleString('da-DK')}</div>
+                            <div className="text-xs text-green-500 truncate">{r.body}</div>
+                          </button>
+                        ))}
+                        {searchCursorByRoom[currentTextRoom] && (
+                          <button type="button" onClick={() => executeSearch(true)}
+                            className="w-full px-2 py-1.5 rounded bg-green-900/20 text-green-500 hover:bg-green-900/30 text-xs font-bold transition-all">
+                            Load more
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -5407,7 +6260,7 @@ export function TerminalForum() {
                   const senderUser = onlineUsers.find(u => u.name === msg.sender);
                   const senderColor = senderUser?.roleColor || undefined;
                   const isMention = nickname && !msg.body.startsWith('__FILE__:') && msg.body.toLowerCase().includes(`@${nickname.toLowerCase()}`);
-                  const mentionBg = isMention ? 'bg-yellow-500/10 border-l-2 border-yellow-500/50' : '';
+                  const mentionBg = isMention ? 'bg-yellow-500/10 border-l-2 border-yellow-500/50 pl-2 pr-1 rounded-r-md' : '';
                   const canEdit = msg.msgId && (msg.sender === nickname || hasPermission('delete_messages')) && !msg.body.startsWith('__FILE__:') && !msg.body.startsWith('__GIF__:') && !msg.body.startsWith('__FILE_REF__:');
                   const isEditing = editingMsg?.msgId === msg.msgId;
                   const msgReactions = msg.msgId ? (reactions[msg.msgId] || {}) : {};
@@ -5444,8 +6297,11 @@ export function TerminalForum() {
                       )}
                     </div>
                   ) : null;
+                  const parentMessage = msg.replyToMessageId
+                    ? currentMessages.find(m => m.msgId === msg.replyToMessageId) || (roomMessages[currentTextRoom || ''] || []).find(m => m.msgId === msg.replyToMessageId)
+                    : null;
                   return (
-                  <div key={msg.id} className={`group relative ${mentionBg}`}
+                  <div key={msg.id} data-msg-id={msg.msgId} className={`group relative ${mentionBg}`}
                     onContextMenu={(e) => {
                       if (msg.msgId) {
                         e.preventDefault();
@@ -5468,7 +6324,25 @@ export function TerminalForum() {
                           }} onCancel={() => setEditingMsg(null)} />
                         ) : (
                           <div className="text-sm text-green-400 mt-0.5 pl-8 flex items-start gap-1">
-                            <span className="flex-1">{renderMessageBody(msg.body)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}</span>
+                            <span className="flex-1">
+                              {msg.replyToMessageId && (
+                                <button type="button" onClick={() => {
+                                    const targetId = msg.replyToMessageId!;
+                                    const el = document.querySelector<HTMLElement>(`[data-msg-id="${targetId}"]`);
+                                    if (el) {
+                                      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                      el.classList.add('ring-1', 'ring-green-500/70');
+                                      setTimeout(() => el.classList.remove('ring-1', 'ring-green-500/70'), 1200);
+                                    } else {
+                                      setStatus('Parent message not loaded');
+                                    }
+                                  }}
+                                  className="block mb-1 w-full text-left rounded border border-green-900/30 bg-green-900/10 px-2 py-1 text-[11px] text-green-600 hover:border-green-700/40 hover:text-green-500 transition-all">
+                                  ↪ {parentMessage ? `${parentMessage.sender}: ${parentMessage.body}` : 'Original message unavailable'}
+                                </button>
+                              )}
+                              {renderMessageBody(msg.body)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}
+                            </span>
                             {canEdit && <button onClick={() => setEditingMsg({ msgId: msg.msgId, room: currentTextRoom!, body: msg.body })}
                               className="opacity-0 group-hover:opacity-100 p-0.5 text-green-800 hover:text-green-500 transition-all shrink-0 mt-0.5">
                               <Pencil className="w-3 h-3" />
@@ -5490,7 +6364,25 @@ export function TerminalForum() {
                           </div>
                         ) : (
                           <div className="text-sm text-green-400 pl-8 flex items-start gap-1">
-                            <span className="flex-1">{renderMessageBody(msg.body)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}</span>
+                            <span className="flex-1">
+                              {msg.replyToMessageId && (
+                                <button type="button" onClick={() => {
+                                    const targetId = msg.replyToMessageId!;
+                                    const el = document.querySelector<HTMLElement>(`[data-msg-id="${targetId}"]`);
+                                    if (el) {
+                                      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                      el.classList.add('ring-1', 'ring-green-500/70');
+                                      setTimeout(() => el.classList.remove('ring-1', 'ring-green-500/70'), 1200);
+                                    } else {
+                                      setStatus('Parent message not loaded');
+                                    }
+                                  }}
+                                  className="block mb-1 w-full text-left rounded border border-green-900/30 bg-green-900/10 px-2 py-1 text-[11px] text-green-600 hover:border-green-700/40 hover:text-green-500 transition-all">
+                                  ↪ {parentMessage ? `${parentMessage.sender}: ${parentMessage.body}` : 'Original message unavailable'}
+                                </button>
+                              )}
+                              {renderMessageBody(msg.body)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}
+                            </span>
                             {canEdit && <button onClick={() => setEditingMsg({ msgId: msg.msgId, room: currentTextRoom!, body: msg.body })}
                               className="opacity-0 group-hover:opacity-100 p-0.5 text-green-800 hover:text-green-500 transition-all shrink-0 mt-0.5">
                               <Pencil className="w-3 h-3" />
@@ -5537,6 +6429,17 @@ export function TerminalForum() {
                     </div>
                   </div>
                 )}
+                {replyTarget && currentTextRoom === replyTarget.room && (
+                  <div className="px-4 pt-2 pb-1">
+                    <div className="inline-flex items-center gap-2 rounded-lg border border-green-900/40 bg-green-900/10 px-3 py-2 text-xs text-green-600 max-w-[80%]">
+                      <span className="font-bold text-green-500">Replying to {replyTarget.sender}</span>
+                      <span className="truncate">{replyTarget.body}</span>
+                      <button type="button" onClick={() => setReplyTarget(null)} className="ml-1 text-green-700 hover:text-red-400 transition-colors">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {currentTextRoom && (typingUsers[currentTextRoom] || []).length > 0 && (
                   <div className="px-4 py-1 flex items-center gap-1.5">
                     <span className="flex gap-0.5">
@@ -5551,6 +6454,18 @@ export function TerminalForum() {
                     </span>
                   </div>
                 )}
+                {currentTextRoom && (() => {
+                  const room = textRooms.find(r => r.name === currentTextRoom);
+                  if (!room?.readOnly || hasPermission('announce')) return null;
+                  return (
+                    <div className="px-4 pt-2 pb-1">
+                      <div className="inline-flex items-center gap-2 rounded-lg border border-green-900/40 bg-green-900/10 px-3 py-2 text-xs text-green-600">
+                        <Megaphone className="w-3.5 h-3.5 text-green-500" />
+                        This channel is read-only. Only users with `announce` can post.
+                      </div>
+                    </div>
+                  );
+                })()}
                 <form onSubmit={handleSubmit} className="flex gap-3 items-center p-4 pt-3 relative">
                   {emojiQuery !== null && (() => {
                     const allEntries: { key: string; emoji?: string; customData?: string }[] = [
@@ -5671,10 +6586,12 @@ export function TerminalForum() {
                     }}
                     onPaste={handlePaste}
                     className="flex-1 bg-transparent outline-none text-green-500 placeholder-green-800"
-                    placeholder={pendingFile ? 'Add a message (optional)...' : 'Type a message...'} autoComplete="off" />
+                    placeholder={pendingFile ? 'Add a message (optional)...' : 'Type a message...'} autoComplete="off"
+                    disabled={!!(currentTextRoom && textRooms.find(r => r.name === currentTextRoom)?.readOnly && !hasPermission('announce'))} />
                   <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
                   <button type="button" onClick={() => fileInputRef.current?.click()}
                     className={`p-2 rounded-lg transition-all ${pendingFile ? 'text-green-400 bg-green-900/30' : 'text-green-700 hover:text-green-400 hover:bg-green-900/20'}`}
+                    disabled={!!(currentTextRoom && textRooms.find(r => r.name === currentTextRoom)?.readOnly && !hasPermission('announce'))}
                     title={`Upload file (max ${serverInfo?.maxFileSizeKB || 2048} KB)`}>
                     <Paperclip className="w-4 h-4" />
                   </button>
@@ -5758,7 +6675,7 @@ export function TerminalForum() {
                   )}
                   <button type="submit"
                     className={`p-2 rounded-lg transition-all ${(input.trim() || pendingFile) && !fileUploadStatus ? 'text-green-400 hover:bg-green-900/30' : 'text-green-800 cursor-default'}`}
-                    disabled={(!input.trim() && !pendingFile) || !!fileUploadStatus}
+                    disabled={(!input.trim() && !pendingFile) || !!fileUploadStatus || !!(currentTextRoom && textRooms.find(r => r.name === currentTextRoom)?.readOnly && !hasPermission('announce'))}
                     title="Send message">
                     <Send className="w-4 h-4" />
                   </button>
@@ -5861,425 +6778,11 @@ export function TerminalForum() {
       </div>{/* end content wrapper */}
 
       {/* ── Settings Modal ─────────────────────────────────── */}
-      {showSettings && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-          onMouseDown={() => { setShowSettings(false); setRecordingKeybind(null); }}>
-          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
-            onMouseDown={e => e.stopPropagation()}>
-            {/* Header */}
-            <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between sticky top-0">
-              <div className="flex items-center gap-3">
-                <Settings className="w-6 h-6 text-green-500" />
-                <div>
-                  <h2 className="text-xl font-bold text-green-400">SETTINGS</h2>
-                  <p className="text-[10px] text-green-700">Global — applies to all servers</p>
-                </div>
-              </div>
-              <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
-                className="p-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Content */}
-            <div className="p-6 space-y-6">
-              {/* Audio Settings */}
-              <div>
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Headphones className="w-4 h-4" />
-                  AUDIO SETTINGS
-                </h3>
-                <div className="space-y-3 pl-6">
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Microphone</label>
-                    <select value={selectedInput}
-                      onChange={e => { setSelectedInput(e.target.value); selectedInputRef.current = e.target.value; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="">Default Microphone</option>
-                      {audioInputs.map(d => (
-                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 8)}`}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Output</label>
-                    <select value={selectedOutput}
-                      onChange={e => { setSelectedOutput(e.target.value); selectedOutputRef.current = e.target.value; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="">Default Output</option>
-                      {audioOutputs.map(d => (
-                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Output ${d.deviceId.slice(0, 8)}`}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Microphone Activity</label>
-                    {currentVoiceRoom ? (
-                      <>
-                        <div className="w-full h-3 bg-green-900/30 rounded-full overflow-hidden relative">
-                          <div className={`h-full rounded-full transition-all duration-75 ${micLevel > 0.6 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                            style={{ width: `${micLevel * 100}%` }} />
-                          {inputSensitivity > 0 && (
-                            <div className="absolute top-0 h-full w-0.5 bg-red-500/70" style={{ left: `${inputSensitivity}%` }} />
-                          )}
-                        </div>
-                        <span className="text-xs text-green-700 mt-1 block">
-                          {micLevel > 0.05
-                            ? (inputSensitivity > 0 && micLevel < inputSensitivity / 100
-                              ? '○ Below threshold — gated'
-                              : '● Capturing audio')
-                            : '○ No audio'}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="text-xs text-green-800">Join a voice channel to test microphone</span>
-                    )}
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Input Sensitivity</label>
-                    <div className="flex items-center gap-3">
-                      <input type="range" min={0} max={100} value={inputSensitivity}
-                        onChange={e => setInputSensitivity(parseInt(e.target.value))}
-                        className="flex-1 accent-green-500 h-1.5" />
-                      <span className="text-xs text-green-600 w-8 text-right">{inputSensitivity}%</span>
-                    </div>
-                    <span className="text-[10px] text-green-800 mt-1 block">
-                      {inputSensitivity === 0 ? 'No gate — all audio passes through' : 'Audio below this level will be silenced'}
-                    </span>
-                  </div>
-                  {inputSensitivity > 0 && (
-                    <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
-                      <div>
-                        <label className="text-xs text-green-600 block mb-1">Attack Time</label>
-                        <div className="flex items-center gap-3">
-                          <input type="range" min={5} max={200} step={5} value={gateAttack}
-                            onChange={e => setGateAttack(parseInt(e.target.value))}
-                            className="flex-1 accent-green-500 h-1.5" />
-                          <span className="text-xs text-green-600 w-12 text-right">{gateAttack} ms</span>
-                        </div>
-                        <span className="text-[10px] text-green-800 block">How fast the gate opens when you speak</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-green-600 block mb-1">Hold Time</label>
-                        <div className="flex items-center gap-3">
-                          <input type="range" min={0} max={500} step={10} value={gateHold}
-                            onChange={e => setGateHold(parseInt(e.target.value))}
-                            className="flex-1 accent-green-500 h-1.5" />
-                          <span className="text-xs text-green-600 w-12 text-right">{gateHold} ms</span>
-                        </div>
-                        <span className="text-[10px] text-green-800 block">How long the gate stays open after you stop</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-green-600 block mb-1">Release Time</label>
-                        <div className="flex items-center gap-3">
-                          <input type="range" min={20} max={1000} step={10} value={gateRelease}
-                            onChange={e => setGateRelease(parseInt(e.target.value))}
-                            className="flex-1 accent-green-500 h-1.5" />
-                          <span className="text-xs text-green-600 w-12 text-right">{gateRelease} ms</span>
-                        </div>
-                        <span className="text-[10px] text-green-800 block">How fast the gate fades to silence</span>
-                      </div>
-                    </div>
-                  )}
-                  <div className="pt-3 border-t border-green-900/20">
-                    <label className="text-xs text-green-600 block mb-2">Audio Processing</label>
-                    <div className="space-y-2">
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={echoCancellation}
-                          onChange={e => setEchoCancellation(e.target.checked)}
-                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                        <div>
-                          <span className="text-sm text-green-500">Echo Cancellation</span>
-                          <span className="text-[10px] text-green-800 block">Prevents speakers from feeding back into the mic</span>
-                        </div>
-                      </label>
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={noiseSuppression}
-                          onChange={e => setNoiseSuppression(e.target.checked)}
-                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                        <div>
-                          <span className="text-sm text-green-500">Noise Suppression</span>
-                          <span className="text-[10px] text-green-800 block">Reduces background noise (fans, typing, etc.)</span>
-                        </div>
-                      </label>
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={autoGainControl}
-                          onChange={e => setAutoGainControl(e.target.checked)}
-                          className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                        <div>
-                          <span className="text-sm text-green-500">Auto Gain Control</span>
-                          <span className="text-[10px] text-green-800 block">Automatically adjusts microphone volume</span>
-                        </div>
-                      </label>
-                    </div>
-                    <span className="text-[10px] text-green-800 mt-2 block">Changes apply on next voice join or via Apply below</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Video Settings */}
-              <div className="pt-4 border-t border-green-900/30">
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Video className="w-4 h-4" />
-                  VIDEO SETTINGS
-                </h3>
-                <div className="space-y-3 pl-6">
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Camera</label>
-                    <select value={selectedVideoInput}
-                      onChange={e => { setSelectedVideoInput(e.target.value); selectedVideoInputRef.current = e.target.value; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="">Default Camera</option>
-                      {videoInputs.map(d => (
-                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 8)}`}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Resolution</label>
-                    <select value={videoResolution}
-                      onChange={e => { const r = e.target.value as VideoResolution; setVideoResolution(r); videoResolutionRef.current = r; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      {Object.entries(VIDEO_RESOLUTIONS).map(([key, r]) => (
-                        <option key={key} value={key}>{r.label} ({r.width}×{r.height})</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">FPS</label>
-                    <select value={videoFps}
-                      onChange={e => { const f = parseInt(e.target.value) as VideoFps; setVideoFps(f); videoFpsRef.current = f; }}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      {VIDEO_FPS_OPTIONS.map(f => (
-                        <option key={f} value={f}>{f} fps</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="text-xs text-green-800 space-y-1">
-                    <div>Resolution: {VIDEO_RESOLUTIONS[videoResolution].width}×{VIDEO_RESOLUTIONS[videoResolution].height}</div>
-                    <div>Framerate: {videoFps} fps</div>
-                    <div>Codec: H.264 (VP8 fallback)</div>
-                    <div>Bitrate: {(getVideoBitrate(VIDEO_RESOLUTIONS[videoResolution].width, VIDEO_RESOLUTIONS[videoResolution].height, videoFps) / 1_000_000).toFixed(1)} Mbps</div>
-                    <div>Transport: TCP (reliable)</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Notification Sounds */}
-              <div className="pt-4 border-t border-green-900/30">
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Bell className="w-4 h-4" />
-                  NOTIFICATION SOUNDS
-                </h3>
-                <div className="space-y-3 pl-6">
-                  <label className="flex items-center gap-3 cursor-pointer">
-                    <input type="checkbox" checked={notificationSounds}
-                      onChange={e => setNotificationSounds(e.target.checked)}
-                      className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                    <span className="text-sm text-green-500">Enable UI sounds</span>
-                  </label>
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs text-green-600">Volume</label>
-                      <span className="text-xs text-green-500 font-mono">{notificationVolume}%</span>
-                    </div>
-                    <input type="range" min="0" max="100" step="5" value={notificationVolume}
-                      onChange={e => setNotificationVolume(parseInt(e.target.value))}
-                      disabled={!notificationSounds}
-                      className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500 disabled:opacity-40" />
-                  </div>
-                  <div className="text-xs text-green-800 space-y-0.5">
-                    <div>• Message received</div>
-                    <div>• Join / leave voice</div>
-                    <div>• User joins / leaves your room</div>
-                    <div>• Mute / unmute / deafen</div>
-                    <div>• Camera / screen share started</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Appearance Settings */}
-              <div className="pt-4 border-t border-green-900/30">
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Monitor className="w-4 h-4" />
-                  APPEARANCE
-                </h3>
-                <div className="space-y-3 pl-6">
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Theme Color</label>
-                    <select value={theme}
-                      onChange={e => setTheme(e.target.value as ThemeColor)}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="mono">Mono (Default)</option>
-                      <option value="light">Light</option>
-                      <option value="custom">Custom</option>
-                    </select>
-                  </div>
-                  {theme === 'custom' && (
-                    <div className="space-y-2 pl-2 border-l-2 border-green-900/30">
-                      {([
-                        ['accent', 'Accent', 'Buttons, links, active states'],
-                        ['bg', 'Background', 'Main content area'],
-                        ['surface', 'Surface', 'Headers, input bar, modals'],
-                        ['sidebar', 'Sidebar', 'Channel list, user list panels'],
-                        ['border', 'Borders', 'Dividers and outlines'],
-                        ['text', 'Primary Text', 'Messages, usernames, labels'],
-                        ['textSecondary', 'Secondary Text', 'Timestamps, hints, muted labels'],
-                      ] as [keyof CustomThemeColors, string, string][]).map(([key, label, hint]) => (
-                        <div key={key} className="flex items-center gap-3">
-                          <input type="color" value={customTheme[key]}
-                            onInput={e => {
-                              const val = (e.target as HTMLInputElement).value;
-                              const hexSpan = (e.target as HTMLElement).parentElement?.querySelector('.hex-label');
-                              if (hexSpan) hexSpan.textContent = val;
-                              cancelAnimationFrame(colorPickerRafRef.current);
-                              colorPickerRafRef.current = requestAnimationFrame(() => {
-                                const el = document.documentElement;
-                                if (key === 'accent') {
-                                  const scale = generateScale(val);
-                                  lastAccentScaleRef.current = { accent: val, scale };
-                                  for (const [k, v] of Object.entries(scale)) el.style.setProperty(`--custom-green-${k}`, v);
-                                  el.style.setProperty('--custom-accent-rgb', hexToRgb(val));
-                                } else if (key === 'border') {
-                                  el.style.setProperty('--custom-border', val);
-                                  el.style.setProperty('--custom-border-rgb', hexToRgb(val));
-                                } else {
-                                  const varMap: Record<string, string> = { bg: '--custom-bg', surface: '--custom-surface', sidebar: '--custom-sidebar', text: '--custom-text', textSecondary: '--custom-text-secondary' };
-                                  if (varMap[key]) el.style.setProperty(varMap[key], val);
-                                }
-                              });
-                            }}
-                            onChange={e => setCustomTheme(prev => ({ ...prev, [key]: e.target.value }))}
-                            className="w-8 h-8 rounded cursor-pointer border border-green-900/50 bg-transparent [&::-webkit-color-swatch-wrapper]:p-0.5 [&::-webkit-color-swatch]:rounded" />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-baseline gap-2">
-                              <span className="text-xs text-green-600">{label}</span>
-                              <span className="hex-label text-[10px] text-green-800 font-mono">{customTheme[key]}</span>
-                            </div>
-                            <div className="text-[10px] text-green-800/60">{hint}</div>
-                          </div>
-                        </div>
-                      ))}
-                      <button onClick={() => setCustomTheme(DEFAULT_CUSTOM_THEME)}
-                        className="text-[10px] text-green-700 hover:text-green-500 transition-colors">
-                        Reset to defaults
-                      </button>
-                    </div>
-                  )}
-                  <div>
-                    <label className="text-xs text-green-600 block mb-2">Font</label>
-                    <select value={fontFamily}
-                      onChange={e => setFontFamily(e.target.value)}
-                      className="w-full bg-[#0a0e0a] border border-green-900/50 rounded-lg px-4 py-2 text-green-500 outline-none focus:border-green-700 focus:ring-2 focus:ring-green-900/50 transition-all">
-                      <option value="">Default (Monospace)</option>
-                      <option value="ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, monospace">Cascadia Code</option>
-                      <option value="'JetBrains Mono', ui-monospace, monospace">JetBrains Mono</option>
-                      <option value="'Fira Code', ui-monospace, monospace">Fira Code</option>
-                      <option value="Consolas, ui-monospace, monospace">Consolas</option>
-                      <option value="'Courier New', Courier, monospace">Courier New</option>
-                      <option value="Inter, system-ui, -apple-system, sans-serif">Inter (Sans-serif)</option>
-                      <option value="system-ui, -apple-system, 'Segoe UI', sans-serif">System UI (Sans-serif)</option>
-                      <option value="'Segoe UI', Tahoma, Geneva, sans-serif">Segoe UI</option>
-                      <option value="Arial, Helvetica, sans-serif">Arial</option>
-                      <option value="Verdana, Geneva, sans-serif">Verdana</option>
-                      <option value="Georgia, 'Times New Roman', serif">Georgia (Serif)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs text-green-600">UI Scale</label>
-                      <span className="text-xs text-green-500 font-mono">{uiScale}%</span>
-                    </div>
-                    <input type="range" min="50" max="150" step="5" value={uiScale}
-                      onChange={e => setUiScale(parseInt(e.target.value))}
-                      className="w-full h-2 bg-green-900/30 rounded-lg appearance-none cursor-pointer accent-green-500" />
-                    <div className="relative text-[10px] text-green-800 mt-1 h-4">
-                      <span className="absolute left-0">50%</span>
-                      <span className="absolute" style={{ left: '50%', transform: 'translateX(-50%)' }}>100%</span>
-                      <span className="absolute right-0">150%</span>
-                    </div>
-                  </div>
-                    </div>
-                  </div>
-
-              {/* Keybind Settings */}
-              <div className="pt-4 border-t border-green-900/30">
-                <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
-                  <Command className="w-4 h-4" />
-                  KEYBINDS
-                </h3>
-                <div className="space-y-3 pl-6">
-                  {/* Push-to-Talk mode toggle */}
-                  <div className="pb-3 border-b border-green-900/20">
-                    <label className="flex items-center gap-3 cursor-pointer">
-                      <input type="checkbox" checked={pushToTalkMode} onChange={e => setPushToTalkMode(e.target.checked)}
-                        className="w-4 h-4 rounded bg-[#0a0e0a] border-green-900/50 text-green-600 focus:ring-green-900/50" />
-                      <div>
-                        <span className="text-sm text-green-500">Push to Talk</span>
-                        <span className="text-[10px] text-green-800 block">Hold key to transmit. VAD gate is disabled in this mode.</span>
-                      </div>
-                    </label>
-                  </div>
-                  {(['toggleMute', 'toggleDeafen', 'pushToTalk'] as const).map(action => {
-                    const labels: Record<string, string> = { toggleMute: 'Mute / Unmute', toggleDeafen: 'Deafen / Undeafen', pushToTalk: 'Push to Talk' };
-                    const bind = keybinds[action];
-                    const isRecording = recordingKeybind === action;
-                    const disabled = action === 'pushToTalk' && !pushToTalkMode;
-                    return (
-                      <div key={action} className={`flex items-center justify-between ${disabled ? 'opacity-40' : ''}`}>
-                        <span className="text-sm text-green-500">{labels[action]}</span>
-                        <div className="flex items-center gap-2">
-                          <button
-                            disabled={disabled}
-                            onClick={() => !disabled && setRecordingKeybind(isRecording ? null : action)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-mono transition-all min-w-[120px] text-center ${
-                              isRecording
-                                ? 'bg-green-900/40 border-2 border-green-500 text-green-400 animate-pulse'
-                                : bind
-                                  ? 'bg-[#0a0e0a] border border-green-900/50 text-green-500 hover:border-green-700'
-                                  : 'bg-[#0a0e0a] border border-green-900/50 text-green-800 hover:border-green-700'
-                            }`}>
-                            {isRecording ? 'Press a key...' : bind ? formatKeyBind(bind) : 'Not set'}
-                          </button>
-                          {bind && !isRecording && !disabled && (
-                            <button onClick={() => setKeybinds(prev => ({ ...prev, [action]: null }))}
-                              className="p-1 text-green-800 hover:text-red-400 transition-colors">
-                              <X className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <p className="text-[10px] text-green-800 pt-2">Click the field and press the desired key. Press Escape to cancel.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="p-6 border-t border-green-900/30 bg-[#0d120d]/40 flex items-center gap-3">
-              <button onClick={() => { window.electronAPI.checkForUpdates(); }}
-                className="px-4 py-2 rounded-lg bg-green-900/20 text-green-700 hover:bg-green-900/40 hover:text-green-400 transition-all text-xs flex items-center gap-1.5">
-                <Download className="w-3.5 h-3.5" />
-                Check for Updates
-              </button>
-              <div className="flex-1" />
-              <button onClick={() => { setShowSettings(false); setRecordingKeybind(null); }}
-                className="px-6 py-2 rounded-lg bg-green-900/20 text-green-600 hover:bg-green-900/40 transition-all">
-                Cancel
-              </button>
-              <button onClick={() => { if (currentVoiceRoom) restartAudio(); setShowSettings(false); setRecordingKeybind(null); }}
-                className="px-6 py-2 rounded-lg bg-green-900/40 text-green-400 hover:bg-green-900/60 transition-all font-bold">
-                Save Changes
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {settingsModal}
 
       {/* ── Server Settings Modal (admin only) ─────────────────── */}
       {showServerSettings && serverInfo && (() => {
-        const ALL_PERMS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings'];
+        const ALL_PERMS = ['admin', 'manage_roles', 'create_rooms', 'delete_rooms', 'reorder_rooms', 'kick_users', 'delete_messages', 'pin_messages', 'manage_soundboard', 'manage_emojis', 'server_settings', 'announce'];
         const PERM_LABELS: Record<string, string> = {
           admin: 'Administrator — full access to everything',
           manage_roles: 'Manage Roles — create, delete, assign roles',
@@ -6292,6 +6795,7 @@ export function TerminalForum() {
           manage_soundboard: 'Manage Soundboard — upload/delete sounds',
           manage_emojis: 'Manage Emojis — upload/delete custom emojis',
           server_settings: 'Server Settings — update server configuration',
+          announce: 'Announce — send messages in read-only channels',
         };
         const NumberField = ({ label, value, field, unit, min, max }: { label: string; value: number; field: string; unit?: string; min?: number; max?: number }) => (
           <div>
@@ -6331,6 +6835,7 @@ export function TerminalForum() {
         };
         const allTabs: { id: typeof serverSettingsTab; label: string; icon: React.ReactNode; perm?: string }[] = [
           { id: 'general', label: 'General', icon: <Sliders className="w-4 h-4" />, perm: 'server_settings' },
+          { id: 'invites', label: 'Invites', icon: <UserPlus className="w-4 h-4" />, perm: 'server_settings' },
           { id: 'roles', label: 'Roles', icon: <Users className="w-4 h-4" />, perm: 'manage_roles' },
           { id: 'soundboard', label: 'Soundboard', icon: <Music className="w-4 h-4" />, perm: 'manage_soundboard' },
           { id: 'emojis', label: 'Emojis', icon: <Smile className="w-4 h-4" />, perm: 'manage_emojis' },
@@ -6488,6 +6993,118 @@ export function TerminalForum() {
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {serverSettingsTab === 'invites' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h3 className="text-sm text-green-700 mb-4 flex items-center gap-2">
+                        <UserPlus className="w-4 h-4" />
+                        CREATE INVITE
+                      </h3>
+                      <div className="bg-[#0a0e0a] border border-green-900/40 rounded-lg p-4 space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-xs text-green-600 block mb-1">Max uses</label>
+                            <input id="inv-max-uses" type="number" min={1} defaultValue={1}
+                              className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
+                          </div>
+                          <div>
+                            <label className="text-xs text-green-600 block mb-1">Expires at (optional)</label>
+                            <input id="inv-expires-at" type="datetime-local"
+                              className="w-full bg-[#0d120d] border border-green-900/50 rounded-lg px-3 py-2 text-green-500 outline-none focus:border-green-700 text-sm" />
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" onClick={() => {
+                            sendToServer(PROTOCOL.cmdCreateInvite);
+                          }}
+                            className="px-3 py-1.5 rounded-lg bg-green-900/30 text-green-400 hover:bg-green-900/50 text-xs font-bold transition-all">
+                            One-time
+                          </button>
+                          <button type="button" onClick={() => {
+                            const dt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+                            sendToServer(`${PROTOCOL.cmdCreateInvite}:1:${dt}`);
+                          }}
+                            className="px-3 py-1.5 rounded-lg bg-green-900/30 text-green-400 hover:bg-green-900/50 text-xs font-bold transition-all">
+                            24h
+                          </button>
+                          <button type="button" onClick={() => {
+                            const dt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+                            sendToServer(`${PROTOCOL.cmdCreateInvite}:1:${dt}`);
+                          }}
+                            className="px-3 py-1.5 rounded-lg bg-green-900/30 text-green-400 hover:bg-green-900/50 text-xs font-bold transition-all">
+                            7d
+                          </button>
+                          <button type="button" onClick={() => {
+                            const usesEl = document.getElementById('inv-max-uses') as HTMLInputElement | null;
+                            const expEl = document.getElementById('inv-expires-at') as HTMLInputElement | null;
+                            const usesRaw = parseInt(usesEl?.value || '1', 10);
+                            const uses = Number.isFinite(usesRaw) && usesRaw > 0 ? usesRaw : 1;
+                            const expIso = expEl?.value ? new Date(expEl.value).toISOString() : '';
+                            sendToServer(expIso ? `${PROTOCOL.cmdCreateInvite}:${uses}:${expIso}` : `${PROTOCOL.cmdCreateInvite}:${uses}`);
+                          }}
+                            className="px-3 py-1.5 rounded-lg bg-green-900/50 text-green-300 hover:bg-green-900/70 text-xs font-bold transition-all">
+                            Create custom
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-green-900/30">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-sm text-green-700 flex items-center gap-2">
+                          <Users className="w-4 h-4" />
+                          INVITES ({serverInvites.length})
+                        </h3>
+                        <button type="button" onClick={() => sendToServer(PROTOCOL.cmdListInvites)}
+                          className="px-3 py-1.5 rounded-lg bg-green-900/30 text-green-400 hover:bg-green-900/50 text-xs font-bold transition-all inline-flex items-center gap-1.5">
+                          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                        </button>
+                      </div>
+                      {serverInvites.length === 0 ? (
+                        <div className="text-center py-8 text-green-800 text-sm">No active invites</div>
+                      ) : (
+                        <div className="space-y-2 max-h-80 overflow-y-auto">
+                          {serverInvites.map(inv => {
+                            const created = inv.createdAt ? new Date(inv.createdAt) : null;
+                            const expires = inv.expiresAt ? new Date(inv.expiresAt) : null;
+                            const max = inv.maxUses ?? 1;
+                            return (
+                              <div key={inv.token} className="bg-[#0a0e0a] border border-green-900/40 rounded-lg px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <code className="text-xs text-green-400 font-mono">{inv.token}</code>
+                                  <span className="text-[10px] text-green-700">by {inv.createdBy}</span>
+                                  <span className="text-[10px] text-green-700 ml-auto">{created ? created.toLocaleString('da-DK') : '-'}</span>
+                                </div>
+                                <div className="mt-1 text-[11px] text-green-700 flex items-center gap-3">
+                                  <span>Uses: {inv.uses}/{max}</span>
+                                  <span>Expires: {expires ? expires.toLocaleString('da-DK') : 'never'}</span>
+                                </div>
+                                <div className="mt-2 flex items-center gap-2">
+                                  <button type="button" onClick={async () => {
+                                    try {
+                                      await navigator.clipboard.writeText(inv.token);
+                                      setStatus('Invite copied');
+                                    } catch {
+                                      setStatus(`Invite: ${inv.token}`);
+                                    }
+                                  }}
+                                    className="px-3 py-1.5 rounded-lg bg-green-900/30 text-green-400 hover:bg-green-900/50 text-xs font-bold transition-all">
+                                    Copy token
+                                  </button>
+                                  <button type="button" onClick={() => sendToServer(`${PROTOCOL.cmdDeleteInvite}${inv.token}`)}
+                                    className="px-3 py-1.5 rounded-lg bg-red-900/30 text-red-400 hover:bg-red-900/50 text-xs font-bold transition-all">
+                                    Revoke
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -6856,7 +7473,11 @@ export function TerminalForum() {
             <button
               onClick={() => {
                 if (roomContextMenu.type === 'text') {
-                  setCreateRoomDialog({ type: 'text', editing: roomContextMenu.name }); setNewRoomName(roomContextMenu.name); setNewRoomRoles(textRooms.find(t => t.name === roomContextMenu.name)?.allowedRoles ?? []);
+                  const tr = textRooms.find(t => t.name === roomContextMenu.name);
+                  setCreateRoomDialog({ type: 'text', editing: roomContextMenu.name });
+                  setNewRoomName(roomContextMenu.name);
+                  setNewRoomRoles(tr?.allowedRoles ?? []);
+                  setNewRoomReadOnly(!!tr?.readOnly);
                 } else {
                   const r = voiceRooms[roomContextMenu.idx];
                   setCreateRoomDialog({ type: 'voice', editing: roomContextMenu.name }); setNewRoomName(roomContextMenu.name); setNewRoomRoles(r?.allowedRoles ?? []); setNewRoomBitrate(String(r?.bitrate ?? 96000));
@@ -7067,12 +7688,27 @@ export function TerminalForum() {
         const isPinned = (pinnedMessages[msgContextMenu.room] || []).some(m => m.msgId === msgContextMenu.msgId);
         const canDelete = msgContextMenu.sender === nickname || hasPermission('delete_messages');
         const canEdit = canDelete && !((roomMessages[msgContextMenu.room] || []).find(m => m.msgId === msgContextMenu.msgId)?.body || '').startsWith('__FILE__:');
+        const canReply = !!(roomMessages[msgContextMenu.room] || []).find(m => m.msgId === msgContextMenu.msgId);
         const canPin = hasPermission('pin_messages');
         return (
           <div
             className="fixed bg-[#0d120d]/95 backdrop-blur-sm border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 p-2 min-w-[180px] z-50"
             style={{ left: Math.min(msgContextMenu.x, window.innerWidth - 200), top: Math.min(msgContextMenu.y, window.innerHeight - 140) }}
             onClick={(e) => e.stopPropagation()}>
+            {canReply && (
+              <button onClick={() => {
+                  const msg = (roomMessages[msgContextMenu.room] || []).find(m => m.msgId === msgContextMenu.msgId);
+                  if (msg) {
+                    setReplyTarget({ room: msgContextMenu.room, msgId: msg.msgId, sender: msg.sender, body: msg.body });
+                    setTimeout(() => inputRef.current?.focus(), 0);
+                  }
+                  setMsgContextMenu(null);
+                }}
+                className="w-full px-4 py-2.5 rounded-lg text-green-500 hover:bg-green-900/30 transition-all flex items-center gap-2 text-sm">
+                <CornerLeftUp className="w-4 h-4" />
+                <span>Reply</span>
+              </button>
+            )}
             {canEdit && (
               <button onClick={() => {
                   const msg = (roomMessages[msgContextMenu.room] || []).find(m => m.msgId === msgContextMenu.msgId);
@@ -7105,7 +7741,7 @@ export function TerminalForum() {
                 <span>Delete message</span>
               </button>
             )}
-            {!canPin && !canDelete && (
+            {!canReply && !canPin && !canDelete && (
               <div className="px-4 py-2.5 text-green-800 text-sm">No actions available</div>
             )}
           </div>
@@ -7490,13 +8126,13 @@ export function TerminalForum() {
                 if (createRoomDialog.type === 'voice') {
                   sendToServer(`CMD:EDIT_VOICE_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomRoles.join(',')}:${newRoomBitrate}`);
                 } else {
-                  sendToServer(`CMD:EDIT_TEXT_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomRoles.join(',')}`);
+                  sendToServer(`CMD:EDIT_TEXT_ROOM:${createRoomDialog.editing}:${newRoomName.trim()}:${newRoomRoles.join(',')}:${newRoomReadOnly}`);
                 }
               } else {
                 if (createRoomDialog.type === 'voice') {
                   sendToServer(`CMD:CREATE_VOICE_ROOM:${newRoomName.trim()}:${newRoomRoles.join(',')}:${newRoomBitrate}`);
                 } else {
-                  sendToServer(`CMD:CREATE_TEXT_ROOM:${newRoomName.trim()}:${newRoomRoles.join(',')}`);
+                  sendToServer(`CMD:CREATE_TEXT_ROOM:${newRoomName.trim()}:${newRoomRoles.join(',')}:${newRoomReadOnly}`);
                 }
               }
               setCreateRoomDialog(null);
@@ -7536,6 +8172,18 @@ export function TerminalForum() {
                     <option value="256000">256 kbps</option>
                     <option value="510000">510 kbps</option>
                   </select>
+                </div>
+              )}
+              {createRoomDialog.type === 'text' && (
+                <div className="space-y-2">
+                  <label className="text-xs text-green-700 block">{'>'} CHANNEL MODE</label>
+                  <label className="flex items-center gap-2 cursor-pointer rounded-lg border border-green-900/30 bg-[#0a0e0a] px-3 py-2 hover:bg-green-900/10 transition-all">
+                    <input type="checkbox" checked={newRoomReadOnly}
+                      onChange={e => setNewRoomReadOnly(e.target.checked)}
+                      className="accent-green-500" />
+                    <Megaphone className="w-4 h-4 text-green-500" />
+                    <div className="text-sm text-green-500">Read-only announcement channel</div>
+                  </label>
                 </div>
               )}
               <button type="submit" disabled={!newRoomName.trim()}

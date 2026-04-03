@@ -12,6 +12,34 @@ using System.Text.Json;
 /// </summary>
 public class ChatServer
 {
+    // ── Phase 0 protocol alignment (roadmap) ────────────────
+    // These constants intentionally live on both server and client so protocol
+    // additions stay discoverable before full feature implementation.
+    private static class Protocol
+    {
+        public const string CmdSearchPrefix = "SEARCH:"; // CMD:SEARCH:<room>:<query>:<limit>:<cursor>
+        public const string SearchResultsPrefix = "SEARCH_RESULTS:"; // SEARCH_RESULTS:<room>:<nextCursor>:<json>
+        public const string ErrorSearchInvalid = "ERROR:SEARCH_INVALID";
+        public const string ErrorSearchNoPermission = "ERROR:SEARCH_NO_PERMISSION";
+
+        public const string CmdCreateInvitePrefix = "CREATE_INVITE"; // CMD:CREATE_INVITE[:<maxUses>:<expiresAtIso>]
+        public const string CmdListInvites = "LIST_INVITES";
+        public const string CmdDeleteInvitePrefix = "DELETE_INVITE:"; // CMD:DELETE_INVITE:<token>
+        public const string InvitesPrefix = "INVITES:"; // INVITES:<json>
+        public const string InviteCreatedPrefix = "INVITE_CREATED:"; // INVITE_CREATED:<token>:<createdAtIso>:<createdBy>[:<maxUses>:<expiresAtIso>]
+        public const string InviteDeletedPrefix = "INVITE_DELETED:"; // INVITE_DELETED:<token>
+
+        public const string CmdReplyPrefix = "MSG_REPLY:"; // client send: MSG_REPLY:<room>:<replyToMsgId>:<text>
+        public const string EventReplyPrefix = "MSG_REPLY:"; // event form (planned): MSG_REPLY:<room>:<msgId>:<user>:<isoTime>:<replyToMsgId>:<text>
+        public const string EventEditedPrefix = "MSG_EDITED:"; // MSG_EDITED:<room>:<msgId>:<newText>
+        public const string ErrorReadOnlyChannel = "ERROR:READ_ONLY_CHANNEL";
+    }
+
+    // Command ownership / permission gates (phase 0 contract):
+    // - Search requires room access.
+    // - Invite management requires server_settings (or admin).
+    // - Posting in read-only text rooms requires announce (or admin).
+
     // ── Dependencies ────────────────────────────────────────
     private readonly TcpListener _listener;
     private readonly RoomManager _rooms;
@@ -122,7 +150,7 @@ public class ChatServer
                 await writer.WriteLineAsync("SERVER_PASSWORD_REQUIRED").ConfigureAwait(false);
 
                 var pwLine = (await reader.ReadLineAsync().ConfigureAwait(false))?.Trim();
-                if (string.IsNullOrEmpty(pwLine) || !pwLine.StartsWith("SERVER_PASSWORD:"))
+                if (string.IsNullOrEmpty(pwLine) || !pwLine.StartsWith("SERVER_PASSWORD:", StringComparison.Ordinal))
                 {
                     await writer.WriteLineAsync("SERVER_PASSWORD_FAIL:Ugyldigt format").ConfigureAwait(false);
                     return;
@@ -149,7 +177,7 @@ public class ChatServer
             if (string.IsNullOrEmpty(authLine))
                 return;
 
-            if (authLine.StartsWith("REGISTER:"))
+            if (authLine.StartsWith("REGISTER:", StringComparison.Ordinal))
             {
                 var parts = authLine.Substring(9).Split(':', 2);
                 if (parts.Length < 2)
@@ -183,7 +211,7 @@ public class ChatServer
                     await writer.WriteLineAsync($"AUTH_TOKEN:{token}").ConfigureAwait(false);
                 }
             }
-            else if (authLine.StartsWith("REGISTER_WITH_INVITE:"))
+            else if (authLine.StartsWith("REGISTER_WITH_INVITE:", StringComparison.Ordinal))
             {
                 // REGISTER_WITH_INVITE:<token>:<user>:<pass>
                 var rest = authLine.Substring("REGISTER_WITH_INVITE:".Length);
@@ -201,15 +229,10 @@ public class ChatServer
                     await writer.WriteLineAsync("REGISTER_FAIL:You have been banned from this server").ConfigureAwait(false);
                     return;
                 }
-                if (!_inviteStore.UseInvite(inviteToken))
+                var inviteResult = _inviteStore.UseInviteIf(inviteToken, () => _userStore.Register(regUser, regPass));
+                if (!inviteResult.success)
                 {
-                    await writer.WriteLineAsync("REGISTER_FAIL:Invalid or expired invite code").ConfigureAwait(false);
-                    return;
-                }
-                var (ok, err) = _userStore.Register(regUser, regPass);
-                if (!ok)
-                {
-                    await writer.WriteLineAsync($"REGISTER_FAIL:{err}").ConfigureAwait(false);
+                    await writer.WriteLineAsync($"REGISTER_FAIL:{inviteResult.error}").ConfigureAwait(false);
                     return;
                 }
                 name = regUser;
@@ -223,7 +246,7 @@ public class ChatServer
                     await writer.WriteLineAsync($"AUTH_TOKEN:{token}").ConfigureAwait(false);
                 }
             }
-            else if (authLine.StartsWith("AUTH:"))
+            else if (authLine.StartsWith("AUTH:", StringComparison.Ordinal))
             {
                 var parts = authLine.Substring(5).Split(':', 2);
                 if (parts.Length < 2)
@@ -324,15 +347,15 @@ public class ChatServer
                 if (line.Length > maxLineLength) continue;
                 try
                 {
-                    if (line.StartsWith("VIDEO:"))
+                    if (line.StartsWith("VIDEO:", StringComparison.Ordinal))
                         await RelayVideoAsync(name, line).ConfigureAwait(false);
-                    else if (line.StartsWith("CMD:"))
+                    else if (line.StartsWith("CMD:", StringComparison.Ordinal))
                         await HandleCommandAsync(writer, name, line.Substring(4), client).ConfigureAwait(false);
-                    else if (line.StartsWith("FILE:"))
+                    else if (line.StartsWith("FILE:", StringComparison.Ordinal))
                         await HandleFileAsync(writer, name, line.Substring(5)).ConfigureAwait(false);
-                    else if (line.StartsWith("MSG:"))
+                    else if (line.StartsWith("MSG:", StringComparison.Ordinal))
                         await HandleMessageAsync(writer, name, line.Substring(4)).ConfigureAwait(false);
-                    else if (line.StartsWith("DM:"))
+                    else if (line.StartsWith("DM:", StringComparison.Ordinal))
                         await HandleDirectMessageAsync(writer, name, line.Substring(3)).ConfigureAwait(false);
                 }
                 catch (IOException) { throw; }
@@ -514,6 +537,19 @@ public class ChatServer
                     await BroadcastToTextRoomAsync(roomName, $"MSG_DELETED:{roomName}:{msgId}").ConfigureAwait(false);
             }
         }
+        else if (cmd.StartsWith(Protocol.CmdReplyPrefix, StringComparison.Ordinal))
+        {
+            // MSG_REPLY:<room>:<replyToMsgId>:<text>
+            var args = cmd.Substring(Protocol.CmdReplyPrefix.Length).Split(':', 3);
+            if (args.Length >= 3)
+            {
+                await HandleMessageCoreAsync(writer, name, args[0], args[2], args[1]).ConfigureAwait(false);
+            }
+            else
+            {
+                await writer.WriteLineAsync(Protocol.ErrorSearchInvalid).ConfigureAwait(false);
+            }
+        }
         else if (cmd.StartsWith("EDIT_MSG:"))
         {
             // EDIT_MSG:<room>:<msgId>:<newText>
@@ -580,6 +616,44 @@ public class ChatServer
                     await writer.WriteLineAsync($"HISTORY:{roomName}:{hasMore}:{json}").ConfigureAwait(false);
                 }
             }
+        }
+        else if (cmd.StartsWith(Protocol.CmdSearchPrefix, StringComparison.Ordinal))
+        {
+            // SEARCH:<room>:<query>:<limit>:<cursor>
+            var args = cmd.Substring(Protocol.CmdSearchPrefix.Length).Split(':', 4);
+            if (args.Length < 4)
+            {
+                await writer.WriteLineAsync(Protocol.ErrorSearchInvalid).ConfigureAwait(false);
+                return;
+            }
+
+            var roomName = args[0];
+            var query = args[1].Trim();
+            var limitRaw = args[2];
+            var cursor = string.IsNullOrWhiteSpace(args[3]) ? null : args[3].Trim();
+
+            if (!_rooms.IsInTextRoom(name, roomName))
+            {
+                await writer.WriteLineAsync(Protocol.ErrorSearchNoPermission).ConfigureAwait(false);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(query) || !int.TryParse(limitRaw, out var limit))
+            {
+                await writer.WriteLineAsync(Protocol.ErrorSearchInvalid).ConfigureAwait(false);
+                return;
+            }
+
+            limit = Math.Clamp(limit, 1, 50);
+            if (!string.IsNullOrWhiteSpace(cursor) && !long.TryParse(cursor, out _))
+            {
+                await writer.WriteLineAsync(Protocol.ErrorSearchInvalid).ConfigureAwait(false);
+                return;
+            }
+
+            var (messages, nextCursor) = _history.SearchMessages(roomName, query, limit, cursor);
+            var json = JsonSerializer.Serialize(messages);
+            await writer.WriteLineAsync($"{Protocol.SearchResultsPrefix}{roomName}:{nextCursor ?? string.Empty}:{json}").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("ASSIGN_ROLE:"))
         {
@@ -980,18 +1054,19 @@ public class ChatServer
         }
         else if (cmd.StartsWith("CREATE_TEXT_ROOM:"))
         {
-            // CREATE_TEXT_ROOM:<name>:<password>
+            // CREATE_TEXT_ROOM:<name>:<password>:<readOnly>
             if (!_roleStore.HasPermission(name, "create_rooms"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
             }
-            var args = cmd.Substring("CREATE_TEXT_ROOM:".Length).Split(':', 2);
+            var args = cmd.Substring("CREATE_TEXT_ROOM:".Length).Split(':', 3);
             var roomName = args[0];
             var allowedRoles = args.Length > 1 && !string.IsNullOrEmpty(args[1])
                 ? args[1].Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
                 : new List<string>();
-            if (_rooms.Config.CreateTextRoom(roomName, allowedRoles))
+            var readOnly = args.Length > 2 && bool.TryParse(args[2], out var ro) && ro;
+            if (_rooms.Config.CreateTextRoom(roomName, allowedRoles, readOnly))
             {
                 _rooms.EnsureTextRoom(roomName);
                 _log?.Invoke($"[Rooms] {name} created text room '{roomName}'");
@@ -1128,19 +1203,20 @@ public class ChatServer
         }
         else if (cmd.StartsWith("EDIT_TEXT_ROOM:"))
         {
-            // EDIT_TEXT_ROOM:<oldName>:<newName>:<password>
+            // EDIT_TEXT_ROOM:<oldName>:<newName>:<password>:<readOnly>
             if (!_roleStore.HasPermission(name, "create_rooms"))
             {
                 await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
                 return;
             }
-            var args = cmd.Substring("EDIT_TEXT_ROOM:".Length).Split(':', 3);
+            var args = cmd.Substring("EDIT_TEXT_ROOM:".Length).Split(':', 4);
             var oldName = args[0];
             var newName = args.Length > 1 ? args[1] : oldName;
             var allowedRoles = args.Length > 2 && !string.IsNullOrEmpty(args[2])
                 ? args[2].Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
                 : new List<string>();
-            if (_rooms.Config.EditTextRoom(oldName, newName, allowedRoles))
+            var readOnly = args.Length > 3 && bool.TryParse(args[3], out var ro) && ro;
+            if (_rooms.Config.EditTextRoom(oldName, newName, allowedRoles, readOnly))
             {
                 if (!string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase))
                 {
@@ -1299,6 +1375,84 @@ public class ChatServer
             _dmPublicKeys.TryGetValue(targetName, out var pubKey);
             await writer.WriteLineAsync($"DM_KEY:{targetName}:{pubKey ?? string.Empty}").ConfigureAwait(false);
         }
+        else if (cmd.StartsWith(Protocol.CmdCreateInvitePrefix, StringComparison.Ordinal))
+        {
+            if (!_roleStore.HasPermission(name, "server_settings"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+
+            int? maxUses = 1;
+            string? expiresAtIso = null;
+            var parts = cmd.Split(':', 3);
+            if (parts.Length >= 2 && int.TryParse(parts[1], out var parsedUses)) maxUses = parsedUses;
+            if (parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2])) expiresAtIso = parts[2];
+
+            var created = _inviteStore.CreateInvite(name, maxUses, expiresAtIso);
+            await writer.WriteLineAsync(BuildInviteCreatedEvent(created)).ConfigureAwait(false);
+            await writer.WriteLineAsync($"{Protocol.InvitesPrefix}{BuildInvitesJson()}").ConfigureAwait(false);
+        }
+        else if (cmd == Protocol.CmdListInvites)
+        {
+            if (!_roleStore.HasPermission(name, "server_settings"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+            await writer.WriteLineAsync($"{Protocol.InvitesPrefix}{BuildInvitesJson()}").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith(Protocol.CmdDeleteInvitePrefix, StringComparison.Ordinal))
+        {
+            if (!_roleStore.HasPermission(name, "server_settings"))
+            {
+                await writer.WriteLineAsync("ERROR:No permission").ConfigureAwait(false);
+                return;
+            }
+
+            var token = cmd.Substring(Protocol.CmdDeleteInvitePrefix.Length).Trim();
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                await writer.WriteLineAsync("ERROR:Invalid invite token").ConfigureAwait(false);
+                return;
+            }
+
+            if (_inviteStore.DeleteInvite(token))
+            {
+                await writer.WriteLineAsync($"{Protocol.InviteDeletedPrefix}{token}").ConfigureAwait(false);
+                await writer.WriteLineAsync($"{Protocol.InvitesPrefix}{BuildInvitesJson()}").ConfigureAwait(false);
+            }
+            else
+            {
+                await writer.WriteLineAsync("ERROR:Invite not found").ConfigureAwait(false);
+            }
+        }
+    }
+
+    private string BuildInvitesJson()
+    {
+        var invites = _inviteStore.GetAllInvites().Select(i => new
+        {
+            i.Token,
+            i.CreatedBy,
+            i.CreatedAt,
+            i.MaxUses,
+            i.Uses,
+            i.ExpiresAt,
+        });
+        return JsonSerializer.Serialize(invites);
+    }
+
+    private static string BuildInviteCreatedEvent(InviteEntry invite)
+    {
+        var basePart = $"{Protocol.InviteCreatedPrefix}{invite.Token}:{invite.CreatedAt}:{invite.CreatedBy}";
+        if (invite.MaxUses.HasValue || !string.IsNullOrWhiteSpace(invite.ExpiresAt))
+        {
+            var maxUses = invite.MaxUses?.ToString() ?? string.Empty;
+            var expires = invite.ExpiresAt ?? string.Empty;
+            return $"{basePart}:{maxUses}:{expires}";
+        }
+        return basePart;
     }
 
     private async Task HandleMessageAsync(StreamWriter writer, string name, string payload)
@@ -1309,10 +1463,30 @@ public class ChatServer
         var roomName = payload.Substring(0, colonIdx);
         var text = payload.Substring(colonIdx + 1);
 
+        await HandleMessageCoreAsync(writer, name, roomName, text, null).ConfigureAwait(false);
+    }
+
+    private async Task HandleMessageCoreAsync(StreamWriter writer, string name, string roomName, string text, string? replyToMsgId)
+    {
+        if (string.IsNullOrWhiteSpace(roomName)) return;
+
         if (_rooms.IsInTextRoom(name, roomName))
         {
-            var id = _history.AddMessage(roomName, name, text);
-            await BroadcastToTextRoomAsync(roomName, $"MSG:{roomName}:{id}:{name}:{text}").ConfigureAwait(false);
+            var roomDef = _rooms.Config.TextRooms.FirstOrDefault(r => string.Equals(r.Name, roomName, StringComparison.OrdinalIgnoreCase));
+            if (roomDef?.ReadOnly == true && !_roleStore.HasPermission(name, "announce") && !_roleStore.HasPermission(name, "admin"))
+            {
+                await writer.WriteLineAsync(Protocol.ErrorReadOnlyChannel).ConfigureAwait(false);
+                return;
+            }
+
+            var normalizedReply = string.IsNullOrWhiteSpace(replyToMsgId) ? null : replyToMsgId;
+            if (normalizedReply != null && !_history.MessageExists(roomName, normalizedReply))
+                normalizedReply = null;
+            var id = _history.AddMessage(roomName, name, text, normalizedReply);
+            if (normalizedReply != null)
+                await BroadcastToTextRoomAsync(roomName, $"{Protocol.EventReplyPrefix}{roomName}:{id}:{name}:{DateTime.UtcNow:O}:{normalizedReply}:{text}").ConfigureAwait(false);
+            else
+                await BroadcastToTextRoomAsync(roomName, $"MSG:{roomName}:{id}:{name}:{text}").ConfigureAwait(false);
 
             // Detect @mentions and notify mentioned users
             foreach (var kv in _clients)
@@ -1404,7 +1578,7 @@ public class ChatServer
         await writer.WriteLineAsync($"FILE_PROGRESS:{roomName}:broadcasting").ConfigureAwait(false);
 
         var text = $"__FILE__:{fileName}:{mimeType}:{base64Data}";
-        var id = _history.AddMessage(roomName, name, text);
+        var id = _history.AddMessage(roomName, name, text, null);
         await BroadcastToTextRoomAsync(roomName, $"MSG:{roomName}:{id}:{name}:{text}").ConfigureAwait(false);
         _log?.Invoke($"[Chat] File '{fileName}' ({estimatedBytes / 1024}KB) from '{name}' in '{roomName}'");
 
@@ -1453,6 +1627,7 @@ public class ChatServer
             ["ServerName"] = _serverConfig.ServerName,
             ["ServerLogo"] = _serverConfig.ServerLogo,
             ["HasPassword"] = !string.IsNullOrEmpty(_serverConfig.ServerPassword),
+            ["InviteOnly"] = _serverConfig.InviteOnly,
             ["VoiceHost"] = voiceHost,
             ["UdpPort"] = _serverConfig.PublicUdpPort is > 0 ? _serverConfig.PublicUdpPort.Value : _serverConfig.UdpPort,
             ["MaxCameraWidth"] = _serverConfig.MaxCameraWidth,
@@ -1498,7 +1673,7 @@ public class ChatServer
             .Select(r => new { r.Name, r.AllowedRoles, r.Bitrate });
         var textRooms = _rooms.Config.TextRooms
             .Where(r => canAccess(r.AllowedRoles))
-            .Select(r => new { r.Name, r.AllowedRoles });
+            .Select(r => new { r.Name, r.AllowedRoles, r.ReadOnly });
         return JsonSerializer.Serialize(new { VoiceRooms = voiceRooms, TextRooms = textRooms });
     }
 
@@ -1724,7 +1899,7 @@ public class ChatServer
         }
 
         // Transcode HEVC → H.264 for DM file attachments
-        if (text.StartsWith("__FILE__:") && !string.IsNullOrWhiteSpace(_serverConfig.FfmpegPath))
+        if (text.StartsWith("__FILE__:", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(_serverConfig.FfmpegPath))
         {
             var rest = text.Substring("__FILE__:".Length);
             var fi1 = rest.IndexOf(':');

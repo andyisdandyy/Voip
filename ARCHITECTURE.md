@@ -168,6 +168,7 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `WATCH_STREAM:<username>` | Opt-in to receive video frames and screen audio from a streamer |
 | `UNWATCH_STREAM:<username>` | Opt-out of receiving a streamer's video/screen audio |
 | `DELETE_MSG:<room>:<id>` | Delete own message (or any with permission) |
+| `MSG_REPLY:<room>:<replyToMsgId>:<text>` | Send a reply-to message (parent validated in same room; missing parent degrades to normal message) |
 | `SET_AVATAR:<base64>` | Upload avatar (max ~32 KB) |
 | `REMOVE_AVATAR` | Remove avatar |
 | `SET_STATUS:<online\|away>` | Set user presence status (online or away) |
@@ -188,14 +189,56 @@ Each connected TCP client gets its own async task (`HandleClientAsync`):
 | `PIN_MSG:<room>:<msgId>` | Pin a message in a text room (requires `pin_messages`) |
 | `UNPIN_MSG:<room>:<msgId>` | Unpin a message (requires `pin_messages`) |
 | `CREATE_VOICE_ROOM:<name>:<password>:<bitrate>` | Create a voice room (requires `create_rooms`) |
-| `CREATE_TEXT_ROOM:<name>:<password>` | Create a text room (requires `create_rooms`) |
+| `CREATE_TEXT_ROOM:<name>:<password>:<readOnly>` | Create a text room (requires `create_rooms`). `readOnly=true` creates an announcement channel. |
 | `EDIT_VOICE_ROOM:<oldName>:<newName>:<password>:<bitrate>` | Edit a voice room — rename, change password/bitrate (requires `create_rooms`). Migrates user tracking and broadcasts updated room list. |
-| `EDIT_TEXT_ROOM:<oldName>:<newName>:<password>` | Edit a text room — rename, change password (requires `create_rooms`). Migrates user tracking and chat history on rename. |
+| `EDIT_TEXT_ROOM:<oldName>:<newName>:<password>:<readOnly>` | Edit a text room — rename, change password/read-only mode (requires `create_rooms`). Migrates user tracking and chat history on rename. |
 | `DELETE_VOICE_ROOM:<name>` | Delete a voice room (requires `delete_rooms`). Cascades: kicks all users, cleans camera/screen active state, clears stream watchers, broadcasts `CAMERA_OFF`/`SCREEN_OFF` for affected users. |
 | `DELETE_TEXT_ROOM:<name>` | Delete a text room (requires `delete_rooms`). Cascades: kicks all users, permanently deletes all chat history and pinned messages for the room. |
 | `REORDER_VOICE_ROOMS:<name1>,<name2>,...` | Reorder voice rooms (requires `reorder_rooms`) |
 | `REORDER_TEXT_ROOMS:<name1>,<name2>,...` | Reorder text rooms (requires `reorder_rooms`) |
 | `UPDATE_SERVER_CONFIG:<json>` | Update safe server settings (requires `server_settings`) — saves to disk and re-broadcasts `SERVER_INFO`. Values are parsed via `TryGetInt64` and clamped to safe ranges to prevent overflow. |
+| `SEARCH:<room>:<query>:<limit>:<cursor>` | Search messages in a joined text room (limit clamped 1..50), returns `SEARCH_RESULTS` |
+| `CREATE_INVITE[:<maxUses>:<expiresAtIso>]` | Create an invite token (requires `server_settings`) |
+| `LIST_INVITES` | List active invite tokens as `INVITES:<json>` (requires `server_settings`) |
+| `DELETE_INVITE:<token>` | Revoke an invite token (requires `server_settings`) |
+
+Planned/partially aligned protocol extensions (phase 0 contract):
+
+- Search:
+- `CMD:SEARCH:<room>:<query>:<limit>:<cursor>`
+  - `SEARCH_RESULTS:<room>:<nextCursor>:<json>`
+  - `ERROR:SEARCH_INVALID`, `ERROR:SEARCH_NO_PERMISSION`
+- Invite management:
+  - `CMD:CREATE_INVITE[:<maxUses>:<expiresAtIso>]`
+  - `CMD:LIST_INVITES`
+  - `CMD:DELETE_INVITE:<token>`
+  - `INVITES:<json>`
+  - `INVITE_CREATED:<token>:<createdAtIso>:<createdBy>[:<maxUses>:<expiresAtIso>]`
+  - `INVITE_DELETED:<token>`
+- Threaded replies:
+  - `MSG_REPLY:<room>:<replyToMsgId>:<text>` (client send)
+  - `MSG_REPLY:<room>:<msgId>:<user>:<isoTime>:<replyToMsgId>:<text>` (event form)
+  - `MSG_EDITED:<room>:<msgId>:<newText>` keeps reply linkage metadata
+
+Compatibility note: older clients should continue rendering regular messages and ignore
+unknown fields/events.
+
+Read-only text channels are represented by `ReadOnly: true` on text-room entries in
+`ROOMS` payloads. Posting is rejected with `ERROR:READ_ONLY_CHANNEL` unless the user
+has `announce` (or `admin`).
+
+Search v1 uses case-insensitive `LIKE` on `messages.text` and `messages.user`, ordered
+newest-first, with `rowid` cursor pagination.
+
+Phase 5 hardening includes a built-in regression test entrypoint:
+- Run `dotnet run -- --self-test` in `VoipServer` to execute:
+  - reply metadata stability across room rename/delete,
+  - invite expiry/use-limit behavior (including legacy `invites.json` migration shape),
+  - search pagination uniqueness/stability.
+
+Thread replies use nullable `reply_to_msg_id` on `messages`. History/search payloads include
+`ReplyToMessageId` when set. Live reply broadcasts use
+`MSG_REPLY:<room>:<msgId>:<user>:<isoTime>:<replyToMsgId>:<text>`.
 
 #### Video Relay
 - Video frames are sent as `VIDEO:<flags>:<base64data>` over TCP
@@ -232,7 +275,8 @@ Private 1-to-1 messages between users. Two transports are supported:
 | `UserStore` | `users.json` | Usernames → PBKDF2 password hashes |
 | `RoleStore` | `roles.json` | Role definitions + user-role mapping |
 | `AvatarStore` | `avatars.json` | Username → base64 JPEG |
-| `ChatHistoryStore` | `chat_history.db` | Room → messages + pinned message IDs (SQLite, WAL mode). Migrates from legacy `chat_history.json` / `pinned_messages.json` on first run. |
+| `InviteStore` | `invites.json` | Invite tokens + metadata (`MaxUses`, `Uses`, `ExpiresAt`) |
+| `ChatHistoryStore` | `chat_history.db` | Room → messages (+ optional `reply_to_msg_id`) + pinned message IDs (SQLite, WAL mode). Migrates from legacy `chat_history.json` / `pinned_messages.json` on first run. |
 | `SoundboardStore` | `soundboard.json` | Sound name → base64 audio data |
 | `EmojiStore` | `emojis.json` | Emoji name → base64 image data |
 | `ServerConfig` | `server-config.json` | Network, encryption, quality config |
@@ -289,6 +333,7 @@ Available permissions:
 | `manage_soundboard` | Upload/delete soundboard sounds |
 | `manage_emojis` | Upload/delete custom emojis |
 | `server_settings` | Update server configuration |
+| `announce` | Post in read-only / announcement text channels |
 
 **Wipe Server** (admin only): `CMD:WIPE_SERVER:<serverName>` permanently deletes all
 chat history, pins, avatars, soundboard sounds, custom emojis, and custom roles. Rooms

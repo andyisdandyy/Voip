@@ -50,7 +50,7 @@ public class UserStore
         if (!VerifyPassword(password, storedHash))
             return (false, "Forkert brugernavn eller password");
         // Migrate legacy SHA-256 hash to PBKDF2 on successful login
-        if (!storedHash.StartsWith("$PBKDF2$"))
+        if (!storedHash.StartsWith("$PBKDF2$", StringComparison.Ordinal))
         {
             _users[username] = HashPassword(password);
             Save();
@@ -99,22 +99,31 @@ public class UserStore
 
     private static bool VerifyPassword(string password, string storedHash)
     {
-        if (storedHash.StartsWith("$PBKDF2$"))
+        try
         {
-            var parts = storedHash.Split('$', StringSplitOptions.RemoveEmptyEntries);
-            // parts: ["PBKDF2", "<salt>", "<hash>"]
-            if (parts.Length < 3) return false;
-            var salt = Convert.FromBase64String(parts[1]);
-            var expected = Convert.FromBase64String(parts[2]);
-            var actual = Rfc2898DeriveBytes.Pbkdf2(
-                Encoding.UTF8.GetBytes(password), salt, Pbkdf2Iterations,
-                HashAlgorithmName.SHA512, HashSize);
-            return CryptographicOperations.FixedTimeEquals(actual, expected);
+            if (storedHash.StartsWith("$PBKDF2$", StringComparison.Ordinal))
+            {
+                var parts = storedHash.Split('$', StringSplitOptions.RemoveEmptyEntries);
+                // parts: ["PBKDF2", "<salt>", "<hash>"]
+                if (parts.Length < 3) return false;
+                var salt = Convert.FromBase64String(parts[1]);
+                var expected = Convert.FromBase64String(parts[2]);
+                var actual = Rfc2898DeriveBytes.Pbkdf2(
+                    Encoding.UTF8.GetBytes(password), salt, Pbkdf2Iterations,
+                    HashAlgorithmName.SHA512, HashSize);
+                return CryptographicOperations.FixedTimeEquals(actual, expected);
+            }
+
+            // Legacy SHA-256 fallback (migrated on next successful login)
+            var legacyHash = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+            var legacyStored = Convert.FromBase64String(storedHash);
+            return CryptographicOperations.FixedTimeEquals(legacyHash, legacyStored);
         }
-        // Legacy SHA-256 fallback (migrated on next successful login)
-        var legacyHash = SHA256.HashData(Encoding.UTF8.GetBytes(password));
-        var legacyStored = Convert.FromBase64String(storedHash);
-        return CryptographicOperations.FixedTimeEquals(legacyHash, legacyStored);
+        catch
+        {
+            // Malformed hash data should fail auth instead of tearing down the connection.
+            return false;
+        }
     }
 
     private void Load()

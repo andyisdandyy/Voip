@@ -41,12 +41,19 @@ public class FileServer
         _listener.Start();
         _log?.Invoke($"[FileServer] Listening on {_listener.Prefixes.First()}");
 
+        using var stopRegistration = ct.Register(() =>
+        {
+            try { _listener.Stop(); } catch { }
+        });
+
         // Periodic cleanup of old files (every hour, remove files older than 24h)
         _ = Task.Run(async () =>
         {
             while (!ct.IsCancellationRequested)
             {
-                await Task.Delay(TimeSpan.FromHours(1), ct).ConfigureAwait(false);
+                try { await Task.Delay(TimeSpan.FromHours(1), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+
                 CleanupOldFiles(TimeSpan.FromHours(24));
             }
         }, ct);
@@ -86,13 +93,13 @@ public class FileServer
 
         var path = request.Url?.AbsolutePath ?? "";
 
-        if (request.HttpMethod == "POST" && path == "/upload")
+        if (request.HttpMethod == "POST" && string.Equals(path, "/upload", StringComparison.Ordinal))
         {
             await HandleUploadAsync(request, response).ConfigureAwait(false);
             return;
         }
 
-        if (request.HttpMethod == "GET" && path.StartsWith("/file/"))
+        if (request.HttpMethod == "GET" && path.StartsWith("/file/", StringComparison.Ordinal))
         {
             await HandleDownloadAsync(path, request, response).ConfigureAwait(false);
             return;
@@ -223,8 +230,9 @@ public class FileServer
 
         await File.WriteAllBytesAsync(newPath, transcodedBytes).ConfigureAwait(false);
 
-        // Remove old file if extension changed
-        if (newPath != originalPath)
+        // Remove old file if extension changed (treat path casing as equal on Windows)
+        var pathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!string.Equals(newPath, originalPath, pathComparison))
             try { File.Delete(originalPath); } catch { }
 
         // Update metadata

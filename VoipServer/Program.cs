@@ -10,6 +10,12 @@ var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? Environment.Curre
 Console.WriteLine("VoIP Server starting...");
 Console.WriteLine($"Data directory: {exeDir}");
 
+if (args.Any(a => string.Equals(a, "--self-test", StringComparison.OrdinalIgnoreCase)))
+{
+    Environment.Exit(Phase5SelfTests.RunAll());
+    return;
+}
+
 var serverConfig = ServerConfig.Load(Path.Combine(exeDir, "server-config.json"));
 var roomsConfig = RoomsConfig.Load(Path.Combine(exeDir, "rooms.json"));
 
@@ -45,6 +51,7 @@ var roleStore = new RoleStore(Path.Combine(exeDir, "roles.json"));
 var avatarStore = new AvatarStore(Path.Combine(exeDir, "avatars.json"));
 var soundboardStore = new SoundboardStore(Path.Combine(exeDir, "soundboard.json"));
 var emojiStore = new EmojiStore(Path.Combine(exeDir, "emojis.json"));
+var inviteStore = new InviteStore(Path.Combine(exeDir, "invites.json"));
 
 Log("VoIP Server starting...");
 Log($"Server: '{serverConfig.ServerName}'");
@@ -55,7 +62,7 @@ Log($"E2EE: {(!string.IsNullOrEmpty(serverConfig.EncryptionKey) ? "Server-manage
 var chatCts = new CancellationTokenSource();
 var ssePort = serverConfig.SsePort > 0 ? serverConfig.SsePort : serverConfig.TcpPort + 2;
 var notificationServer = new NotificationServer(ssePort, serverConfig.BindLocalhost, Log);
-_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, avatarStore, soundboardStore, emojiStore, Log, notificationServer).StartAsync(chatCts.Token));
+_ = Task.Run(() => new ChatServer(serverConfig, roomManager, chatHistory, userStore, roleStore, avatarStore, soundboardStore, emojiStore, Log, notificationServer, inviteStore: inviteStore).StartAsync(chatCts.Token));
 _ = Task.Run(() => notificationServer.StartAsync(chatCts.Token));
 var bindAddr = serverConfig.BindLocalhost ? "127.0.0.1" : "0.0.0.0";
 Log($"Chat server started on {bindAddr}:{serverConfig.TcpPort}{(serverConfig.BindLocalhost ? " (use NGINX for TLS)" : "")}");
@@ -208,7 +215,7 @@ while (true)
 
         if (!string.IsNullOrEmpty(text))
         {
-            if (text.StartsWith("HELLO:"))
+            if (text.StartsWith("HELLO:", StringComparison.Ordinal))
             {
                 var payload = text.Substring("HELLO:".Length);
                 var colonIdx = payload.IndexOf(':');
@@ -240,7 +247,7 @@ while (true)
                 Log($"Handshake completed with {sender} (user='{username}')");
                 handled = true;
             }
-            else if (text.StartsWith("GOODBYE"))
+            else if (text.StartsWith("GOODBYE", StringComparison.Ordinal))
             {
                 if (clients.TryRemove(sender, out var info))
                     roomManager.RemoveUser(info.username);

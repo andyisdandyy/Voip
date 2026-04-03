@@ -37,6 +37,7 @@ public class RoleStore
         "manage_soundboard",
         "manage_emojis",
         "server_settings",
+        "announce",
     };
 
     private RoleStoreData _data;

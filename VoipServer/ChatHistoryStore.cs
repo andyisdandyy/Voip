@@ -11,6 +11,7 @@ public class ChatMessage
     public string Text { get; set; } = "";
     public DateTime Time { get; set; }
     public bool Edited { get; set; } = false;
+    public string? ReplyToMessageId { get; set; }
 }
 
 /// <summary>
@@ -35,17 +36,21 @@ public class ChatHistoryStore
 
     // ── Public API (unchanged signatures) ───────────────────
 
-    public string AddMessage(string room, string user, string text)
+    public string AddMessage(string room, string user, string text, string? replyToMessageId = null)
     {
+        if (!string.IsNullOrWhiteSpace(replyToMessageId) && !MessageExists(room, replyToMessageId))
+            replyToMessageId = null;
+
         var id = Guid.NewGuid().ToString("N")[..12];
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "INSERT INTO messages (id, room, user, text, time) VALUES ($id, $room, $user, $text, $time)";
+        cmd.CommandText = "INSERT INTO messages (id, room, user, text, time, reply_to_msg_id) VALUES ($id, $room, $user, $text, $time, $reply)";
         cmd.Parameters.AddWithValue("$id", id);
         cmd.Parameters.AddWithValue("$room", room);
         cmd.Parameters.AddWithValue("$user", user);
         cmd.Parameters.AddWithValue("$text", text);
         cmd.Parameters.AddWithValue("$time", DateTime.UtcNow.ToString("O"));
+        cmd.Parameters.AddWithValue("$reply", (object?)replyToMessageId ?? DBNull.Value);
         cmd.ExecuteNonQuery();
         return id;
     }
@@ -184,7 +189,7 @@ public class ChatHistoryStore
     {
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT id, user, text, time, edited FROM messages WHERE room = $room ORDER BY rowid ASC";
+        cmd.CommandText = "SELECT id, user, text, time, edited, reply_to_msg_id FROM messages WHERE room = $room ORDER BY rowid ASC";
         cmd.Parameters.AddWithValue("$room", room);
         return ReadMessages(cmd);
     }
@@ -201,8 +206,8 @@ public class ChatHistoryStore
         if (string.IsNullOrEmpty(beforeId))
         {
             cmd.CommandText = """
-                SELECT id, user, text, time, edited FROM (
-                    SELECT id, user, text, time, edited, rowid FROM messages
+                SELECT id, user, text, time, edited, reply_to_msg_id FROM (
+                    SELECT id, user, text, time, edited, reply_to_msg_id, rowid FROM messages
                     WHERE room = $room ORDER BY rowid DESC LIMIT $count
                 ) sub ORDER BY rowid ASC
                 """;
@@ -210,8 +215,8 @@ public class ChatHistoryStore
         else
         {
             cmd.CommandText = """
-                SELECT id, user, text, time, edited FROM (
-                    SELECT m.id, m.user, m.text, m.time, m.edited, m.rowid FROM messages m
+                SELECT id, user, text, time, edited, reply_to_msg_id FROM (
+                    SELECT m.id, m.user, m.text, m.time, m.edited, m.reply_to_msg_id, m.rowid FROM messages m
                     WHERE m.room = $room AND m.rowid < (SELECT rowid FROM messages WHERE id = $bid AND room = $room)
                     ORDER BY m.rowid DESC LIMIT $count
                 ) sub ORDER BY rowid ASC
@@ -230,6 +235,64 @@ public class ChatHistoryStore
         cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE room = $room";
         cmd.Parameters.AddWithValue("$room", room);
         return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    /// <summary>
+    /// Searches messages in a room by sender or text (case-insensitive), newest-first.
+    /// Cursor is a SQLite rowid upper-bound (exclusive) for pagination.
+    /// Returns the next cursor when there may be more results.
+    /// </summary>
+    public (List<ChatMessage> messages, string? nextCursor) SearchMessages(string room, string query, int limit, string? cursor)
+    {
+        if (string.IsNullOrWhiteSpace(query) || limit <= 0)
+            return (new List<ChatMessage>(), null);
+
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+
+        bool hasCursor = long.TryParse(cursor, out var cursorRowId) && cursorRowId > 0;
+        cmd.CommandText = hasCursor
+            ? """
+                SELECT rowid, id, user, text, time, edited, reply_to_msg_id
+                FROM messages
+                WHERE room = $room
+                  AND rowid < $cursor
+                  AND (LOWER(text) LIKE LOWER($q) OR LOWER(user) LIKE LOWER($q))
+                ORDER BY rowid DESC
+                LIMIT $limit
+              """
+            : """
+                SELECT rowid, id, user, text, time, edited, reply_to_msg_id
+                FROM messages
+                WHERE room = $room
+                  AND (LOWER(text) LIKE LOWER($q) OR LOWER(user) LIKE LOWER($q))
+                ORDER BY rowid DESC
+                LIMIT $limit
+              """;
+
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$q", $"%{query}%");
+        cmd.Parameters.AddWithValue("$limit", limit);
+        if (hasCursor)
+            cmd.Parameters.AddWithValue("$cursor", cursorRowId);
+
+        var rows = new List<(long rowId, ChatMessage message)>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add((reader.GetInt64(0), new ChatMessage
+            {
+                Id = reader.GetString(1),
+                User = reader.GetString(2),
+                Text = reader.GetString(3),
+                Time = DateTime.Parse(reader.GetString(4)).ToUniversalTime(),
+                Edited = !reader.IsDBNull(5) && reader.GetInt32(5) != 0,
+                ReplyToMessageId = reader.IsDBNull(6) ? null : reader.GetString(6),
+            }));
+        }
+
+        string? nextCursor = rows.Count == limit ? rows[^1].rowId.ToString() : null;
+        return (rows.Select(r => r.message).ToList(), nextCursor);
     }
 
     // ── Pin support ─────────────────────────────────────────
@@ -267,7 +330,7 @@ public class ChatHistoryStore
         using var conn = Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT m.id, m.user, m.text, m.time, m.edited FROM messages m
+            SELECT m.id, m.user, m.text, m.time, m.edited, m.reply_to_msg_id FROM messages m
             INNER JOIN pins p ON p.msg_id = m.id AND p.room = m.room
             WHERE m.room = $room ORDER BY m.rowid ASC
             """;
@@ -360,7 +423,8 @@ public class ChatHistoryStore
                 room TEXT NOT NULL,
                 user TEXT NOT NULL,
                 text TEXT NOT NULL,
-                time TEXT NOT NULL
+                time TEXT NOT NULL,
+                reply_to_msg_id TEXT NULL
             )
             """);
 
@@ -398,6 +462,14 @@ public class ChatHistoryStore
             check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'edited'";
             if (Convert.ToInt32(check.ExecuteScalar()) == 0)
                 Exec(conn, "ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0");
+        }
+
+        // Add reply_to_msg_id column to existing databases that predate replies
+        using (var check = conn.CreateCommand())
+        {
+            check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'reply_to_msg_id'";
+            if (Convert.ToInt32(check.ExecuteScalar()) == 0)
+                Exec(conn, "ALTER TABLE messages ADD COLUMN reply_to_msg_id TEXT NULL");
         }
     }
 
@@ -494,6 +566,7 @@ public class ChatHistoryStore
     {
         var list = new List<ChatMessage>();
         using var reader = cmd.ExecuteReader();
+        var hasReplyColumn = reader.FieldCount > 5;
         while (reader.Read())
         {
             list.Add(new ChatMessage
@@ -503,8 +576,19 @@ public class ChatHistoryStore
                 Text = reader.GetString(2),
                 Time = DateTime.Parse(reader.GetString(3)).ToUniversalTime(),
                 Edited = !reader.IsDBNull(4) && reader.GetInt32(4) != 0,
+                ReplyToMessageId = hasReplyColumn && !reader.IsDBNull(5) ? reader.GetString(5) : null,
             });
         }
         return list;
+    }
+
+    public bool MessageExists(string room, string id)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM messages WHERE room = $room AND id = $id LIMIT 1";
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$id", id);
+        return cmd.ExecuteScalar() != null;
     }
 }

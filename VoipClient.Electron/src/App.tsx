@@ -13,16 +13,18 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   render() {
     if (this.state.error) {
       return (
-        <div className="h-screen bg-[#0a0e0a] text-green-500 font-mono flex flex-col items-center justify-center gap-4 p-8">
-          <div className="text-red-400 text-lg font-bold">Something went wrong</div>
-          <pre className="text-xs text-red-600 bg-[#0d120d] rounded-lg p-4 max-w-xl w-full overflow-auto max-h-64">
-            {this.state.error.message}
-          </pre>
-          <button
-            onClick={() => this.setState({ error: null })}
-            className="px-4 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-sm transition-all">
-            Reload
-          </button>
+        <div className="echo-shell h-screen bg-[#0a0e0a] text-green-500 flex items-center justify-center p-8" data-theme="light">
+          <div className="w-full max-w-xl rounded-2xl border border-green-900/40 bg-[#0d120d]/80 backdrop-blur-sm p-6 shadow-2xl shadow-green-900/20">
+            <div className="text-red-500 text-lg font-bold">Something went wrong</div>
+            <pre className="mt-4 text-xs text-red-600 bg-[#0a0e0a]/60 border border-red-800/40 rounded-xl p-4 w-full overflow-auto max-h-64 font-mono">
+              {this.state.error.message}
+            </pre>
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="mt-4 px-4 py-2 bg-green-900/40 hover:bg-green-900/60 text-green-400 rounded-lg text-sm font-semibold transition-all">
+              Reload App
+            </button>
+          </div>
         </div>
       );
     }
@@ -32,10 +34,8 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
 export default function App() {
   return (
-    <div className="h-screen bg-[#0a0e0a]">
-      <ErrorBoundary>
-        <TerminalForum />
-      </ErrorBoundary>
-    </div>
+    <ErrorBoundary>
+      <TerminalForum />
+    </ErrorBoundary>
   );
 }

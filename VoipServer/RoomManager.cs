@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 /// <summary>
 /// Tracks which users are in which voice/text rooms.
 /// All operations are thread-safe via ConcurrentDictionary.
+/// Text room access control is based on role gates; read-only posting constraints are
+/// enforced in ChatServer.HandleMessageAsync.
 /// </summary>
 public class RoomManager
 {
@@ -67,7 +69,7 @@ public class RoomManager
 
     public bool JoinVoiceRoom(string username, string roomName, RoleStore roleStore)
     {
-        var room = _config.VoiceRooms.FirstOrDefault(r => r.Name == roomName);
+        var room = _config.VoiceRooms.FirstOrDefault(r => string.Equals(r.Name, roomName, StringComparison.OrdinalIgnoreCase));
         if (room == null) return false;
         if (!CanAccessRoom(username, room, roleStore)) return false;
         _userVoiceRoom[username] = roomName;
@@ -89,18 +91,17 @@ public class RoomManager
 
     public int GetVoiceRoomBitrate(string roomName)
     {
-        var room = _config.VoiceRooms.FirstOrDefault(r => r.Name == roomName);
+        var room = _config.VoiceRooms.FirstOrDefault(r => string.Equals(r.Name, roomName, StringComparison.OrdinalIgnoreCase));
         return room?.Bitrate ?? 64000;
     }
 
     public bool JoinTextRoom(string username, string roomName, RoleStore roleStore)
     {
-        var room = _config.TextRooms.FirstOrDefault(r => r.Name == roomName);
+        var room = _config.TextRooms.FirstOrDefault(r => string.Equals(r.Name, roomName, StringComparison.OrdinalIgnoreCase));
         if (room == null) return false;
         if (!CanAccessRoom(username, room, roleStore)) return false;
-        if (!_textRoomMembers.ContainsKey(roomName))
-            _textRoomMembers[roomName] = new(StringComparer.OrdinalIgnoreCase);
-        _textRoomMembers[roomName][username] = 0;
+        var members = _textRoomMembers.GetOrAdd(roomName, _ => new(StringComparer.OrdinalIgnoreCase));
+        members[username] = 0;
         _log?.Invoke($"[Room] {username} joined text '{roomName}'");
         return true;
     }
@@ -160,6 +161,8 @@ public class RoomManager
         if (_streamWatchers.TryGetValue(streamer, out var watchers))
         {
             watchers.TryRemove(watcher, out _);
+            if (watchers.IsEmpty)
+                _streamWatchers.TryRemove(streamer, out _);
             _log?.Invoke($"[Stream] {watcher} stopped watching {streamer}");
         }
     }

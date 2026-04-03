@@ -49,7 +49,7 @@ public class ServerConfig
     /// HTTP port for the SSE notification endpoint.
     /// Clients subscribe to real-time mention events via <c>GET /events?token=…</c>.
     /// Defaults to <see cref="TcpPort"/> + 2 (e.g. 5003 when TcpPort is 5001).
-    /// Set to 0 to disable the SSE notification server.
+    /// Set to 0 to use the default derived port.
     /// </summary>
     public int SsePort { get; set; } = 0;
 

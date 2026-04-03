@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 /// <summary>
 /// A room definition with an optional password and bitrate (for voice rooms).
@@ -8,6 +9,10 @@ public class RoomDefinition
     public string Name { get; set; } = "";
     public List<string> AllowedRoles { get; set; } = new();
     public int Bitrate { get; set; } = 96000;
+    public bool ReadOnly { get; set; } = false;
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtraData { get; set; }
 }
 
 /// <summary>
@@ -19,6 +24,9 @@ public class RoomsConfig
 {
     public List<RoomDefinition> VoiceRooms { get; set; } = new();
     public List<RoomDefinition> TextRooms { get; set; } = new();
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtraData { get; set; }
 
     private string? _path;
     private readonly object _saveLock = new();
@@ -122,11 +130,11 @@ public class RoomsConfig
 
     // ── Text Room Mutations ─────────────────────────────────
 
-    public bool CreateTextRoom(string name, List<string> allowedRoles)
+    public bool CreateTextRoom(string name, List<string> allowedRoles, bool readOnly = false)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
         if (TextRooms.Any(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
-        TextRooms.Add(new RoomDefinition { Name = name, AllowedRoles = allowedRoles });
+        TextRooms.Add(new RoomDefinition { Name = name, AllowedRoles = allowedRoles, ReadOnly = readOnly });
         Save();
         return true;
     }
@@ -140,7 +148,7 @@ public class RoomsConfig
         return true;
     }
 
-    public bool EditTextRoom(string oldName, string newName, List<string> allowedRoles)
+    public bool EditTextRoom(string oldName, string newName, List<string> allowedRoles, bool readOnly = false)
     {
         var room = TextRooms.FirstOrDefault(r => string.Equals(r.Name, oldName, StringComparison.OrdinalIgnoreCase));
         if (room == null) return false;
@@ -151,6 +159,7 @@ public class RoomsConfig
         }
         room.Name = newName;
         room.AllowedRoles = allowedRoles;
+        room.ReadOnly = readOnly;
         Save();
         return true;
     }
