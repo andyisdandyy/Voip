@@ -3,7 +3,7 @@ name: Release VoIP Server
 on:
   push:
     tags:
-      - 'v*'
+      - 'server-v*'
 
 jobs:
   build:

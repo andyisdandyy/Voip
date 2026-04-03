@@ -240,6 +240,8 @@ public class ChatHistoryStore
     /// <summary>
     /// Searches messages in a room by sender or text (case-insensitive), newest-first.
     /// Cursor is a SQLite rowid upper-bound (exclusive) for pagination.
+    /// Text search excludes encrypted/system payload blobs (ENC/file/gif markers)
+    /// so random base64 chunks do not produce misleading hits.
     /// Returns the next cursor when there may be more results.
     /// </summary>
     public (List<ChatMessage> messages, string? nextCursor) SearchMessages(string room, string query, int limit, string? cursor)
@@ -257,7 +259,16 @@ public class ChatHistoryStore
                 FROM messages
                 WHERE room = $room
                   AND rowid < $cursor
-                  AND (LOWER(text) LIKE LOWER($q) OR LOWER(user) LIKE LOWER($q))
+                  AND (
+                    LOWER(user) LIKE LOWER($q)
+                    OR (
+                      text NOT GLOB 'ENC:*'
+                      AND text NOT GLOB '__FILE__:*'
+                      AND text NOT GLOB '__FILE_REF__:*'
+                      AND text NOT GLOB '__GIF__:*'
+                      AND LOWER(text) LIKE LOWER($q)
+                    )
+                  )
                 ORDER BY rowid DESC
                 LIMIT $limit
               """
@@ -265,7 +276,16 @@ public class ChatHistoryStore
                 SELECT rowid, id, user, text, time, edited, reply_to_msg_id
                 FROM messages
                 WHERE room = $room
-                  AND (LOWER(text) LIKE LOWER($q) OR LOWER(user) LIKE LOWER($q))
+                  AND (
+                    LOWER(user) LIKE LOWER($q)
+                    OR (
+                      text NOT GLOB 'ENC:*'
+                      AND text NOT GLOB '__FILE__:*'
+                      AND text NOT GLOB '__FILE_REF__:*'
+                      AND text NOT GLOB '__GIF__:*'
+                      AND LOWER(text) LIKE LOWER($q)
+                    )
+                  )
                 ORDER BY rowid DESC
                 LIMIT $limit
               """;
