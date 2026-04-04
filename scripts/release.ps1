@@ -87,14 +87,10 @@ if (-not [string]::IsNullOrWhiteSpace($CommitMessage)) {
     }
 }
 
-$tags = @()
-switch ($Target) {
-    'server' { $tags += "server-v$Version" }
-    'client' { $tags += "client-v$Version" }
-    'both' {
-        $tags += "server-v$Version"
-        $tags += "client-v$Version"
-    }
+$tags = @("v$Version")
+
+if ($Target -ne 'both') {
+    Write-Host "Note: '$Target' currently maps to shared tag v$Version so client and server publish into one release."
 }
 
 foreach ($tag in $tags) {

@@ -72,11 +72,42 @@ textarea {
 .echo-shell select,
 .echo-shell textarea {
   transition:
+    transform 150ms cubic-bezier(0.22, 0.9, 0.24, 1),
     background-color 140ms ease,
     border-color 140ms ease,
     color 140ms ease,
     box-shadow 160ms ease,
     opacity 140ms ease;
+}
+
+.echo-shell button:not(:disabled),
+.echo-shell .cursor-pointer.transition-all,
+.echo-shell .cursor-pointer.transition-colors {
+  transform: translateY(0);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .echo-shell button:not(:disabled):hover,
+  .echo-shell .cursor-pointer.transition-all:hover,
+  .echo-shell .cursor-pointer.transition-colors:hover {
+    transform: translateY(-1px);
+  }
+
+  .echo-shell button:not(:disabled):active,
+  .echo-shell .cursor-pointer.transition-all:active,
+  .echo-shell .cursor-pointer.transition-colors:active {
+    transform: translateY(0);
+  }
+}
+
+.echo-shell .fixed.inset-0.z-50.flex.items-center.justify-center,
+.echo-shell .fixed.inset-0.z-\[60\].flex.items-center.justify-center {
+  animation: overlay-fade 140ms ease-out;
+}
+
+.echo-shell .fixed.inset-0.z-50.flex.items-center.justify-center > div:first-child,
+.echo-shell .fixed.inset-0.z-\[60\].flex.items-center.justify-center > div:first-child {
+  animation: panel-pop 180ms cubic-bezier(0.22, 0.9, 0.24, 1);
 }
 
 .echo-shell button:focus-visible,
@@ -99,6 +130,16 @@ textarea {
 .echo-shell input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color'])::placeholder,
 .echo-shell textarea::placeholder {
   color: color-mix(in srgb, var(--app-text-faint) 70%, transparent);
+}
+
+.echo-shell input.chat-message-input {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.echo-shell input.chat-message-input::placeholder {
+  color: color-mix(in srgb, var(--app-text-faint) 60%, transparent) !important;
 }
 
 
@@ -238,6 +279,40 @@ textarea {
   --color-green-800: var(--custom-green-800, #286f99);
   --color-green-900: var(--custom-green-900, #225473);
   --color-green-950: var(--custom-green-950, #11273c);
+}
+
+[data-theme='test'] {
+  --app-bg: #070b14;
+  --app-bg-elevated: #0f1628;
+  --app-surface: rgba(16, 24, 42, 0.9);
+  --app-surface-strong: rgba(22, 33, 58, 0.96);
+  --app-sidebar: rgba(11, 19, 35, 0.92);
+  --app-border: rgba(124, 160, 214, 0.36);
+  --app-border-strong: rgba(157, 193, 244, 0.54);
+  --app-text: #ecf5ff;
+  --app-text-soft: #d3e3f8;
+  --app-text-muted: #a7bddc;
+  --app-text-faint: #7d97ba;
+  --app-accent: #4ec9ff;
+  --app-accent-strong: #2eb4f3;
+  --app-accent-rgb: 78, 201, 255;
+  --app-danger: #ff7f9d;
+  --app-danger-rgb: 255, 127, 157;
+  --app-overlay-60: rgba(2, 5, 10, 0.64);
+  --app-overlay-70: rgba(2, 5, 10, 0.74);
+  --app-overlay-80: rgba(2, 5, 10, 0.84);
+
+  --color-green-50: #eef8ff;
+  --color-green-100: #d8ecff;
+  --color-green-200: #b8ddff;
+  --color-green-300: #94ccff;
+  --color-green-400: #73c0ff;
+  --color-green-500: #4ec9ff;
+  --color-green-600: #2eb4f3;
+  --color-green-700: #228fc5;
+  --color-green-800: #1d7099;
+  --color-green-900: #185673;
+  --color-green-950: #0b2a3d;
 }
 
 
@@ -604,6 +679,28 @@ textarea {
   }
 }
 
+@keyframes overlay-fade {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes panel-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -635,10 +732,25 @@ textarea {
   animation: subtlePulse 2s ease-in-out infinite;
 }
 
+.echo-shell .animate-pulse {
+  animation: subtlePulse 2.2s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .echo-shell,
   .animate-fade-in,
-  .animate-subtle-pulse {
+  .animate-subtle-pulse,
+  .echo-shell .animate-pulse,
+  .echo-shell .fixed.inset-0.z-50.flex.items-center.justify-center,
+  .echo-shell .fixed.inset-0.z-\[60\].flex.items-center.justify-center,
+  .echo-shell .fixed.inset-0.z-50.flex.items-center.justify-center > div:first-child,
+  .echo-shell .fixed.inset-0.z-\[60\].flex.items-center.justify-center > div:first-child {
     animation: none !important;
+  }
+
+  .echo-shell button:not(:disabled),
+  .echo-shell .cursor-pointer.transition-all,
+  .echo-shell .cursor-pointer.transition-colors {
+    transform: none !important;
   }
 }

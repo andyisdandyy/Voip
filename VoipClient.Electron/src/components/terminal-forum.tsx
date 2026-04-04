@@ -71,7 +71,7 @@ function getVideoBitrate(width: number, height: number, fps: number): number {
   return Math.round(base * (fps / 30));
 }
 
-type ThemeColor = 'mono' | 'light' | 'dark' | 'custom';
+type ThemeColor = 'mono' | 'light' | 'dark' | 'custom' | 'test';
 
 interface CustomThemeColors { accent: string; bg: string; surface: string; sidebar: string; border: string; text: string; textSecondary: string }
 const DEFAULT_CUSTOM_THEME: CustomThemeColors = { accent: '#5ec2ff', bg: '#111829', surface: '#182338', sidebar: '#141e31', border: '#2f4668', text: '#e9f1ff', textSecondary: '#a8bbd8' };
@@ -4291,6 +4291,7 @@ export function TerminalForum() {
                   <option value="dark">Dark Mode</option>
                   <option value="mono">Midnight Mono</option>
                   <option value="custom">Custom Palette</option>
+                  <option value="test">TEST</option>
                 </select>
               </div>
               {theme === 'custom' && (
@@ -4785,8 +4786,10 @@ export function TerminalForum() {
           const server = pinnedServers.find(s => s.id === loginDialog);
           if (!server) return null;
           return (
-            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-              <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+              onMouseDown={() => setLoginDialog(null)}>
+              <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md"
+                onMouseDown={e => e.stopPropagation()}>
                 <div className="bg-green-900/40 p-6 border-b border-green-900/50">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold overflow-hidden"
@@ -4860,8 +4863,10 @@ export function TerminalForum() {
 
         {/* ── Untrusted Server Confirmation ── */}
         {untrustedConfirm && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-[#0d120d]/95 border border-red-900/50 rounded-lg shadow-2xl shadow-red-900/30 w-full max-w-sm">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onMouseDown={() => setUntrustedConfirm(null)}>
+            <div className="bg-[#0d120d]/95 border border-red-900/50 rounded-lg shadow-2xl shadow-red-900/30 w-full max-w-sm"
+              onMouseDown={e => e.stopPropagation()}>
               <div className="bg-red-900/30 p-5 border-b border-red-900/40 flex items-center gap-3">
                 <Shield className="w-5 h-5 text-red-400 shrink-0" />
                 <h2 className="text-base font-bold text-red-400">Untrusted Server</h2>
@@ -4890,8 +4895,10 @@ export function TerminalForum() {
 
         {/* ── Add Server Dialog ── */}
         {addServerDialog && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onMouseDown={() => setAddServerDialog(false)}>
+            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md"
+              onMouseDown={e => e.stopPropagation()}>
               <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between">
                 <h2 className="text-lg font-bold text-green-400">ADD SERVER</h2>
                 <button onClick={() => setAddServerDialog(false)} className="p-2 text-green-600 hover:text-green-400">
@@ -5089,8 +5096,10 @@ export function TerminalForum() {
 
         {/* ── Server Password Dialog ── */}
         {serverPasswordDialog && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onMouseDown={() => { setServerPasswordDialog(null); setStatus('Awaiting connection'); }}>
+            <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md"
+              onMouseDown={e => e.stopPropagation()}>
               <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <Lock className="w-6 h-6 text-green-500" />
@@ -6669,7 +6678,7 @@ export function TerminalForum() {
                       }
                     }}
                     onPaste={handlePaste}
-                    className="flex-1 bg-transparent outline-none text-green-500 placeholder-green-800"
+                    className="chat-message-input flex-1 bg-transparent outline-none text-green-500 placeholder-green-800"
                     placeholder={pendingFile ? 'Add a message (optional)...' : 'Type a message...'} autoComplete="off"
                     disabled={!!(currentTextRoom && textRooms.find(r => r.name === currentTextRoom)?.readOnly && !hasPermission('announce'))} />
                   <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
@@ -7834,8 +7843,10 @@ export function TerminalForum() {
 
       {/* ── Screen Share dialog overlay ────────────────────── */}
       {screenShareDialog && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-[#0d120d] border border-green-900/50 rounded-lg w-[640px] max-h-[85vh] shadow-2xl shadow-green-900/30 flex flex-col">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+          onMouseDown={() => setScreenShareDialog(false)}>
+          <div className="bg-[#0d120d] border border-green-900/50 rounded-lg w-[640px] max-h-[85vh] shadow-2xl shadow-green-900/30 flex flex-col"
+            onMouseDown={e => e.stopPropagation()}>
             <div className="p-5 border-b border-green-900/30 flex items-center justify-between shrink-0">
               <h3 className="text-green-400 font-bold flex items-center gap-2">
                 <Share2 className="w-5 h-5" />
@@ -7975,8 +7986,10 @@ export function TerminalForum() {
 
       {/* ── E2EE Passphrase Prompt ────────────────────────────── */}
       {e2eePrompt && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onMouseDown={() => { setE2eePrompt(false); setE2eeInput(''); }}>
+          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm"
+            onMouseDown={e => e.stopPropagation()}>
             <div className="bg-green-900/40 p-4 border-b border-green-900/50 flex items-center gap-3">
               <Lock className="w-5 h-5 text-green-500" />
               <div>
@@ -8020,8 +8033,10 @@ export function TerminalForum() {
       )}
 
       {avatarEditor && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onMouseDown={() => setAvatarEditor(null)}>
+          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm"
+            onMouseDown={e => e.stopPropagation()}>
             <div className="bg-green-900/40 p-4 border-b border-green-900/50 flex items-center justify-between">
               <h3 className="text-sm font-bold text-green-400">CROP PROFILE PICTURE</h3>
               <button onClick={() => setAvatarEditor(null)} className="p-1 text-green-600 hover:text-green-400">
@@ -8076,8 +8091,10 @@ export function TerminalForum() {
 
       {/* ── Logo Editor Modal ────────────────────────────── */}
       {logoEditor && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onMouseDown={() => setLogoEditor(null)}>
+          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm"
+            onMouseDown={e => e.stopPropagation()}>
             <div className="bg-green-900/40 p-4 border-b border-green-900/50 flex items-center justify-between">
               <h3 className="text-sm font-bold text-green-400">CROP SERVER LOGO</h3>
               <button onClick={() => setLogoEditor(null)} className="p-1 text-green-600 hover:text-green-400">
@@ -8132,8 +8149,10 @@ export function TerminalForum() {
 
       {/* ── Emoji Editor Modal ────────────────────────────── */}
       {emojiEditor && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onMouseDown={() => setEmojiEditor(null)}>
+          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-sm"
+            onMouseDown={e => e.stopPropagation()}>
             <div className="bg-green-900/40 p-4 border-b border-green-900/50 flex items-center justify-between">
               <h3 className="text-sm font-bold text-green-400">CROP EMOJI — :{emojiEditor.name}:</h3>
               <button onClick={() => setEmojiEditor(null)} className="p-1 text-green-600 hover:text-green-400">
@@ -8188,8 +8207,10 @@ export function TerminalForum() {
 
       {/* ── Create / Edit Room Dialog ─────────────────────── */}
       {createRoomDialog && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onMouseDown={() => setCreateRoomDialog(null)}>
+          <div className="bg-[#0d120d]/95 border border-green-900/50 rounded-lg shadow-2xl shadow-green-900/30 w-full max-w-md"
+            onMouseDown={e => e.stopPropagation()}>
             <div className="bg-green-900/40 p-6 border-b border-green-900/50 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {createRoomDialog.type === 'voice' ? <Volume2 className="w-5 h-5 text-green-500" /> : <Hash className="w-5 h-5 text-green-500" />}
@@ -8282,8 +8303,10 @@ export function TerminalForum() {
 
       {/* ── Wipe Server Confirmation Dialog ──────────────── */}
       {wipeServerDialog && serverInfo && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
-          <div className="bg-[#0d120d]/95 border border-red-900/50 rounded-lg shadow-2xl shadow-red-900/30 w-full max-w-md">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
+          onMouseDown={() => setWipeServerDialog(false)}>
+          <div className="bg-[#0d120d]/95 border border-red-900/50 rounded-lg shadow-2xl shadow-red-900/30 w-full max-w-md"
+            onMouseDown={e => e.stopPropagation()}>
             <div className="bg-red-900/30 p-6 border-b border-red-900/50 flex items-center gap-3">
               <Trash2 className="w-6 h-6 text-red-500" />
               <div>

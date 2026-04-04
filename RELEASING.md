@@ -4,13 +4,12 @@ Use the release helper script to create and push annotated tags in a consistent 
 
 ## Tag format
 
-- `server-vX.Y.Z`
-- `client-vX.Y.Z`
+- `vX.Y.Z`
 
-These tags match the GitHub Actions workflows:
+This tag matches the GitHub Actions workflows:
 
-- `.github/workflows/release-server.yml` triggers on `server-v*`
-- `.github/workflows/release-client.yml` triggers on `client-v*`
+- `.github/workflows/release-server.yml` triggers on `v*`
+- `.github/workflows/release-client.yml` triggers on `v*`
 
 ## Usage
 
@@ -39,6 +38,10 @@ Optional flags:
 
 1. Validates semver input (`X.Y.Z`) and repository state.
 2. Verifies tag does not already exist locally or on the remote.
-3. Creates annotated tag(s).
+3. Creates annotated tag `vX.Y.Z`.
 4. Pushes current branch.
-5. Pushes tag(s).
+5. Pushes the tag.
+
+## Why `server|client|both` still exists
+
+To preserve command compatibility, all three targets currently map to the same shared tag (`vX.Y.Z`) so server and client artifacts land in one GitHub Release.

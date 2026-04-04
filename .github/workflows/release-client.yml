@@ -3,7 +3,7 @@ name: Release VoIP Client
 on:
   push:
     tags:
-      - 'client-v*'
+      - 'v*'
 
 jobs:
   create-release:
@@ -19,14 +19,27 @@ jobs:
         with:
           script: |
             const tag = process.env.GITHUB_REF.replace('refs/tags/', '');
-            const release = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: tag,
-              name: tag,
-              draft: false,
-              prerelease: false,
-            });
+            let release;
+            try {
+              release = await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: tag,
+                name: tag,
+                draft: false,
+                prerelease: false,
+              });
+            } catch (error) {
+              if (error.status === 422) {
+                release = await github.rest.repos.getReleaseByTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag: tag,
+                });
+              } else {
+                throw error;
+              }
+            }
             core.setOutput('id', release.data.id);
 
   build-windows:
@@ -53,7 +66,7 @@ jobs:
         working-directory: VoipClient.Electron
         shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/client-v}"
+          TAG="${GITHUB_REF#refs/tags/v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
       - name: Build & publish (Windows)
         working-directory: VoipClient.Electron
@@ -82,7 +95,7 @@ jobs:
       - name: Sync version from tag
         working-directory: VoipClient.Electron
         run: |
-          TAG="${GITHUB_REF#refs/tags/client-v}"
+          TAG="${GITHUB_REF#refs/tags/v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
       - name: Build & publish (macOS x64)
         working-directory: VoipClient.Electron
@@ -112,7 +125,7 @@ jobs:
       - name: Sync version from tag
         working-directory: VoipClient.Electron
         run: |
-          TAG="${GITHUB_REF#refs/tags/client-v}"
+          TAG="${GITHUB_REF#refs/tags/v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
       - name: Build & publish (macOS arm64)
         working-directory: VoipClient.Electron
@@ -142,7 +155,7 @@ jobs:
       - name: Sync version from tag
         working-directory: VoipClient.Electron
         run: |
-          TAG="${GITHUB_REF#refs/tags/client-v}"
+          TAG="${GITHUB_REF#refs/tags/v}"
           npm version "$TAG" --no-git-tag-version --allow-same-version
       - name: Build & publish (Linux)
         working-directory: VoipClient.Electron

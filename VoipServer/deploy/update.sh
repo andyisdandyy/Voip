@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./update.sh                  # update to latest
-#   ./update.sh server-v1.2.0   # update to specific tag
+#   ./update.sh v1.2.0   # update to specific tag
 #
 # For private repos, set GITHUB_TOKEN:
 #   export GITHUB_TOKEN=ghp_xxxx
@@ -35,9 +35,9 @@ curl_gh() {
 # -- Resolve download URL ----------------------------------
 if [ -z "$TAG" ]; then
     echo "Fetching latest server release..."
-    # Filter to server-v* tags only -- skip client (v*) and relay (relay-v*) releases
+    # Filter to app release tags (v*)
     RELEASE_JSON=$(curl_gh "https://api.github.com/repos/${REPO}/releases" \
-        | jq '[.[] | select(.tag_name | startswith("server-v"))] | first')
+        | jq '[.[] | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | first')
 else
     echo "Fetching release ${TAG}..."
     RELEASE_JSON=$(curl_gh "https://api.github.com/repos/${REPO}/releases/tags/${TAG}")
@@ -50,7 +50,7 @@ if [ -n "$API_MESSAGE" ]; then
     if echo "$API_MESSAGE" | grep -qi "not found"; then
         echo ""
         echo "  Possible causes:"
-        echo "  - No server-v* releases exist yet (push to master to trigger an automatic build)"
+        echo "  - No v* releases exist yet (push to master to trigger an automatic build)"
         echo "  - The repo is private -- set GITHUB_TOKEN first:"
         echo "    export GITHUB_TOKEN=ghp_your_token_here"
     fi
@@ -58,7 +58,7 @@ if [ -n "$API_MESSAGE" ]; then
 fi
 
 if [ "$RELEASE_JSON" = "null" ]; then
-    echo "ERROR: No server-v* releases found."
+    echo "ERROR: No v* releases found."
     echo "  Push to master to trigger an automatic build."
     exit 1
 fi
