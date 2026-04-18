@@ -935,9 +935,13 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
     const setupEvents = () => {
       sock.on('data', (data) => {
       buffer += utf8Decoder.write(data);
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const rawLine of lines) {
+      // Extract complete lines using indexOf to avoid O(n²) split() on large buffers.
+      // This is critical when receiving multi-MB messages (e.g. file history).
+      let start = 0;
+      let newlineIdx;
+      while ((newlineIdx = buffer.indexOf('\n', start)) !== -1) {
+        const rawLine = buffer.substring(start, newlineIdx);
+        start = newlineIdx + 1;
         const line = rawLine.replace(/^\uFEFF/, '').replace(/\r$/, '');
         if (!line) continue;
 
@@ -955,6 +959,9 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
           }
           if (line === 'SERVER_PASSWORD_OK' || line === 'READY') {
             serverPwDone = true;
+            // Announce capabilities before auth — server uses these to optimize responses
+            // (e.g. LAZY_FILES strips inline base64 from HISTORY to avoid multi-MB payloads)
+            sock.write('CAPS:LAZY_FILES\n');
             let authLine;
             let mode;
             if (isRegister && inviteCode && String(inviteCode).trim()) {
@@ -1046,6 +1053,10 @@ function connectChat(serverId, host, port, username, password, isRegister, serve
           continue;
         }
         sendToMainWindow('tcp:message', serverId, line);
+      }
+      // Trim processed data from buffer (only once, not per-line)
+      if (start > 0) {
+        buffer = buffer.substring(start);
       }
     });
 

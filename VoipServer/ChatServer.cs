@@ -58,6 +58,10 @@ public class ChatServer
     // ── Connected clients ───────────────────────────────────
     private readonly ConcurrentDictionary<TcpClient, (StreamWriter writer, string name)> _clients = new();
 
+    // ── Per-client capability flags (populated during auth handshake) ──
+    private readonly ConcurrentDictionary<TcpClient, HashSet<string>> _clientCaps = new();
+    private const string CapLazyFiles = "LAZY_FILES";
+
     // ── Active media state per username ─────────────────────
     private readonly ConcurrentDictionary<string, byte> _cameraActive = new();
     private readonly ConcurrentDictionary<string, byte> _screenActive = new();
@@ -173,9 +177,27 @@ public class ChatServer
             }
 
             // ── Phase 2: User authentication ──
-            var authLine = (await reader.ReadLineAsync().ConfigureAwait(false))?.Trim();
-            if (string.IsNullOrEmpty(authLine))
-                return;
+            // Read optional CAPS lines (capability negotiation), then the auth line.
+            // Old clients skip CAPS and send auth directly — fully backward compatible.
+            var clientCaps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string? authLine = null;
+            while (true)
+            {
+                var capOrAuth = (await reader.ReadLineAsync().ConfigureAwait(false))?.Trim();
+                if (string.IsNullOrEmpty(capOrAuth))
+                    return;
+                if (capOrAuth.StartsWith("CAPS:", StringComparison.Ordinal))
+                {
+                    foreach (var cap in capOrAuth.Substring(5).Split(','))
+                    {
+                        var c = cap.Trim();
+                        if (c.Length > 0) clientCaps.Add(c);
+                    }
+                    continue;
+                }
+                authLine = capOrAuth;
+                break;
+            }
 
             if (authLine.StartsWith("REGISTER:", StringComparison.Ordinal))
             {
@@ -296,6 +318,7 @@ public class ChatServer
 
             // Register new connection first (so old connection's cleanup preserves voice)
             _clients[client] = (writer, name);
+            _clientCaps[client] = clientCaps;
             _log?.Invoke($"[Chat] '{name}' authenticated and connected");
 
             // Kick existing connections with same username (old one's cleanup will see new client)
@@ -318,12 +341,13 @@ public class ChatServer
             await SendRoleListAsync(writer).ConfigureAwait(false);
 
             // Auto-join first accessible text room
+            var lazyFiles = clientCaps.Contains(CapLazyFiles);
             var firstRoom = _rooms.Config.TextRooms.FirstOrDefault(r => RoomManager.CanAccessRoom(name, r, _roleStore));
             if (firstRoom != null)
             {
                 _rooms.JoinTextRoom(name, firstRoom.Name, _roleStore);
                 await writer.WriteLineAsync($"JOINED_TEXT:{firstRoom.Name}").ConfigureAwait(false);
-                try { await SendHistoryAsync(writer, firstRoom.Name).ConfigureAwait(false); }
+                try { await SendHistoryAsync(writer, firstRoom.Name, lazyFiles).ConfigureAwait(false); }
                 catch (Exception ex) { _log?.Invoke($"[Chat] Failed to send history for '{firstRoom.Name}': {ex.GetType().Name}: {ex.Message}"); }
             }
 
@@ -375,6 +399,7 @@ public class ChatServer
         finally
         {
             _clients.TryRemove(client, out _);
+            _clientCaps.TryRemove(client, out _);
 
             // Only remove from rooms if no other connection exists for this user
             // (preserves voice room membership on reconnect / server switch)
@@ -464,8 +489,9 @@ public class ChatServer
 
             if (_rooms.JoinTextRoom(name, roomName, _roleStore))
             {
+                var lazy = _clientCaps.TryGetValue(client, out var caps) && caps.Contains(CapLazyFiles);
                 await writer.WriteLineAsync($"JOINED_TEXT:{roomName}").ConfigureAwait(false);
-                await SendHistoryAsync(writer, roomName).ConfigureAwait(false);
+                await SendHistoryAsync(writer, roomName, lazy).ConfigureAwait(false);
             }
             else
             {
@@ -610,10 +636,49 @@ public class ChatServer
                 {
                     count = Math.Clamp(count, 1, 50);
                     var older = _history.GetHistory(roomName, count, beforeId);
+                    var lazy = _clientCaps.TryGetValue(client, out var caps) && caps.Contains(CapLazyFiles);
+                    if (lazy)
+                        older = StripInlineFileData(older);
                     // There are more messages if the oldest returned isn't the first in the room
                     var hasMore = older.Count > 0 && older.Count == count;
                     var json = JsonSerializer.Serialize(older);
                     await writer.WriteLineAsync($"HISTORY:{roomName}:{hasMore}:{json}").ConfigureAwait(false);
+                }
+            }
+        }
+        else if (cmd.StartsWith("FETCH_FILE:"))
+        {
+            // FETCH_FILE:<room>:<messageId> — on-demand retrieval of inline file data
+            var args = cmd.Substring("FETCH_FILE:".Length).Split(':', 2);
+            if (args.Length >= 2)
+            {
+                var roomName = args[0];
+                var msgId = args[1];
+                if (!_rooms.IsInTextRoom(name, roomName))
+                {
+                    await writer.WriteLineAsync("ERROR:Not in room").ConfigureAwait(false);
+                    return;
+                }
+                var msg = _history.GetMessage(roomName, msgId);
+                if (msg != null && msg.Text.StartsWith("__FILE__:", StringComparison.Ordinal))
+                {
+                    // Extract the base64 data portion: __FILE__:<name>:<mime>:<data>
+                    var fileText = msg.Text;
+                    var i1 = fileText.IndexOf(':', 9); // after "__FILE__:"
+                    var i2 = i1 >= 0 ? fileText.IndexOf(':', i1 + 1) : -1;
+                    if (i2 >= 0)
+                    {
+                        var base64Data = fileText.Substring(i2 + 1);
+                        await writer.WriteLineAsync($"FILE_CONTENT:{msgId}:{base64Data}").ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await writer.WriteLineAsync($"FILE_CONTENT:{msgId}:NOT_FOUND").ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    await writer.WriteLineAsync($"FILE_CONTENT:{msgId}:NOT_FOUND").ConfigureAwait(false);
                 }
             }
         }
@@ -1585,11 +1650,46 @@ public class ChatServer
         await writer.WriteLineAsync($"FILE_PROGRESS:{roomName}:done").ConfigureAwait(false);
     }
 
-    private async Task SendHistoryAsync(StreamWriter writer, string roomName)
+    /// <summary>
+    /// For clients with LAZY_FILES capability, replaces inline base64 file data
+    /// in message text with a __LAZY__ placeholder to keep HISTORY payloads small.
+    /// The client can later fetch the full file data via CMD:FETCH_FILE.
+    /// </summary>
+    private static List<ChatMessage> StripInlineFileData(List<ChatMessage> messages)
+    {
+        for (int i = 0; i < messages.Count; i++)
+        {
+            var text = messages[i].Text;
+            if (!text.StartsWith("__FILE__:", StringComparison.Ordinal))
+                continue;
+
+            // Format: __FILE__:<name>:<mime>:<base64data>
+            // Keep __FILE__:<name>:<mime>: and replace <base64data> with __LAZY__
+            var firstColon = text.IndexOf(':', 9); // after "__FILE__:"
+            if (firstColon < 0) continue;
+            var secondColon = text.IndexOf(':', firstColon + 1);
+            if (secondColon < 0) continue;
+
+            messages[i] = new ChatMessage
+            {
+                Id = messages[i].Id,
+                User = messages[i].User,
+                Text = text.Substring(0, secondColon + 1) + "__LAZY__",
+                Time = messages[i].Time,
+                Edited = messages[i].Edited,
+                ReplyToMessageId = messages[i].ReplyToMessageId
+            };
+        }
+        return messages;
+    }
+
+    private async Task SendHistoryAsync(StreamWriter writer, string roomName, bool lazyFiles = false)
     {
         var history = _history.GetHistory(roomName, 50, null);
         if (history.Count > 0)
         {
+            if (lazyFiles)
+                history = StripInlineFileData(history);
             var total = _history.GetMessageCount(roomName);
             var hasMore = total > history.Count;
             var json = JsonSerializer.Serialize(history);

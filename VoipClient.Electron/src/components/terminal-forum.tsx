@@ -297,6 +297,38 @@ function EditInput({ body, onSave, onCancel }: { body: string; onSave: (v: strin
   );
 }
 
+// ── Lazy file placeholder (IntersectionObserver) ───────────
+
+interface LazyFilePlaceholderProps {
+  msgId: string;
+  fileName: string;
+  mimeType: string;
+  onVisible: () => void;
+}
+
+const LazyFilePlaceholder = memo(function LazyFilePlaceholder({ msgId, fileName, mimeType, onVisible }: LazyFilePlaceholderProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { onVisible(); observer.disconnect(); } },
+      { rootMargin: '200px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [onVisible]);
+
+  const isImage = mimeType.startsWith('image/');
+  return (
+    <div ref={ref} className="mt-1">
+      <div className={`flex items-center justify-center rounded-lg border border-green-900/30 bg-black/30 ${isImage ? 'w-48 h-32' : 'w-64 h-10'}`}>
+        <span className="text-xs text-green-600 animate-pulse">Loading {fileName}…</span>
+      </div>
+    </div>
+  );
+});
+
 // ── Component ───────────────────────────────────────────────
 
 export function TerminalForum() {
@@ -653,6 +685,9 @@ export function TerminalForum() {
     setCameraUsers(snap.cameraUsers); setScreenUsers(snap.screenUsers);
     setSoundboardSounds(snap.soundboardSounds); setCustomEmojis(snap.customEmojis);
     setE2eeActive(snap.e2eeActive);
+    // Clear lazy file caches (they belong to the previous server context)
+    setFetchedFiles({}); pendingFileFetches.current.clear();
+    blobUrlCache.current.forEach(url => URL.revokeObjectURL(url)); blobUrlCache.current.clear();
   }
 
   function resetServerState() {
@@ -666,6 +701,9 @@ export function TerminalForum() {
     setE2eeActive(false); setE2eePrompt(false); e2eeKeyRef.current = null;
     setSelectedVideoFeed(null);
     setActiveDmTab(null); setOpenDmTabs([]); setDmMessages({}); setDmKeyFingerprints({});
+    // Clear lazy file caches
+    setFetchedFiles({}); pendingFileFetches.current.clear();
+    blobUrlCache.current.forEach(url => URL.revokeObjectURL(url)); blobUrlCache.current.clear();
   }
 
   // ── ECDH DM encryption helpers ───────────────────────────
@@ -907,6 +945,16 @@ export function TerminalForum() {
   const [e2eeInput, setE2eeInput] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+
+  // ── Lazy file loading (LAZY_FILES capability) ─────────────
+  // Cache of fetched file data: msgId → base64 data
+  const [fetchedFiles, setFetchedFiles] = useState<Record<string, string>>({});
+  const fetchedFilesRef = useRef<Record<string, string>>({});
+  fetchedFilesRef.current = fetchedFiles;
+  // Track in-flight fetch requests to avoid duplicates
+  const pendingFileFetches = useRef(new Set<string>());
+  // Cache blob URLs created from inline base64 data to avoid repeated conversions
+  const blobUrlCache = useRef(new Map<string, string>());
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const e2eeKeyRef = useRef<CryptoKey | null>(null);
 
@@ -2234,6 +2282,17 @@ export function TerminalForum() {
         else if (stage === 'transcoding') setFileUploadStatus('Transcoding video…');
         else if (stage === 'broadcasting') setFileUploadStatus('Broadcasting…');
       }
+    } else if (line.startsWith('FILE_CONTENT:')) {
+      // FILE_CONTENT:<msgId>:<base64data> — lazy file fetch response
+      const i1 = line.indexOf(':', 13);
+      if (i1 >= 0) {
+        const msgId = line.substring(13, i1);
+        const data = line.substring(i1 + 1);
+        if (data !== 'NOT_FOUND') {
+          setFetchedFiles(prev => ({ ...prev, [msgId]: data }));
+        }
+        pendingFileFetches.current.delete(msgId);
+      }
     } else if (line.startsWith('SOUNDBOARD:')) {
       try {
         const names: string[] = JSON.parse(line.substring(11));
@@ -3180,7 +3239,7 @@ export function TerminalForum() {
     setGifResults([]);
   }
 
-  function renderMessageBody(body: string) {
+  function renderMessageBody(body: string, msgId?: string) {
     const isServerTrusted = pinnedServers.find(s => s.id === connectedServerIdRef.current)?.trusted ?? false;
     if (body.startsWith('__GIF__:')) {
       const url = body.substring('__GIF__:'.length);
@@ -3232,7 +3291,7 @@ export function TerminalForum() {
         if (mimeType.startsWith('image/') && fileUrl) {
           return (
             <div className="mt-1">
-              <img src={fileUrl} alt={fileName}
+              <img src={fileUrl} alt={fileName} loading="lazy"
                 className="max-w-sm max-h-80 rounded-lg border border-green-900/30 cursor-pointer hover:border-green-700/50 transition-all"
                 onClick={() => setLightboxSrc(fileUrl)} />
               <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
@@ -3280,61 +3339,109 @@ export function TerminalForum() {
       const i2 = rest2.indexOf(':');
       if (i2 < 0) return <>{body}</>;
       const mimeType = rest2.substring(0, i2);
-      const base64Data = rest2.substring(i2 + 1);
-      const dataUrl = `data:${mimeType};base64,${base64Data}`;
-      if (mimeType.startsWith('image/')) {
+      const rawData = rest2.substring(i2 + 1);
+
+      // ── Lazy file placeholder (LAZY_FILES capability) ──
+      // Server stripped the base64 data and sent __LAZY__ instead.
+      // Fetch on demand when scrolled into view.
+      if (rawData === '__LAZY__' && msgId) {
+        const cached = fetchedFilesRef.current[msgId];
+        if (cached) {
+          // Data fetched — render normally using the cached base64
+          return renderInlineFile(fileName, mimeType, cached);
+        }
+        // Show placeholder; fetch when visible
         return (
-          <div className="mt-1">
-            <img src={dataUrl} alt={fileName}
-              className="max-w-sm max-h-80 rounded-lg border border-green-900/30 cursor-pointer hover:border-green-700/50 transition-all"
-              onClick={() => setLightboxSrc(dataUrl)} />
-            <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
-              <FileText className="w-3 h-3" />
-              {fileName}
-            </div>
-          </div>
+          <LazyFilePlaceholder
+            msgId={msgId}
+            fileName={fileName}
+            mimeType={mimeType}
+            onVisible={() => {
+              if (!pendingFileFetches.current.has(msgId) && !fetchedFilesRef.current[msgId]) {
+                pendingFileFetches.current.add(msgId);
+                sendToServer(`CMD:FETCH_FILE:${currentTextRoom}:${msgId}`);
+              }
+            }}
+          />
         );
       }
-      if (mimeType.startsWith('video/')) {
-        return (
-          <div className="mt-1">
-            <BlobMedia type="video" base64={base64Data} mimeType={mimeType}
-              className="max-w-sm max-h-80 rounded-lg border border-green-900/30" />
-            <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
-              <Play className="w-3 h-3" />
-              {fileName}
-            </div>
-          </div>
-        );
-      }
-      if (mimeType.startsWith('audio/')) {
-        return (
-          <div className="mt-1">
-            <BlobMedia type="audio" base64={base64Data} mimeType={mimeType}
-              className="max-w-sm rounded-lg" />
-            <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
-              <Music className="w-3 h-3" />
-              {fileName}
-            </div>
-          </div>
-        );
-      }
-      return (
-        <div className="mt-1 inline-flex items-center gap-3 bg-[#0a0e0a] border border-green-900/30 rounded-lg px-4 py-3 hover:border-green-700/50 transition-all">
-          <FileText className="w-8 h-8 text-green-600" />
-          <div className="flex-1 min-w-0">
-            <div className="text-sm text-green-400 truncate">{fileName}</div>
-            <div className="text-xs text-green-700">{mimeType}</div>
-          </div>
-          <a href={dataUrl} download={fileName}
-            className="p-2 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all">
-            <Download className="w-4 h-4" />
-          </a>
-        </div>
-      );
+
+      return renderInlineFile(fileName, mimeType, rawData);
     }
     // Replace :shortcode: with emojis
     return renderEmojiText(body);
+  }
+
+  /** Renders an inline file (image/video/audio/download) from base64 data. */
+  function renderInlineFile(fileName: string, mimeType: string, base64Data: string) {
+    // Use cached Blob URL if available, otherwise create and cache one
+    const cacheKey = `${fileName}:${mimeType}:${base64Data.length}`;
+    let blobUrl = blobUrlCache.current.get(cacheKey);
+    if (!blobUrl && base64Data.length > 0) {
+      try {
+        const binary = atob(base64Data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: mimeType });
+        blobUrl = URL.createObjectURL(blob);
+        blobUrlCache.current.set(cacheKey, blobUrl);
+      } catch {
+        // Fallback to data URL if blob creation fails
+        blobUrl = `data:${mimeType};base64,${base64Data}`;
+      }
+    }
+    const src = blobUrl || `data:${mimeType};base64,${base64Data}`;
+
+    if (mimeType.startsWith('image/')) {
+      return (
+        <div className="mt-1">
+          <img src={src} alt={fileName} loading="lazy"
+            className="max-w-sm max-h-80 rounded-lg border border-green-900/30 cursor-pointer hover:border-green-700/50 transition-all"
+            onClick={() => setLightboxSrc(src)} />
+          <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+            <FileText className="w-3 h-3" />
+            {fileName}
+          </div>
+        </div>
+      );
+    }
+    if (mimeType.startsWith('video/')) {
+      return (
+        <div className="mt-1">
+          <BlobMedia type="video" base64={base64Data} mimeType={mimeType}
+            className="max-w-sm max-h-80 rounded-lg border border-green-900/30" />
+          <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+            <Play className="w-3 h-3" />
+            {fileName}
+          </div>
+        </div>
+      );
+    }
+    if (mimeType.startsWith('audio/')) {
+      return (
+        <div className="mt-1">
+          <BlobMedia type="audio" base64={base64Data} mimeType={mimeType}
+            className="max-w-sm rounded-lg" />
+          <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
+            <Music className="w-3 h-3" />
+            {fileName}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="mt-1 inline-flex items-center gap-3 bg-[#0a0e0a] border border-green-900/30 rounded-lg px-4 py-3 hover:border-green-700/50 transition-all">
+        <FileText className="w-8 h-8 text-green-600" />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm text-green-400 truncate">{fileName}</div>
+          <div className="text-xs text-green-700">{mimeType}</div>
+        </div>
+        <a href={src} download={fileName}
+          className="p-2 rounded-lg bg-green-900/20 text-green-500 hover:bg-green-900/40 transition-all">
+          <Download className="w-4 h-4" />
+        </a>
+      </div>
+    );
   }
 
   function renderEmojiText(text: string): React.ReactNode {
@@ -3782,16 +3889,16 @@ export function TerminalForum() {
         let { name: fName, mimeType: fMime, base64: fData } = pendingFile;
         setFileUploadStatus('Sending…');
 
-        // ── Video file upload strategy ──
-        // 1. If the server has a file server enabled → upload via HTTP (server transcodes, works with E2EE)
+        // ── File upload strategy ──
+        // 1. If the server has a file server enabled → upload via HTTP (avoids huge base64 in TCP)
         // 2. Else send inline as base64
         const fileServerPort = serverInfo?.fileServerPort;
         const currentServer = pinnedServers.find(s => s.id === connectedServerIdRef.current);
         const serverHost = currentServer ? parseHostFromAddress(currentServer.address) : '';
         const authToken = currentServer?.authToken;
 
-        if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
-          // Upload to server's file server — server handles transcoding
+        if (fileServerPort && serverHost && authToken) {
+          // Upload to server's file server
           try {
             setFileUploadStatus('Uploading…');
             const timeout = new Promise<null>(r => setTimeout(r, 60000, null));
@@ -5487,13 +5594,13 @@ export function TerminalForum() {
                 if (pendingDmFile) {
                   let { name: fName, mimeType: fMime, base64: fData } = pendingDmFile;
 
-                  // Use file server for video uploads in DMs when available
+                  // Use file server for all uploads in DMs when available
                   const fileServerPort = serverInfo?.fileServerPort;
                   const currentServer = pinnedServers.find(s => s.id === dmTab.serverId);
                   const serverHost = currentServer ? parseHostFromAddress(currentServer.address) : '';
                   const authToken = currentServer?.authToken;
 
-                  if (fMime.startsWith('video/') && fileServerPort && serverHost && authToken) {
+                  if (fileServerPort && serverHost && authToken) {
                     try {
                       const timeout = new Promise<null>(r => setTimeout(r, 60000, null));
                       const result = await Promise.race([
@@ -6288,7 +6395,7 @@ export function TerminalForum() {
                                   )}
                                 </div>
                               </div>
-                              <div className="text-sm text-green-500 break-words">{renderMessageBody(msg.body)}</div>
+                              <div className="text-sm text-green-500 break-words">{renderMessageBody(msg.body, msg.msgId)}</div>
                             </div>
                           );
                         })}
@@ -6434,7 +6541,7 @@ export function TerminalForum() {
                                   ↪ {parentMessage ? `${parentMessage.sender}: ${parentMessage.body}` : 'Original message unavailable'}
                                 </button>
                               )}
-                              {renderMessageBody(msg.body)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}
+                              {renderMessageBody(msg.body, msg.msgId)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}
                             </span>
                             {canEdit && <button onClick={() => setEditingMsg({ msgId: msg.msgId, room: currentTextRoom!, body: msg.body })}
                               className="opacity-0 group-hover:opacity-100 p-0.5 text-green-800 hover:text-green-500 transition-all shrink-0 mt-0.5">
@@ -6474,7 +6581,7 @@ export function TerminalForum() {
                                   ↪ {parentMessage ? `${parentMessage.sender}: ${parentMessage.body}` : 'Original message unavailable'}
                                 </button>
                               )}
-                              {renderMessageBody(msg.body)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}
+                              {renderMessageBody(msg.body, msg.msgId)}{msg.edited && <span className="text-[10px] text-green-700/60 italic ml-1">(edited)</span>}
                             </span>
                             {canEdit && <button onClick={() => setEditingMsg({ msgId: msg.msgId, room: currentTextRoom!, body: msg.body })}
                               className="opacity-0 group-hover:opacity-100 p-0.5 text-green-800 hover:text-green-500 transition-all shrink-0 mt-0.5">

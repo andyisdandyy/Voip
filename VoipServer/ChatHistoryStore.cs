@@ -602,6 +602,21 @@ public class ChatHistoryStore
         return list;
     }
 
+    /// <summary>
+    /// Returns a single message by room and ID, or null if not found.
+    /// Used by FETCH_FILE to retrieve full inline file data on demand.
+    /// </summary>
+    public ChatMessage? GetMessage(string room, string id)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id, user, text, time, edited, reply_to_msg_id FROM messages WHERE room = $room AND id = $id LIMIT 1";
+        cmd.Parameters.AddWithValue("$room", room);
+        cmd.Parameters.AddWithValue("$id", id);
+        var results = ReadMessages(cmd);
+        return results.Count > 0 ? results[0] : null;
+    }
+
     public bool MessageExists(string room, string id)
     {
         using var conn = Open();
