@@ -297,6 +297,77 @@ function EditInput({ body, onSave, onCancel }: { body: string; onSave: (v: strin
   );
 }
 
+// ── Thumbnail image (downscales large images to avoid GPU rasterization limits) ──
+
+const THUMB_MAX = 1280;  // Max thumbnail dimension (px) for chat display
+const thumbCache = new Map<string, string>(); // `${src}:${max}` → downscaled blob URL
+
+interface ThumbnailImageProps {
+  src: string;
+  alt: string;
+  className?: string;
+  onLightbox?: () => void;
+  onClick?: (e: React.MouseEvent) => void;
+  maxSize?: number; // Override THUMB_MAX (e.g. 2560 for lightbox)
+}
+
+const ThumbnailImage = memo(function ThumbnailImage({ src, alt, className, onLightbox, onClick, maxSize }: ThumbnailImageProps) {
+  const max = maxSize || THUMB_MAX;
+  const cacheKey = `${src}:${max}`;
+  const [thumbUrl, setThumbUrl] = useState<string | null>(() => thumbCache.get(cacheKey) || null);
+  const localUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    // Already cached from a previous render
+    if (thumbCache.has(cacheKey)) { setThumbUrl(thumbCache.get(cacheKey)!); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch(src);
+        const blob = await resp.blob();
+        const bmp = await createImageBitmap(blob);
+        const { width: w, height: h } = bmp;
+        bmp.close();
+        // Small enough — use original directly
+        if (w <= max && h <= max) {
+          if (!cancelled) { thumbCache.set(cacheKey, src); setThumbUrl(src); }
+          return;
+        }
+        // Downscale proportionally
+        const scale = Math.min(max / w, max / h);
+        const tw = Math.round(w * scale);
+        const th = Math.round(h * scale);
+        const resized = await createImageBitmap(blob, { resizeWidth: tw, resizeHeight: th, resizeQuality: 'high' });
+        const canvas = new OffscreenCanvas(tw, th);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resized.close(); if (!cancelled) setThumbUrl(src); return; }
+        ctx.drawImage(resized, 0, 0);
+        resized.close();
+        const thumbBlob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+        if (cancelled) return;
+        const url = URL.createObjectURL(thumbBlob);
+        localUrlRef.current = url;
+        thumbCache.set(cacheKey, url);
+        setThumbUrl(url);
+      } catch {
+        if (!cancelled) { thumbCache.set(cacheKey, src); setThumbUrl(src); } // fallback to original
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [src, max]);
+
+  if (!thumbUrl) {
+    return (
+      <div className="mt-1">
+        <div className="flex items-center justify-center rounded-lg border border-green-900/30 bg-black/30 w-48 h-32">
+          <span className="text-xs text-green-600 animate-pulse">Loading…</span>
+        </div>
+      </div>
+    );
+  }
+  return <img src={thumbUrl} alt={alt} loading="lazy" className={className} onClick={onClick || onLightbox} />;
+});
+
 // ── Lazy file placeholder (IntersectionObserver) ───────────
 
 interface LazyFilePlaceholderProps {
@@ -3291,9 +3362,9 @@ export function TerminalForum() {
         if (mimeType.startsWith('image/') && fileUrl) {
           return (
             <div className="mt-1">
-              <img src={fileUrl} alt={fileName} loading="lazy"
+              <ThumbnailImage src={fileUrl} alt={fileName}
                 className="max-w-sm max-h-80 rounded-lg border border-green-900/30 cursor-pointer hover:border-green-700/50 transition-all"
-                onClick={() => setLightboxSrc(fileUrl)} />
+                onLightbox={() => setLightboxSrc(fileUrl)} />
               <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
                 <FileText className="w-3 h-3" />
                 {fileName}
@@ -3395,9 +3466,9 @@ export function TerminalForum() {
     if (mimeType.startsWith('image/')) {
       return (
         <div className="mt-1">
-          <img src={src} alt={fileName} loading="lazy"
+          <ThumbnailImage src={src} alt={fileName}
             className="max-w-sm max-h-80 rounded-lg border border-green-900/30 cursor-pointer hover:border-green-700/50 transition-all"
-            onClick={() => setLightboxSrc(src)} />
+            onLightbox={() => setLightboxSrc(src)} />
           <div className="text-xs text-green-700 mt-1 flex items-center gap-1">
             <FileText className="w-3 h-3" />
             {fileName}
@@ -8133,7 +8204,7 @@ export function TerminalForum() {
       {lightboxSrc && (
         <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center cursor-pointer"
           onClick={() => setLightboxSrc(null)}>
-          <img src={lightboxSrc} alt="Preview"
+          <ThumbnailImage src={lightboxSrc} alt="Preview" maxSize={2560}
             className="max-w-[90vw] max-h-[90vh] rounded-lg shadow-2xl cursor-default"
             onClick={e => e.stopPropagation()} />
         </div>
